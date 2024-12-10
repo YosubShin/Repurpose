@@ -1,4 +1,5 @@
-# Repurpose from User Generated Content Videos: A Large-scale Dataset and Benchmark
+<h2 align="center">Video Repurposing from User Generated Content: A Large-scale Dataset and Benchmark</h2>
+
 
 ## Summary
 
