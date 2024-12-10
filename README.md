@@ -1,5 +1,8 @@
 <h2 align="center">Video Repurposing from User Generated Content: A Large-scale Dataset and Benchmark</h2>
 
+## News
+
+* :fire: [2024.12.10] Our paper is accepted by AAAI-2025 !
 
 ## Summary
 
