@@ -4,14 +4,23 @@
 
 * :fire: [2024.12.10] Our paper is accepted by AAAI-2025 !
 
-## Summary
-
-* [Introduction](#introduction)
-* [Getting Started](#getting-started)
-* [Datasets](#datasets)
-
 ## Introduction
 
+This repository provides the PyTorch implementation for the paper [**Video Repurposing from User Generated Content: A Large-scale Dataset and Benchmark**](https://arxiv.org/abs/2412.08879). The research introduces **Repurpose-10K**, a large-scale dataset designed to tackle the challenge of **long-to-short video repurposing**. The dataset contains over **10,000 videos** and **120,000+ annotated clips**, making it a benchmark for automatic video repurposing.
+
+### What is Video Repurposing?
+With the rise of **short-form video platforms** like TikTok, Instagram Reels, and YouTube Shorts, there is a growing need to **efficiently extract engaging segments** from long-form content such as vlogs, interviews, and live streams. Video repurposing involves:
+- Identifying **highly engaging** segments from long videos.
+- Ensuring **narrative coherence** in the repurposed clips.
+- Optimizing for **direct publishing** on social media.
+
+### About **Repurpose-10K**
+To address the lack of large-scale benchmarks for this task, **Repurpose-10K** was created by collecting **real-world user interactions** on **User Generated Content (UGC)**. The annotation process involves:
+1. **Initial segmentation** using AI-assisted tools.
+2. **User preference voting** to mark preferred clips.
+3. **Manual refinement** of timestamps by content creators.
+
+This ensures high-quality, **human-curated** ground truth labels for training video repurposing models.
 
 ## Getting Started
 
@@ -53,5 +62,5 @@ Replace `your_ckpt_path` with the actual path to your checkpoint file.
 
 We would like to extend our gratitude to the authors and contributors of the following repositories, which have been instrumental in the development of our implementation:
 
-- [UnAV](https://github.com/ttgeng233/UnAV)
-- [Soft-NMS](https://github.com/DocF/Soft-NMS)
+- https://github.com/ttgeng233/UnAV
+- https://github.com/DocF/Soft-NMS
