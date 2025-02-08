@@ -13,6 +13,8 @@ With the rise of **short-form video platforms** like TikTok, Instagram Reels, an
 - Identifying **highly engaging** segments from long videos.
 - Ensuring **narrative coherence** in the repurposed clips.
 - Optimizing for **direct publishing** on social media.
+<img width="958" alt="image" src="https://github.com/user-attachments/assets/5985db0b-7a3c-4064-8dff-ed1ef019ccac" />
+
 
 ### About **Repurpose-10K**
 To address the lack of large-scale benchmarks for this task, **Repurpose-10K** was created by collecting **real-world user interactions** on **User Generated Content (UGC)**. The annotation process involves:
@@ -21,6 +23,7 @@ To address the lack of large-scale benchmarks for this task, **Repurpose-10K** w
 3. **Manual refinement** of timestamps by content creators.
 
 This ensures high-quality, **human-curated** ground truth labels for training video repurposing models.
+
 
 ## Getting Started
 
