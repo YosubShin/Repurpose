@@ -61,6 +61,17 @@ python inference.py --config_path configs/Repurpose.yaml --resume your_ckpt_path
 ```
 Replace `your_ckpt_path` with the actual path to your checkpoint file.
 
+## Citation
+
+```bibtex
+@article{wu2024video,
+  title={Video Repurposing from User Generated Content: A Large-scale Dataset and Benchmark},
+  author={Wu, Yongliang and Zhu, Wenbo and Cao, Jiawang and Lu, Yi and Li, Bozheng and Chi, Weiheng and Qiu, Zihan and Su, Lirian and Zheng, Haolin and Wu, Jay and others},
+  journal={arXiv preprint arXiv:2412.08879},
+  year={2024}
+}
+```
+
 ## Acknowledgments
 
 We would like to extend our gratitude to the authors and contributors of the following repositories, which have been instrumental in the development of our implementation:
