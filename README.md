@@ -64,11 +64,14 @@ Replace `your_ckpt_path` with the actual path to your checkpoint file.
 ## Citation
 
 ```bibtex
-@article{wu2024video,
+@inproceedings{wu2025video,
   title={Video Repurposing from User Generated Content: A Large-scale Dataset and Benchmark},
   author={Wu, Yongliang and Zhu, Wenbo and Cao, Jiawang and Lu, Yi and Li, Bozheng and Chi, Weiheng and Qiu, Zihan and Su, Lirian and Zheng, Haolin and Wu, Jay and others},
-  journal={arXiv preprint arXiv:2412.08879},
-  year={2024}
+  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume={39},
+  number={8},
+  pages={8487--8495},
+  year={2025}
 }
 ```
 
