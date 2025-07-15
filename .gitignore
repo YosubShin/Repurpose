@@ -1,0 +1,5 @@
+__pycache__
+raw_videos/
+data/audio_pann_features/
+data/caption_features/
+data/transcripts/

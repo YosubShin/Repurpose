@@ -1,0 +1,41 @@
+# Core dependencies
+numpy>=1.21.0
+torch>=1.9.0
+torchaudio>=0.9.0
+torchvision>=0.10.0
+
+# Video and audio processing
+yt-dlp>=2023.1.0
+ffmpeg-python>=0.2.0
+librosa>=0.9.0
+soundfile>=0.10.0
+
+# Text processing and embeddings
+sentence-transformers>=2.2.0
+transformers>=4.20.0
+tokenizers>=0.13.0
+
+# Speech recognition
+openai-whisper>=20230314
+whisperx>=3.1.0
+
+# Audio neural networks
+panns-inference>=0.1.0
+
+# Video feature extraction
+# Note: video_features needs to be installed separately
+# pip install git+https://github.com/v-iashin/video_features.git
+
+# Configuration and utilities
+PyYAML>=6.0
+tqdm>=4.64.0
+argparse>=1.4.0
+pathlib>=1.0.1
+
+# Optional GPU acceleration
+# nvidia-ml-py3>=7.352.0  # For GPU monitoring
+
+# Development and testing
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0
