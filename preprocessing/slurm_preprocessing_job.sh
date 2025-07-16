@@ -70,7 +70,6 @@ nvidia-smi
 echo "Checking Python dependencies..."
 python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 python -c "import clip; print('CLIP: OK')"
-python -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
 
 # Set environment variables for optimal performance
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512

@@ -10,7 +10,6 @@ import tempfile
 import torch
 from PIL import Image
 import clip
-import cv2
 from tqdm import tqdm
 
 try:
@@ -57,60 +56,10 @@ class VisualFeatureExtractorCLIP:
         with open(self.progress_file, 'w') as f:
             json.dump(self.processed_videos, f, indent=2)
 
-    def extract_frames_opencv(self, video_path: str, fps: float = 1.0, max_duration: Optional[float] = None) -> List[Tuple[float, np.ndarray]]:
-        """
-        Extract frames from video using OpenCV at specified FPS.
-
-        Args:
-            video_path: Path to video file
-            fps: Frames per second to extract (default 1.0 for 1 frame per second)
-            max_duration: Maximum duration in seconds to extract (if None, extract entire video)
-
-        Returns:
-            List of (timestamp, frame) tuples
-        """
-        frames = []
-        cap = cv2.VideoCapture(video_path)
-
-        if not cap.isOpened():
-            raise ValueError(f"Could not open video file: {video_path}")
-
-        # Get video properties
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / video_fps
-
-        self.logger.debug(f"Video duration: {duration:.2f}s, FPS: {video_fps}")
-
-        # Calculate frame interval
-        frame_interval = max(1, int(video_fps / fps))
-
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            if frame_idx % frame_interval == 0:
-                timestamp = frame_idx / video_fps
-
-                # Stop if we've exceeded max_duration
-                if max_duration is not None and timestamp >= max_duration:
-                    break
-
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append((timestamp, frame_rgb))
-
-            frame_idx += 1
-
-        cap.release()
-        return frames
-
     def extract_frames_ffmpeg(self, video_path: str, fps: float = 1.0, max_duration: Optional[float] = None) -> List[Tuple[float, Image.Image]]:
         """
         Extract frames from video using FFmpeg at specified FPS.
-        Fallback method if OpenCV fails.
+        Fallback method if PyAV fails.
 
         Args:
             video_path: Path to video file
@@ -219,56 +168,6 @@ class VisualFeatureExtractorCLIP:
         container.close()
         return frames
 
-    def extract_frames_opencv_seek(self, video_path: str, max_duration: Optional[float] = None) -> List[Tuple[float, np.ndarray]]:
-        """
-        Extract frames from video using OpenCV with timestamp seeking.
-        More accurate than interval-based extraction.
-
-        Args:
-            video_path: Path to video file
-            max_duration: Maximum duration in seconds to extract
-
-        Returns:
-            List of (timestamp, frame) tuples
-        """
-        frames = []
-        cap = cv2.VideoCapture(video_path)
-
-        if not cap.isOpened():
-            raise ValueError(f"Could not open video file: {video_path}")
-
-        # Get video properties
-        video_fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / video_fps
-
-        if max_duration is not None:
-            duration = min(duration, max_duration)
-
-        self.logger.debug(
-            f"Video duration: {duration:.2f}s, FPS: {video_fps}, using OpenCV seeking")
-
-        # Extract one frame per second using seeking
-        for second in range(int(duration)):
-            timestamp = float(second)
-
-            # Seek to timestamp (in milliseconds)
-            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-
-            ret, frame = cap.read()
-            if ret:
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append((timestamp, frame_rgb))
-            else:
-                self.logger.warning(f"Failed to extract frame at {timestamp}s")
-                # Add a zero frame as placeholder
-                frames.append((timestamp, np.zeros(
-                    (240, 320, 3), dtype=np.uint8)))
-
-        cap.release()
-        return frames
-
     def extract_clip_features(self, frames: List[Tuple[float, Any]]) -> np.ndarray:
         """
         Extract CLIP features from frames.
@@ -323,7 +222,7 @@ class VisualFeatureExtractorCLIP:
         try:
             self.logger.info(f"Extracting visual features for {youtube_id}...")
 
-            # Try PyAV first (most accurate), then OpenCV seeking, then FFmpeg as fallback
+            # Try PyAV first (most accurate), then FFmpeg as fallback
             frames = None
 
             if PYAV_AVAILABLE:
@@ -337,17 +236,13 @@ class VisualFeatureExtractorCLIP:
 
             if frames is None:
                 try:
-                    frames = self.extract_frames_opencv_seek(
+                    frames = self.extract_frames_ffmpeg(
                         video_path, max_duration=video_duration)
                     self.logger.debug(
-                        f"Extracted {len(frames)} frames using OpenCV seeking")
+                        f"Extracted {len(frames)} frames using FFmpeg")
                 except Exception as e:
                     self.logger.warning(
-                        f"OpenCV seeking failed: {e}, trying FFmpeg")
-                    frames = self.extract_frames_ffmpeg(
-                        video_path, fps=1.0, max_duration=video_duration)
-                    self.logger.debug(
-                        f"Extracted {len(frames)} frames using FFmpeg")
+                        f"FFmpeg extraction failed: {e}")
 
             if not frames:
                 self.logger.error(f"No frames extracted for {youtube_id}")
