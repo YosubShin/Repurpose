@@ -10,5 +10,5 @@ directories:
 processing:
   batch_size: 10
   cleanup_raw_videos: false
-  max_videos: 2
+  max_videos: 5
   resume_on_failure: true

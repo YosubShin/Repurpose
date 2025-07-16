@@ -37,7 +37,8 @@ class PreprocessingPipeline:
             output_dir=self.config['directories']['raw_videos'],
             log_level=log_level,
             max_workers=self.config.get('download', {}).get('max_workers', 3),
-            use_parallel=self.config.get('download', {}).get('use_parallel', True),
+            use_parallel=self.config.get(
+                'download', {}).get('use_parallel', False),
             rate_limit=self.config.get('download', {}).get('rate_limit', 1.0),
             max_retries=self.config.get('download', {}).get('max_retries', 3),
             cookies_file=self.config.get('download', {}).get('cookies_file')
@@ -86,10 +87,10 @@ class PreprocessingPipeline:
                 'cleanup_raw_videos': False
             },
             'download': {
-                'max_workers': 3,
-                'use_parallel': True,
-                'rate_limit': 1.0,
-                'max_retries': 3,
+                'max_workers': 1,
+                'use_parallel': False,
+                'rate_limit': 5.0,
+                'max_retries': 5,
                 'cookies_file': None
             },
             'datasets': {

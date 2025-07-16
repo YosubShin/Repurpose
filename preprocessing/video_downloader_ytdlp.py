@@ -4,6 +4,7 @@ Improved video downloader using yt-dlp library with parallel processing and bett
 """
 
 import json
+import os
 import time
 import logging
 from pathlib import Path
@@ -35,126 +36,95 @@ class DownloadResult:
 
 class VideoDownloaderYTDLP:
     """Enhanced video downloader using yt-dlp library with parallel processing"""
-    
-    def __init__(self, 
-                 output_dir: str = "raw_videos", 
+
+    def __init__(self,
+                 output_dir: str = "raw_videos",
                  log_level: str = "INFO",
                  max_workers: int = 3,
                  use_parallel: bool = True,
                  rate_limit: float = 1.0,
                  max_retries: int = 3,
                  cookies_file: Optional[str] = None):
-        
+
         if not HAS_YT_DLP:
-            raise ImportError("yt-dlp not available. Install with: pip install yt-dlp")
-        
+            raise ImportError(
+                "yt-dlp not available. Install with: pip install yt-dlp")
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
         # Setup logging
         logging.basicConfig(
             level=getattr(logging, log_level.upper()),
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
-        
+
         # Configuration
         self.max_workers = max_workers
         self.use_parallel = use_parallel
         self.rate_limit = rate_limit  # seconds between downloads
         self.max_retries = max_retries
         self.cookies_file = cookies_file
-        
+
         # Progress tracking
         self.progress_file = self.output_dir / "download_progress.json"
         self.downloaded_videos = self.load_progress()
-        
-        # yt-dlp configuration to avoid bot detection
-        self.yt_dlp_opts = {
-            'format': 'best[ext=mp4]/best',
-            'outtmpl': str(self.output_dir / '%(id)s.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
-            'extractaudio': False,
-            'writeinfojson': False,
-            'writethumbnail': False,
-            'writesubtitles': False,
-            'writeautomaticsub': False,
-            'ignoreerrors': True,
-            'retries': 3,
-            'fragment_retries': 3,
-            'skip_unavailable_fragments': True,
-            # Headers to avoid bot detection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            },
-            # Rate limiting
-            'sleep_interval': 1,
-            'max_sleep_interval': 5,
-            'sleep_interval_requests': 1,
-            'sleep_interval_subtitles': 0,
-        }
-        
-        # Add cookies if provided
-        if cookies_file and Path(cookies_file).exists():
-            self.yt_dlp_opts['cookiefile'] = cookies_file
-            self.logger.info(f"Using cookies from: {cookies_file}")
-        
-        self.logger.info(f"VideoDownloader initialized with {max_workers} workers, parallel={use_parallel}")
-    
+
+        self.logger.info(
+            f"VideoDownloader initialized with {max_workers} workers, parallel={use_parallel}")
+
     def load_progress(self) -> Dict[str, bool]:
         """Load download progress from file."""
         if self.progress_file.exists():
             with open(self.progress_file, 'r') as f:
                 return json.load(f)
         return {}
-    
+
     def save_progress(self):
         """Save download progress to file."""
         with open(self.progress_file, 'w') as f:
             json.dump(self.downloaded_videos, f, indent=2)
-    
+
     def get_video_info(self, youtube_id: str) -> Optional[Dict[str, Any]]:
         """Get video information without downloading."""
         url = f"https://www.youtube.com/watch?v={youtube_id}"
-        
-        # Create a temporary yt-dlp instance for info extraction
-        info_opts = self.yt_dlp_opts.copy()
-        info_opts['quiet'] = True
-        info_opts['no_warnings'] = True
-        
+
+        output_template = os.path.join(
+            self.output_dir, f"{youtube_id}.%(ext)s")
+        yt_dlp_opts = {
+            "format": "bestvideo+bestaudio",
+            "merge_output_format": "mp4",
+            "outtmpl": output_template,
+        }
+
         try:
-            with yt_dlp.YoutubeDL(info_opts) as ydl:
+            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 return info
         except Exception as e:
             self.logger.error(f"Failed to get info for {youtube_id}: {str(e)}")
             return None
-    
-    def download_single_video(self, youtube_id: str, 
-                            time_range: Optional[List[float]] = None,
-                            retry_count: int = 0) -> DownloadResult:
+
+    def download_single_video(self, youtube_id: str,
+                              time_range: Optional[List[float]] = None,
+                              retry_count: int = 0) -> DownloadResult:
         """
         Download a single video using yt-dlp library.
-        
+
         Args:
             youtube_id: YouTube video ID
             time_range: Optional [start, end] time range to download specific segment
             retry_count: Current retry attempt
-            
+
         Returns:
             DownloadResult with success status and details
         """
         if youtube_id in self.downloaded_videos:
             output_path = self.output_dir / f"{youtube_id}.mp4"
             if output_path.exists():
-                self.logger.debug(f"Video {youtube_id} already downloaded, skipping...")
+                self.logger.debug(
+                    f"Video {youtube_id} already downloaded, skipping...")
                 return DownloadResult(
                     youtube_id=youtube_id,
                     success=True,
@@ -165,49 +135,46 @@ class VideoDownloaderYTDLP:
                 # File was marked as downloaded but doesn't exist, remove from progress
                 del self.downloaded_videos[youtube_id]
                 self.save_progress()
-        
+
         url = f"https://www.youtube.com/watch?v={youtube_id}"
-        
+
         # Create download options for this specific video
-        download_opts = self.yt_dlp_opts.copy()
-        
+        output_template = os.path.join(
+            self.output_dir, f"{youtube_id}.%(ext)s")
+        yt_dlp_opts = {
+            "format": "bestvideo+bestaudio",
+            "merge_output_format": "mp4",
+            "outtmpl": output_template,
+        }
+
         # Add random delay to avoid rate limiting
         if retry_count > 0:
             delay = random.uniform(2, 8) * (retry_count + 1)
-            self.logger.info(f"Retry {retry_count} for {youtube_id}, waiting {delay:.1f}s")
+            self.logger.info(
+                f"Retry {retry_count} for {youtube_id}, waiting {delay:.1f}s")
             time.sleep(delay)
-        
-        # Handle time range download
-        if time_range:
-            start_time, end_time = time_range
-            download_opts['download_ranges'] = yt_dlp.utils.download_range_func(
-                None, [(start_time, end_time)]
-            )
-            self.logger.debug(f"Downloading {youtube_id} segment: {start_time}s-{end_time}s")
-        
+
         try:
-            self.logger.info(f"Downloading {youtube_id}... (attempt {retry_count + 1})")
-            
-            # Add some randomization to avoid detection
-            download_opts['sleep_interval'] = random.uniform(0.5, 2.0)
-            
-            with yt_dlp.YoutubeDL(download_opts) as ydl:
+            self.logger.info(
+                f"Downloading {youtube_id}... (attempt {retry_count + 1})")
+
+            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
                 # Download the video
                 ydl.download([url])
-                
+
                 # Check if file was created
                 possible_paths = [
                     self.output_dir / f"{youtube_id}.mp4",
                     self.output_dir / f"{youtube_id}.webm",
                     self.output_dir / f"{youtube_id}.mkv"
                 ]
-                
+
                 output_path = None
                 for path in possible_paths:
                     if path.exists():
                         output_path = path
                         break
-                
+
                 if output_path:
                     # Get video info for duration
                     try:
@@ -215,10 +182,10 @@ class VideoDownloaderYTDLP:
                         duration = info.get('duration') if info else None
                     except:
                         duration = None
-                    
+
                     self.downloaded_videos[youtube_id] = True
                     self.save_progress()
-                    
+
                     self.logger.info(f"Successfully downloaded {youtube_id}")
                     return DownloadResult(
                         youtube_id=youtube_id,
@@ -229,139 +196,149 @@ class VideoDownloaderYTDLP:
                     )
                 else:
                     error_msg = "Output file not found after download"
-                    self.logger.error(f"Download failed for {youtube_id}: {error_msg}")
+                    self.logger.error(
+                        f"Download failed for {youtube_id}: {error_msg}")
                     return DownloadResult(
                         youtube_id=youtube_id,
                         success=False,
                         error_message=error_msg,
                         retry_count=retry_count
                     )
-                    
+
         except yt_dlp.DownloadError as e:
             error_msg = str(e)
             if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
-                self.logger.warning(f"Bot detection for {youtube_id}: {error_msg}")
+                self.logger.warning(
+                    f"Bot detection for {youtube_id}: {error_msg}")
                 # For bot detection, we might want to increase delay
                 time.sleep(random.uniform(5, 15))
             else:
-                self.logger.error(f"Download error for {youtube_id}: {error_msg}")
-            
+                self.logger.error(
+                    f"Download error for {youtube_id}: {error_msg}")
+
             return DownloadResult(
                 youtube_id=youtube_id,
                 success=False,
                 error_message=error_msg,
                 retry_count=retry_count
             )
-            
+
         except Exception as e:
             error_msg = str(e)
-            self.logger.error(f"Unexpected error downloading {youtube_id}: {error_msg}")
+            self.logger.error(
+                f"Unexpected error downloading {youtube_id}: {error_msg}")
             return DownloadResult(
                 youtube_id=youtube_id,
                 success=False,
                 error_message=error_msg,
                 retry_count=retry_count
             )
-    
-    def download_video_with_retries(self, youtube_id: str, 
-                                  time_range: Optional[List[float]] = None) -> DownloadResult:
+
+    def download_video_with_retries(self, youtube_id: str,
+                                    time_range: Optional[List[float]] = None) -> DownloadResult:
         """Download a video with retry logic."""
         last_result = None
-        
+
         for attempt in range(self.max_retries + 1):
-            result = self.download_single_video(youtube_id, time_range, attempt)
-            
+            result = self.download_single_video(
+                youtube_id, time_range, attempt)
+
             if result.success:
                 return result
-            
+
             last_result = result
-            
+
             # Check if we should retry
             if attempt < self.max_retries:
                 error_msg = result.error_message or ""
-                
+
                 # Don't retry certain types of errors
                 if any(skip_phrase in error_msg.lower() for skip_phrase in [
                     "private video", "deleted", "unavailable", "copyright"
                 ]):
-                    self.logger.info(f"Not retrying {youtube_id} due to: {error_msg}")
+                    self.logger.info(
+                        f"Not retrying {youtube_id} due to: {error_msg}")
                     break
-                
+
                 # Exponential backoff with jitter
                 delay = random.uniform(2, 8) * (2 ** attempt)
                 self.logger.info(f"Retrying {youtube_id} in {delay:.1f}s...")
                 time.sleep(delay)
-        
+
         return last_result
-    
-    def _download_worker(self, video_info: Tuple[str, Optional[List[float]]], 
-                        index: int, total: int) -> DownloadResult:
+
+    def _download_worker(self, video_info: Tuple[str, Optional[List[float]]],
+                         index: int, total: int) -> DownloadResult:
         """Worker function for parallel downloads."""
         youtube_id, time_range = video_info
-        
+
         self.logger.info(f"Processing video {index + 1}/{total}: {youtube_id}")
-        
+
         # Rate limiting
         if index > 0:
             time.sleep(self.rate_limit + random.uniform(0, 1))
-        
+
         return self.download_video_with_retries(youtube_id, time_range)
-    
-    def download_from_dataset(self, dataset_path: str, 
-                            max_videos: Optional[int] = None) -> Dict[str, Any]:
+
+    def download_from_dataset(self, dataset_path: str,
+                              max_videos: Optional[int] = None) -> Dict[str, Any]:
         """
         Download videos from a dataset JSON file with parallel processing.
-        
+
         Args:
             dataset_path: Path to the dataset JSON file
             max_videos: Maximum number of videos to download (for testing)
-            
+
         Returns:
             Dict containing download statistics
         """
         with open(dataset_path, 'r') as f:
             dataset = json.load(f)
-        
+
         if max_videos:
             dataset = dataset[:max_videos]
-        
+
         # Prepare video list
         video_list = []
         for video_info in dataset:
             youtube_id = video_info['youtube_id']
             time_range = video_info.get('timeRange')
             video_list.append((youtube_id, time_range))
-        
+
         self.logger.info(f"Starting download of {len(video_list)} videos...")
-        
+
         start_time = time.time()
         results = []
-        
+
         if self.use_parallel and len(video_list) > 1:
-            self.logger.info(f"Using parallel processing with {self.max_workers} workers")
-            
+            self.logger.info(
+                f"Using parallel processing with {self.max_workers} workers")
+
             with ThreadPoolExecutor(max_workers=min(self.max_workers, len(video_list))) as executor:
                 # Submit all download tasks
                 future_to_video = {
                     executor.submit(self._download_worker, video_info, i, len(video_list)): video_info
                     for i, video_info in enumerate(video_list)
                 }
-                
+
                 # Collect results as they complete
                 for future in as_completed(future_to_video):
                     try:
                         result = future.result()
                         results.append(result)
-                        
+
                         if result.success:
-                            self.logger.info(f"✓ Downloaded {result.youtube_id}")
+                            self.logger.info(
+                                f"✓ Downloaded {result.youtube_id}")
                         else:
-                            self.logger.warning(f"✗ Failed {result.youtube_id}: {result.error_message}")
-                            
+                            self.logger.warning(
+                                f"✗ Failed {result.youtube_id}: {result.error_message}")
+
                     except Exception as e:
                         video_info = future_to_video[future]
                         youtube_id = video_info[0]
-                        self.logger.error(f"Worker error for {youtube_id}: {e}")
+                        self.logger.error(
+                            f"Worker error for {youtube_id}: {e}")
                         results.append(DownloadResult(
                             youtube_id=youtube_id,
                             success=False,
@@ -373,24 +350,25 @@ class VideoDownloaderYTDLP:
             for i, video_info in enumerate(video_list):
                 result = self._download_worker(video_info, i, len(video_list))
                 results.append(result)
-                
+
                 if result.success:
                     self.logger.info(f"✓ Downloaded {result.youtube_id}")
                 else:
-                    self.logger.warning(f"✗ Failed {result.youtube_id}: {result.error_message}")
-        
+                    self.logger.warning(
+                        f"✗ Failed {result.youtube_id}: {result.error_message}")
+
         # Calculate statistics
         successful_downloads = sum(1 for r in results if r.success)
         failed_downloads = len(results) - successful_downloads
-        
+
         # Count retry statistics
         total_retries = sum(r.retry_count for r in results)
-        bot_detection_errors = sum(1 for r in results 
-                                 if not r.success and r.error_message and 
-                                 ("sign in" in r.error_message.lower() or "bot" in r.error_message.lower()))
-        
+        bot_detection_errors = sum(1 for r in results
+                                   if not r.success and r.error_message and
+                                   ("sign in" in r.error_message.lower() or "bot" in r.error_message.lower()))
+
         processing_time = time.time() - start_time
-        
+
         stats = {
             'total_videos': len(video_list),
             'successful_downloads': successful_downloads,
@@ -402,22 +380,23 @@ class VideoDownloaderYTDLP:
             'average_time_per_video': processing_time / len(video_list) if video_list else 0,
             'failed_videos': [r.youtube_id for r in results if not r.success]
         }
-        
+
         self.logger.info(f"Download complete: {successful_downloads}/{len(video_list)} successful "
-                        f"({stats['success_rate']:.1f}%)")
+                         f"({stats['success_rate']:.1f}%)")
         self.logger.info(f"Total processing time: {processing_time:.1f}s")
         if total_retries > 0:
             self.logger.info(f"Total retries: {total_retries}")
         if bot_detection_errors > 0:
-            self.logger.warning(f"Bot detection errors: {bot_detection_errors}")
-        
+            self.logger.warning(
+                f"Bot detection errors: {bot_detection_errors}")
+
         return stats
-    
+
     def cleanup_failed_downloads(self):
         """Remove partially downloaded files."""
         patterns = ["*.part", "*.tmp", "*.temp"]
         cleaned_count = 0
-        
+
         for pattern in patterns:
             for file_path in self.output_dir.glob(pattern):
                 try:
@@ -426,7 +405,7 @@ class VideoDownloaderYTDLP:
                     cleaned_count += 1
                 except Exception as e:
                     self.logger.warning(f"Failed to remove {file_path}: {e}")
-        
+
         if cleaned_count > 0:
             self.logger.info(f"Cleaned up {cleaned_count} partial files")
         else:
@@ -435,26 +414,37 @@ class VideoDownloaderYTDLP:
 
 def main():
     """Main execution function"""
-    parser = argparse.ArgumentParser(description="Download videos for Repurpose dataset using yt-dlp library")
-    parser.add_argument("--dataset", required=True, help="Path to dataset JSON file")
-    parser.add_argument("--output-dir", default="raw_videos", help="Output directory for videos")
-    parser.add_argument("--max-videos", type=int, help="Maximum number of videos to download")
-    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    
+    parser = argparse.ArgumentParser(
+        description="Download videos for Repurpose dataset using yt-dlp library")
+    parser.add_argument("--dataset", required=True,
+                        help="Path to dataset JSON file")
+    parser.add_argument("--output-dir", default="raw_videos",
+                        help="Output directory for videos")
+    parser.add_argument("--max-videos", type=int,
+                        help="Maximum number of videos to download")
+    parser.add_argument("--log-level", default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+
     # Parallel processing options
-    parser.add_argument("--parallel", action="store_true", default=True, help="Enable parallel processing")
-    parser.add_argument("--no-parallel", dest="parallel", action="store_false", help="Disable parallel processing")
-    parser.add_argument("--max-workers", type=int, default=3, help="Maximum number of parallel workers")
-    parser.add_argument("--rate-limit", type=float, default=1.0, help="Minimum seconds between downloads")
-    
+    parser.add_argument("--parallel", action="store_true",
+                        default=True, help="Enable parallel processing")
+    parser.add_argument("--no-parallel", dest="parallel",
+                        action="store_false", help="Disable parallel processing")
+    parser.add_argument("--max-workers", type=int, default=3,
+                        help="Maximum number of parallel workers")
+    parser.add_argument("--rate-limit", type=float, default=1.0,
+                        help="Minimum seconds between downloads")
+
     # Retry options
-    parser.add_argument("--max-retries", type=int, default=3, help="Maximum number of retries per video")
-    
+    parser.add_argument("--max-retries", type=int, default=3,
+                        help="Maximum number of retries per video")
+
     # Authentication options
-    parser.add_argument("--cookies", help="Path to cookies file for authentication")
-    
+    parser.add_argument(
+        "--cookies", help="Path to cookies file for authentication")
+
     args = parser.parse_args()
-    
+
     try:
         downloader = VideoDownloaderYTDLP(
             output_dir=args.output_dir,
@@ -465,20 +455,21 @@ def main():
             max_retries=args.max_retries,
             cookies_file=args.cookies
         )
-        
+
         stats = downloader.download_from_dataset(args.dataset, args.max_videos)
-        
+
         print(f"\n=== DOWNLOAD STATISTICS ===")
         print(f"Total videos: {stats['total_videos']}")
         print(f"Successful: {stats['successful_downloads']}")
         print(f"Failed: {stats['failed_downloads']}")
         print(f"Success rate: {stats['success_rate']:.1f}%")
         print(f"Processing time: {stats['processing_time']:.1f}s")
-        print(f"Average time per video: {stats['average_time_per_video']:.1f}s")
-        
+        print(
+            f"Average time per video: {stats['average_time_per_video']:.1f}s")
+
         if stats['total_retries'] > 0:
             print(f"Total retries: {stats['total_retries']}")
-        
+
         if stats['bot_detection_errors'] > 0:
             print(f"Bot detection errors: {stats['bot_detection_errors']}")
             print("\nTo fix bot detection errors:")
@@ -488,14 +479,14 @@ def main():
             print("   - Use --cookies cookies.txt")
             print("2. Reduce parallel workers: --max-workers 1")
             print("3. Increase rate limiting: --rate-limit 3.0")
-        
+
         if stats['failed_videos']:
             print(f"\nFailed videos ({len(stats['failed_videos'])}):")
             for vid in stats['failed_videos'][:10]:  # Show first 10
                 print(f"  - {vid}")
             if len(stats['failed_videos']) > 10:
                 print(f"  ... and {len(stats['failed_videos']) - 10} more")
-        
+
     except KeyboardInterrupt:
         print("\nDownload interrupted by user")
         try:

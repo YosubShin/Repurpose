@@ -5,7 +5,7 @@ torchaudio>=0.9.0
 torchvision>=0.10.0
 
 # Video and audio processing
-yt-dlp>=2023.1.0
+yt-dlp>=2025.06.30
 ffmpeg-python>=0.2.0
 librosa>=0.9.0
 soundfile>=0.10.0
