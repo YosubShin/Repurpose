@@ -23,7 +23,6 @@ whisperx>=3.1.0
 panns-inference>=0.1.0
 
 # Video feature extraction
-clip @ git+https://github.com/openai/CLIP.git
 opencv-python>=4.7.0
 Pillow>=9.0.0
 av>=10.0.0  # PyAV for precise video frame extraction

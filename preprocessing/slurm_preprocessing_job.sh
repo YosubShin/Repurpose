@@ -55,6 +55,9 @@ echo "Python version: $(python --version)"
 echo "Installing/verifying required packages..."
 pip install -r requirements.txt
 
+echo "Installing CLIP..."
+pip install git+https://github.com/openai/CLIP.git
+
 # List installed packages for debugging
 echo "Listing installed packages..."
 pip list | grep -E "(clip|torch|opencv|yt-dlp|whisperx|panns|transformers)" || true
