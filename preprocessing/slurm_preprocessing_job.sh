@@ -60,7 +60,7 @@ pip install git+https://github.com/openai/CLIP.git
 
 # List installed packages for debugging
 echo "Listing installed packages..."
-pip list | grep -E "(clip|torch|opencv|yt-dlp|whisperx|panns|transformers)" || true
+pip list
 
 # Verify GPU is available
 echo "Checking GPU availability..."
