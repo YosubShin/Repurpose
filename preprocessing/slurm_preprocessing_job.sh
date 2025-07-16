@@ -47,6 +47,18 @@ module load vis/FFmpeg
 echo "Activating conda environment..."
 source activate repurpose
 
+# Show which python we're using
+echo "Python location: $(which python)"
+echo "Python version: $(python --version)"
+
+# Install missing packages if needed
+echo "Installing/verifying required packages..."
+pip install -r requirements.txt
+
+# List installed packages for debugging
+echo "Listing installed packages..."
+pip list | grep -E "(clip|torch|opencv|yt-dlp|whisperx|panns|transformers)" || true
+
 # Verify GPU is available
 echo "Checking GPU availability..."
 nvidia-smi
