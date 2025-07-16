@@ -147,7 +147,8 @@ class PreprocessingPipeline:
                 )
                 results['visual'] = visual_stats
 
-                self.logger.info(f"Visual extraction completed: {visual_stats['success_rate']:.1f}% success rate")
+                self.logger.info(
+                    f"Visual extraction completed: {visual_stats['success_rate']:.1f}% success rate")
 
             # Step 3: Extract audio features
             if 'audio' in steps:

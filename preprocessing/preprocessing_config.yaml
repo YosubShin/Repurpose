@@ -3,29 +3,29 @@
 
 # Directory structure
 directories:
-  raw_videos: "raw_videos"
-  video_features: "data/video_clip_features"
-  audio_features: "data/audio_pann_features"
-  text_features: "data/caption_features"
-  transcripts: "data/transcripts"
+  raw_videos: "/home/yosubs/koa_scratch/repurpose/raw_videos"
+  video_features: "/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
+  audio_features: "/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
+  text_features: "/home/yosubs/koa_scratch/repurpose/data/caption_features"
+  transcripts: "/home/yosubs/koa_scratch/repurpose/data/transcripts"
 
 # Processing settings
 processing:
   # Maximum number of videos to process (null for all)
   max_videos: null
-  
+
   # Batch size for processing
   batch_size: 10
-  
+
   # Resume processing on failure
   resume_on_failure: true
-  
+
   # Clean up raw videos after feature extraction to save disk space
   cleanup_raw_videos: false
-  
+
   # Parallel processing settings
   num_workers: 4
-  
+
   # GPU usage
   use_gpu: true
 
@@ -39,13 +39,13 @@ datasets:
 video_download:
   # Quality settings for yt-dlp
   format: "best[ext=mp4]"
-  
+
   # Maximum file size (in MB)
   max_filesize: 1000
-  
+
   # Retry settings
   retries: 3
-  
+
   # Rate limiting (downloads per minute)
   rate_limit: 30
 
@@ -55,50 +55,50 @@ feature_extraction:
   visual:
     # Feature extraction method: 'video_features' or 'ffmpeg'
     method: "video_features"
-    
+
     # Feature type for video_features library
     feature_type: "i3d"
-    
+
     # Frame extraction rate (frames per second)
     fps: 1
-    
+
     # Image size for feature extraction
     image_size: 224
-    
+
     # Expected feature dimension
     feature_dim: 512
-  
+
   # Audio features
   audio:
     # Feature extraction method: 'panns' or 'librosa'
     method: "panns"
-    
+
     # Audio sample rate
     sample_rate: 22050
-    
+
     # Chunk size for processing (seconds)
     chunk_size: 10
-    
+
     # Expected feature dimension
     feature_dim: 2048
-  
+
   # Text features
   text:
     # Transcription method: 'whisperx' or 'whisper'
     transcription_method: "whisperx"
-    
+
     # Whisper model size
     whisper_model: "base"
-    
+
     # Sentence transformer model
     sentence_transformer_model: "all-MiniLM-L6-v2"
-    
+
     # Expected feature dimension
     feature_dim: 384
-    
+
     # Text preprocessing
     clean_text: true
-    
+
     # Minimum text length to process
     min_text_length: 3
 
@@ -106,26 +106,26 @@ feature_extraction:
 logging:
   level: "INFO"
   format: "%(asctime)s - %(levelname)s - %(message)s"
-  
+
   # Log to file
   log_to_file: true
   log_file: "preprocessing.log"
-  
+
   # Log rotation
-  max_log_size: 10485760  # 10MB
+  max_log_size: 10485760 # 10MB
   backup_count: 5
 
 # Error handling
 error_handling:
   # Continue processing other videos if one fails
   continue_on_error: true
-  
+
   # Maximum number of retries for failed videos
   max_retries: 3
-  
+
   # Retry delay (seconds)
   retry_delay: 5
-  
+
   # Save error logs
   save_error_logs: true
   error_log_file: "preprocessing_errors.json"
@@ -134,9 +134,9 @@ error_handling:
 verification:
   # Check feature file integrity
   check_file_integrity: true
-  
+
   # Verify feature dimensions match expected
   verify_dimensions: true
-  
+
   # Check for corrupted files
   check_corrupted_files: true
