@@ -7,7 +7,7 @@ This directory contains a complete preprocessing pipeline for the Repurpose data
 The preprocessing pipeline consists of four main components:
 
 1. **Video Download** (`video_downloader.py`) - Downloads videos from YouTube using yt-dlp
-2. **Visual Feature Extraction** (`visual_feature_extractor.py`) - Extracts visual features using video_features library
+2. **Visual Feature Extraction** (`visual_feature_extractor_clip.py`) - Extracts visual features using CLIP ViT-B/32 model with precise timestamp seeking
 3. **Audio Feature Extraction** (`audio_feature_extractor.py`) - Extracts audio features using PANNs or librosa
 4. **Text Feature Extraction** (`text_feature_extractor.py`) - Transcribes speech and extracts text embeddings
 
@@ -18,12 +18,7 @@ The preprocessing pipeline consists of four main components:
 pip install -r requirements.txt
 ```
 
-2. Install video_features library:
-```bash
-pip install git+https://github.com/v-iashin/video_features.git
-```
-
-3. Install system dependencies:
+2. Install system dependencies:
 ```bash
 # On Ubuntu/Debian
 sudo apt install ffmpeg
@@ -153,9 +148,9 @@ raw_videos/                      # Downloaded videos (optional cleanup)
 
 The extracted features have the following dimensions:
 
-- **Visual Features**: 512-dimensional vectors, 1 per second of video
-- **Audio Features**: 2048-dimensional vectors, 1 per second of audio
-- **Text Features**: 384-dimensional vectors, 1 per second of transcribed speech (full video duration)
+- **Visual Features**: 512-dimensional CLIP ViT-B/32 embeddings, 1 per second of video
+- **Audio Features**: 2048-dimensional PANNs embeddings, 1 per second of audio
+- **Text Features**: 384-dimensional sentence-transformer embeddings, 1 per second (full video duration)
 
 ## Transcript Caching
 
@@ -185,12 +180,32 @@ The pipeline includes robust error handling:
 - **Progress tracking**: JSON files track completion status
 - **Detailed logging**: Comprehensive logs for debugging
 
+## Frame Extraction Accuracy
+
+The visual feature extractor uses multiple methods for precise frame extraction:
+
+1. **PyAV (Primary)**: Most accurate for videos with non-integer frame rates (e.g., 29.97 fps)
+   - Uses precise timestamp seeking
+   - Handles drop-frame timecode correctly
+   - Best for NTSC and variable frame rate videos
+
+2. **OpenCV Seeking (Fallback)**: Timestamp-based seeking with OpenCV
+   - More accurate than interval-based extraction
+   - Good compatibility across formats
+
+3. **FFmpeg (Final Fallback)**: Duration-limited frame extraction
+   - Ensures compatibility with all video formats
+   - Uses duration constraints to prevent over-extraction
+
+This multi-tier approach ensures exact frame alignment at 1-second intervals, preventing issues with non-integer frame rates.
+
 ## Performance Optimization
 
-- **GPU acceleration**: Automatic GPU detection and usage
+- **GPU acceleration**: Automatic GPU detection and usage for CLIP inference
 - **Parallel processing**: Configurable number of worker processes
 - **Batch processing**: Process videos in configurable batches
 - **Memory management**: Efficient handling of large video files
+- **Precise seeking**: Avoids processing unnecessary frames
 
 ## Troubleshooting
 

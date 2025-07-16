@@ -8,7 +8,7 @@ import time
 import yaml
 
 from video_downloader import VideoDownloader
-# from visual_feature_extractor import VisualFeatureExtractor
+from visual_feature_extractor_clip import VisualFeatureExtractorCLIP
 from audio_feature_extractor import AudioFeatureExtractor
 from text_feature_extractor import TextFeatureExtractor
 
@@ -38,10 +38,10 @@ class PreprocessingPipeline:
             log_level=log_level
         )
 
-        # self.visual_extractor = VisualFeatureExtractor(
-        #     output_dir=self.config['directories']['video_features'],
-        #     log_level=log_level
-        # )
+        self.visual_extractor = VisualFeatureExtractorCLIP(
+            output_dir=self.config['directories']['video_features'],
+            log_level=log_level
+        )
 
         self.audio_extractor = AudioFeatureExtractor(
             output_dir=self.config['directories']['audio_features'],
@@ -135,19 +135,19 @@ class PreprocessingPipeline:
                     f"Download completed: {download_stats['success_rate']:.1f}% success rate")
 
             # Step 2: Extract visual features
-            # if 'visual' in steps:
-            #     self.logger.info("=" * 60)
-            #     self.logger.info("STEP 2: Extracting visual features")
-            #     self.logger.info("=" * 60)
+            if 'visual' in steps:
+                self.logger.info("=" * 60)
+                self.logger.info("STEP 2: Extracting visual features")
+                self.logger.info("=" * 60)
 
-                # visual_stats = self.visual_extractor.process_from_dataset(
-                #     dataset_path=dataset_path,
-                #     video_dir=self.config['directories']['raw_videos'],
-                #     max_videos=self.config['processing']['max_videos']
-                # )
-                # results['visual'] = visual_stats
+                visual_stats = self.visual_extractor.process_from_dataset(
+                    dataset_path=dataset_path,
+                    video_dir=self.config['directories']['raw_videos'],
+                    max_videos=self.config['processing']['max_videos']
+                )
+                results['visual'] = visual_stats
 
-                # self.logger.info(f"Visual extraction completed: {visual_stats['success_rate']:.1f}% success rate")
+                self.logger.info(f"Visual extraction completed: {visual_stats['success_rate']:.1f}% success rate")
 
             # Step 3: Extract audio features
             if 'audio' in steps:

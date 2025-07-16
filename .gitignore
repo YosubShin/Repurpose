@@ -3,3 +3,4 @@ raw_videos/
 data/audio_pann_features/
 data/caption_features/
 data/transcripts/
+data/video_clip_features/
