@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 import time
 import yaml
 
-from video_downloader import VideoDownloader
+from video_downloader_ytdlp import VideoDownloaderYTDLP
 from visual_feature_extractor_clip import VisualFeatureExtractorCLIP
 from audio_feature_extractor import AudioFeatureExtractor
 from text_feature_extractor import TextFeatureExtractor
@@ -33,9 +33,14 @@ class PreprocessingPipeline:
         self.logger = logging.getLogger(__name__)
 
         # Initialize components
-        self.video_downloader = VideoDownloader(
+        self.video_downloader = VideoDownloaderYTDLP(
             output_dir=self.config['directories']['raw_videos'],
-            log_level=log_level
+            log_level=log_level,
+            max_workers=self.config.get('download', {}).get('max_workers', 3),
+            use_parallel=self.config.get('download', {}).get('use_parallel', True),
+            rate_limit=self.config.get('download', {}).get('rate_limit', 1.0),
+            max_retries=self.config.get('download', {}).get('max_retries', 3),
+            cookies_file=self.config.get('download', {}).get('cookies_file')
         )
 
         self.visual_extractor = VisualFeatureExtractorCLIP(
@@ -79,6 +84,13 @@ class PreprocessingPipeline:
                 'batch_size': 10,
                 'resume_on_failure': True,
                 'cleanup_raw_videos': False
+            },
+            'download': {
+                'max_workers': 3,
+                'use_parallel': True,
+                'rate_limit': 1.0,
+                'max_retries': 3,
+                'cookies_file': None
             },
             'datasets': {
                 'train': 'data/train.json',
