@@ -45,11 +45,23 @@ module load vis/FFmpeg
 
 # Activate the conda environment
 echo "Activating conda environment..."
+
+echo "Before activation:"
+echo "  which python: $(which python)"
+echo "  CONDA_DEFAULT_ENV: $CONDA_DEFAULT_ENV"
+
 source activate repurpose
+
+echo "After activation:"
+echo "  which python: $(which python)"
+echo "  CONDA_DEFAULT_ENV: $CONDA_DEFAULT_ENV"
+echo "  Environment list:"
+conda env list
 
 # Show which python we're using
 echo "Python location: $(which python)"
 echo "Python version: $(python --version)"
+echo "pip location: $(which pip)"
 
 # Install missing packages if needed
 echo "Installing/verifying required packages..."
