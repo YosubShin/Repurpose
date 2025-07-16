@@ -4,3 +4,6 @@ data/audio_pann_features/
 data/caption_features/
 data/transcripts/
 data/video_clip_features/
+
+.DS_Store
+.ipynb_checkpoints

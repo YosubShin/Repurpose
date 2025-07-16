@@ -102,7 +102,7 @@ class VideoDownloaderYTDLP:
         output_template = os.path.join(
             self.output_dir, f"{youtube_id}.%(ext)s")
         yt_dlp_opts = {
-            "format": "bestvideo+bestaudio",
+            "format": "bestvideo[height<=240]+bestaudio/best[height<=240]",
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
@@ -155,7 +155,7 @@ class VideoDownloaderYTDLP:
         output_template = os.path.join(
             self.output_dir, f"{youtube_id}.%(ext)s")
         yt_dlp_opts = {
-            "format": "bestvideo+bestaudio",
+            "format": "bestvideo[height<=240]+bestaudio/best[height<=240]",
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
