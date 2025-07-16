@@ -2,11 +2,11 @@
 #SBATCH --job-name=repurpose_preprocess
 #SBATCH --output=/home/yosubs/koa_scratch/repurpose/outputs/slurm-%j.out
 #SBATCH --error=/home/yosubs/koa_scratch/repurpose/outputs/slurm-%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=8:00:00
 #SBATCH --partition=kill-shared
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32GB
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16GB
 #SBATCH --nodes=1
 
 # Script to run Repurpose preprocessing on a dataset chunk using GPU
