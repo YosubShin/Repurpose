@@ -78,7 +78,8 @@ class PreprocessingPipeline:
                 'raw_videos': 'raw_videos',
                 'video_features': 'data/video_clip_features',
                 'audio_features': 'data/audio_pann_features',
-                'text_features': 'data/caption_features'
+                'text_features': 'data/caption_features',
+                'transcripts': 'data/transcripts'
             },
             'processing': {
                 'max_videos': None,

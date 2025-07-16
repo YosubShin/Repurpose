@@ -7,14 +7,12 @@ import json
 import os
 import time
 import logging
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
-from datetime import datetime
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
-import subprocess
 
 try:
     import yt_dlp
@@ -74,6 +72,17 @@ class VideoDownloaderYTDLP:
         self.logger.info(
             f"VideoDownloader initialized with {max_workers} workers, parallel={use_parallel}")
 
+        # Log cookies file status
+        if self.cookies_file:
+            if os.path.exists(self.cookies_file):
+                self.logger.info(f"Using cookies file: {self.cookies_file}")
+            else:
+                self.logger.warning(
+                    f"Cookies file not found: {self.cookies_file}")
+        else:
+            self.logger.info(
+                "No cookies file specified - may encounter bot detection")
+
     def load_progress(self) -> Dict[str, bool]:
         """Load download progress from file."""
         if self.progress_file.exists():
@@ -97,6 +106,10 @@ class VideoDownloaderYTDLP:
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
+
+        # Add cookies if available
+        if self.cookies_file and os.path.exists(self.cookies_file):
+            yt_dlp_opts['cookiefile'] = self.cookies_file
 
         try:
             with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
@@ -146,6 +159,10 @@ class VideoDownloaderYTDLP:
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
+
+        # Add cookies if available
+        if self.cookies_file and os.path.exists(self.cookies_file):
+            yt_dlp_opts['cookiefile'] = self.cookies_file
 
         # Add random delay to avoid rate limiting
         if retry_count > 0:
