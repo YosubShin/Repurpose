@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import os
 import json
+import logging
 
 class RepurposeClip(Dataset):
     def __init__(self, label_path, video_path, audio_path, text_path):
@@ -11,18 +12,89 @@ class RepurposeClip(Dataset):
         self.audio_path = audio_path
         self.text_path = text_path
 
-        self.label = json.load(open(label_path))
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
 
-        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
-
+        # Load original labels
+        original_labels = json.load(open(label_path))
+        
         self.video_format = os.path.join(video_path, '{}.npy')
         self.audio_format = os.path.join(audio_path, '{}.npy')
         self.text_format = os.path.join(text_path, '{}.npy')
+
+        # Filter labels to only include samples with all three modalities
+        self.label = self._filter_available_samples(original_labels)
+
+        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
 
         for k in self.label:
             k['labels'] = self.generate_time_status_list(k['timeRangeOffset'], k['segmentsOffset'])
             k['reg_offset'] = self.generate_regression_offsets(k['timeRangeOffset'], k['segmentsOffset'])
 
+    def _filter_available_samples(self, original_labels):
+        """
+        Filter dataset to only include samples where all three modalities (visual, audio, text) exist.
+        
+        Args:
+            original_labels: List of original label dictionaries
+            
+        Returns:
+            List of filtered label dictionaries
+        """
+        filtered_labels = []
+        missing_visual = []
+        missing_audio = []
+        missing_text = []
+        
+        for label_item in original_labels:
+            video_id = label_item['youtube_id']
+            
+            # Check if all three modality files exist
+            visual_path = self.video_format.format(video_id)
+            audio_path = self.audio_format.format(video_id)
+            text_path = self.text_format.format(video_id)
+            
+            visual_exists = os.path.exists(visual_path)
+            audio_exists = os.path.exists(audio_path)
+            text_exists = os.path.exists(text_path)
+            
+            if visual_exists and audio_exists and text_exists:
+                filtered_labels.append(label_item)
+            else:
+                # Track what's missing for detailed logging
+                if not visual_exists:
+                    missing_visual.append(video_id)
+                if not audio_exists:
+                    missing_audio.append(video_id)
+                if not text_exists:
+                    missing_text.append(video_id)
+        
+        # Log statistics
+        total_original = len(original_labels)
+        total_kept = len(filtered_labels)
+        total_dropped = total_original - total_kept
+        
+        self.logger.info(f"Dataset filtering results:")
+        self.logger.info(f"  Original samples: {total_original}")
+        self.logger.info(f"  Kept samples: {total_kept}")
+        self.logger.info(f"  Dropped samples: {total_dropped}")
+        self.logger.info(f"  Keep rate: {total_kept/total_original*100:.2f}%")
+        
+        if total_dropped > 0:
+            self.logger.info(f"Missing modality breakdown:")
+            self.logger.info(f"  Missing visual: {len(missing_visual)} samples")
+            self.logger.info(f"  Missing audio: {len(missing_audio)} samples")
+            self.logger.info(f"  Missing text: {len(missing_text)} samples")
+            
+            # Log some example missing IDs (first 5)
+            if missing_visual:
+                self.logger.debug(f"  Example missing visual: {missing_visual[:5]}")
+            if missing_audio:
+                self.logger.debug(f"  Example missing audio: {missing_audio[:5]}")
+            if missing_text:
+                self.logger.debug(f"  Example missing text: {missing_text[:5]}")
+        
+        return filtered_labels
 
     def generate_time_status_list(self, time_range, segments):
         """
@@ -76,7 +148,14 @@ class RepurposeClip(Dataset):
 
     def load_data(self, path):
         # Seq_len, feature_dim
-        return np.load(path, allow_pickle=True)
+        try:
+            return np.load(path, allow_pickle=True)
+        except FileNotFoundError:
+            self.logger.error(f"Feature file not found: {path}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error loading feature file {path}: {e}")
+            raise
 
     def __len__(self):
         return len(self.label)
@@ -185,17 +264,89 @@ class RepurposeClipTest(Dataset):
         self.audio_path = audio_path
         self.text_path = text_path
 
-        self.label = json.load(open(label_path))
-        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
 
+        # Load original labels
+        original_labels = json.load(open(label_path))
+        
         self.video_format = os.path.join(video_path, '{}.npy')
         self.audio_format = os.path.join(audio_path, '{}.npy')
         self.text_format = os.path.join(text_path, '{}.npy')
+
+        # Filter labels to only include samples with all three modalities
+        self.label = self._filter_available_samples(original_labels)
+
+        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
 
         for k in self.label:
             k['labels'] = self.generate_time_status_list(k['timeRangeOffset'], k['segmentsOffset'])
             k['reg_offset'] = self.generate_regression_offsets(k['timeRangeOffset'], k['segmentsOffset'])
 
+    def _filter_available_samples(self, original_labels):
+        """
+        Filter dataset to only include samples where all three modalities (visual, audio, text) exist.
+        
+        Args:
+            original_labels: List of original label dictionaries
+            
+        Returns:
+            List of filtered label dictionaries
+        """
+        filtered_labels = []
+        missing_visual = []
+        missing_audio = []
+        missing_text = []
+        
+        for label_item in original_labels:
+            video_id = label_item['youtube_id']
+            
+            # Check if all three modality files exist
+            visual_path = self.video_format.format(video_id)
+            audio_path = self.audio_format.format(video_id)
+            text_path = self.text_format.format(video_id)
+            
+            visual_exists = os.path.exists(visual_path)
+            audio_exists = os.path.exists(audio_path)
+            text_exists = os.path.exists(text_path)
+            
+            if visual_exists and audio_exists and text_exists:
+                filtered_labels.append(label_item)
+            else:
+                # Track what's missing for detailed logging
+                if not visual_exists:
+                    missing_visual.append(video_id)
+                if not audio_exists:
+                    missing_audio.append(video_id)
+                if not text_exists:
+                    missing_text.append(video_id)
+        
+        # Log statistics
+        total_original = len(original_labels)
+        total_kept = len(filtered_labels)
+        total_dropped = total_original - total_kept
+        
+        self.logger.info(f"Test dataset filtering results:")
+        self.logger.info(f"  Original samples: {total_original}")
+        self.logger.info(f"  Kept samples: {total_kept}")
+        self.logger.info(f"  Dropped samples: {total_dropped}")
+        self.logger.info(f"  Keep rate: {total_kept/total_original*100:.2f}%")
+        
+        if total_dropped > 0:
+            self.logger.info(f"Missing modality breakdown:")
+            self.logger.info(f"  Missing visual: {len(missing_visual)} samples")
+            self.logger.info(f"  Missing audio: {len(missing_audio)} samples")
+            self.logger.info(f"  Missing text: {len(missing_text)} samples")
+            
+            # Log some example missing IDs (first 5)
+            if missing_visual:
+                self.logger.debug(f"  Example missing visual: {missing_visual[:5]}")
+            if missing_audio:
+                self.logger.debug(f"  Example missing audio: {missing_audio[:5]}")
+            if missing_text:
+                self.logger.debug(f"  Example missing text: {missing_text[:5]}")
+        
+        return filtered_labels
 
     def generate_time_status_list(self, time_range, segments):
         """
@@ -249,7 +400,14 @@ class RepurposeClipTest(Dataset):
 
     def load_data(self, path):
         # Seq_len, feature_dim
-        return np.load(path, allow_pickle=True)
+        try:
+            return np.load(path, allow_pickle=True)
+        except FileNotFoundError:
+            self.logger.error(f"Feature file not found: {path}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error loading feature file {path}: {e}")
+            raise
 
     def __len__(self):
         return len(self.label)
