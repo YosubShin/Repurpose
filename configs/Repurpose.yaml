@@ -41,6 +41,11 @@ train:
     batch_size: 16,
     eval_freq: 1,
   }
+distributed:
+  {
+    strategy: auto,  # Options: auto, single, dp, ddp
+    backend: nccl,   # Communication backend for DDP
+  }
 test_cfg:
   {
     pre_nms_topk: 1000,
