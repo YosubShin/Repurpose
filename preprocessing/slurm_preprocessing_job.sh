@@ -51,6 +51,7 @@ echo "  which python: $(which python)"
 echo "  CONDA_DEFAULT_ENV: $CONDA_DEFAULT_ENV"
 
 source activate repurpose
+export PATH="/home/yosubs/.conda/envs/repurpose/bin:$PATH"
 
 echo "After activation:"
 echo "  which python: $(which python)"

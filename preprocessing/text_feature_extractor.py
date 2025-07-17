@@ -99,6 +99,31 @@ class TextFeatureExtractor:
                 f"FFmpeg audio extraction failed: {result.stderr}")
 
         return audio_path
+    
+    def get_audio_duration(self, audio_path: str) -> float:
+        """
+        Get the duration of an audio file using ffprobe.
+        
+        Args:
+            audio_path: Path to audio file
+            
+        Returns:
+            float: Duration in seconds
+        """
+        cmd = [
+            "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            duration = float(result.stdout.strip())
+            self.logger.debug(f"Audio duration: {duration:.2f}s")
+            return duration
+        except (subprocess.CalledProcessError, ValueError) as e:
+            self.logger.warning(f"Failed to get audio duration: {e}")
+            # Fallback to a default minimum duration
+            return 1.0
 
     def transcribe_with_whisperx(self, audio_path: str) -> List[Dict[str, Any]]:
         """
@@ -209,24 +234,33 @@ class TextFeatureExtractor:
             return segments
         return None
 
-    def extract_text_features(self, video_path: str, youtube_id: str, video_duration: Optional[float] = None) -> bool:
+    def extract_text_features(self, video_path: str, youtube_id: str, _video_duration: Optional[float] = None) -> bool:
         """
         Extract text features from video by transcribing speech and encoding with sentence transformers.
+        Note: _video_duration parameter is ignored - features are extracted for the entire video.
 
         Args:
             video_path: Path to input video file
             youtube_id: YouTube video ID for naming output file
-            video_duration: Duration of video in seconds (if known)
+            _video_duration: IGNORED - kept for compatibility only
 
         Returns:
             bool: True if successful, False otherwise
         """
-        if youtube_id in self.processed_videos:
+        output_path = self.output_dir / f"{youtube_id}.npy"
+        
+        # Check if features already exist and are marked as processed
+        if youtube_id in self.processed_videos and output_path.exists():
             self.logger.info(
                 f"Text features for {youtube_id} already extracted, skipping...")
             return True
-
-        output_path = self.output_dir / f"{youtube_id}.npy"
+        
+        # If marked as processed but features don't exist, remove from processed list
+        if youtube_id in self.processed_videos and not output_path.exists():
+            self.logger.warning(
+                f"Text features for {youtube_id} marked as processed but file missing, regenerating...")
+            del self.processed_videos[youtube_id]
+            self.save_progress()
 
         try:
             from sentence_transformers import SentenceTransformer
@@ -237,14 +271,19 @@ class TextFeatureExtractor:
 
             # Try to load existing transcript first
             segments = self.load_transcript(youtube_id)
+            audio_duration_seconds = None
 
             if segments is None:
                 # No existing transcript, need to transcribe
+                self.logger.info(f"No existing transcript found for {youtube_id}, transcribing...")
                 # Create temporary directory for audio extraction
                 with tempfile.TemporaryDirectory() as temp_dir:
                     # Extract audio from video
                     audio_path = self.extract_audio_from_video(
                         video_path, temp_dir)
+                    
+                    # Get actual audio duration using ffprobe
+                    actual_duration = self.get_audio_duration(audio_path)
 
                     # Transcribe audio
                     try:
@@ -263,14 +302,30 @@ class TextFeatureExtractor:
 
                     # Save transcript for future use
                     self.save_transcript(youtube_id, segments)
+                    
+                    # Store actual duration for use after temp_dir cleanup
+                    audio_duration_seconds = int(actual_duration)
+            else:
+                # Transcript exists, but we still need to get audio duration for full-length features
+                self.logger.info(f"Using existing transcript for {youtube_id}, getting audio duration...")
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    try:
+                        audio_path = self.extract_audio_from_video(video_path, temp_dir)
+                        actual_duration = self.get_audio_duration(audio_path)
+                        audio_duration_seconds = int(actual_duration)
+                        self.logger.debug(f"Got audio duration from existing transcript case: {audio_duration_seconds}s")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get audio duration for existing transcript: {e}")
+                        # Fallback to transcription duration
+                        if segments:
+                            audio_duration_seconds = int(max([s.get('end', 0) for s in segments]) + 1)
+                            self.logger.debug(f"Using transcription duration as fallback: {audio_duration_seconds}s")
+                        else:
+                            audio_duration_seconds = 1
 
-                # Determine video duration
-                if video_duration is not None:
-                    duration_seconds = int(video_duration)
-                else:
-                    # Fallback to maximum timestamp from segments
-                    duration_seconds = int(
-                        max([s.get('end', 0) for s in segments]) + 1)
+                # Use the audio duration we determined above
+                duration_seconds = audio_duration_seconds if audio_duration_seconds is not None else 1
+                self.logger.debug(f"Using duration: {duration_seconds}s")
 
                 # Process segments into 1-second intervals
                 features = []
@@ -319,7 +374,7 @@ class TextFeatureExtractor:
                 self.save_progress()
 
                 self.logger.info(
-                    f"Successfully extracted text features for {youtube_id}, shape: {features.shape}")
+                    f"Successfully extracted text features for {youtube_id}, shape: {features.shape} (duration: {duration_seconds}s)")
                 return True
 
         except Exception as e:
@@ -420,16 +475,9 @@ class TextFeatureExtractor:
             self.logger.info(
                 f"Processing video {i}/{total_videos}: {youtube_id}")
 
-            # Get video duration from dataset
-            video_duration = None
-            if 'timeRangeOffset' in video_info:
-                video_duration = video_info['timeRangeOffset'][1] - \
-                    video_info['timeRangeOffset'][0]
-            elif 'timeRange' in video_info:
-                video_duration = video_info['timeRange'][1] - \
-                    video_info['timeRange'][0]
-
-            if self.extract_text_features(str(video_file), youtube_id, video_duration):
+            # Extract features for the entire video (ignoring dataset timeRange)
+            # The dataset loader will handle slicing based on timeRange at runtime
+            if self.extract_text_features(str(video_file), youtube_id):
                 successful_extractions += 1
             else:
                 failed_extractions += 1

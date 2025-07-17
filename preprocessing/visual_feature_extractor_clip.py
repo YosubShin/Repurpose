@@ -203,11 +203,12 @@ class VisualFeatureExtractorCLIP:
     def extract_features_from_video(self, video_path: str, youtube_id: str, video_duration: Optional[float] = None) -> bool:
         """
         Extract visual features from a video file using CLIP.
+        Note: video_duration parameter is ignored - features are extracted for the entire video.
 
         Args:
             video_path: Path to input video file
             youtube_id: YouTube video ID for naming output file
-            video_duration: Expected video duration in seconds (if known)
+            video_duration: IGNORED - kept for compatibility only
 
         Returns:
             bool: True if successful, False otherwise
@@ -228,7 +229,7 @@ class VisualFeatureExtractorCLIP:
             if PYAV_AVAILABLE:
                 try:
                     frames = self.extract_frames_pyav(
-                        video_path, max_duration=video_duration)
+                        video_path, max_duration=None)
                     self.logger.debug(
                         f"Extracted {len(frames)} frames using PyAV")
                 except Exception as e:
@@ -237,7 +238,7 @@ class VisualFeatureExtractorCLIP:
             if frames is None:
                 try:
                     frames = self.extract_frames_ffmpeg(
-                        video_path, max_duration=video_duration)
+                        video_path, max_duration=None)
                     self.logger.debug(
                         f"Extracted {len(frames)} frames using FFmpeg")
                 except Exception as e:
@@ -250,26 +251,9 @@ class VisualFeatureExtractorCLIP:
 
             # Extract CLIP features
             features = self.extract_clip_features(frames)
-
-            # Ensure we have the correct number of features if video_duration is specified
-            if video_duration is not None:
-                expected_frames = int(video_duration)
-                if len(features) < expected_frames:
-                    # Pad with zeros if we have fewer frames than expected
-                    padding = expected_frames - len(features)
-                    features = np.vstack([features, np.zeros((padding, 512))])
-                    self.logger.debug(
-                        f"Padded features from {len(features)} to {expected_frames} frames")
-                elif len(features) > expected_frames:
-                    # Truncate if we have more frames than expected
-                    features = features[:expected_frames]
-                    self.logger.debug(
-                        f"Truncated features from {len(features)} to {expected_frames} frames")
-
-                # Final check
-                if len(features) != expected_frames:
-                    self.logger.warning(
-                        f"Feature count mismatch: got {len(features)}, expected {expected_frames}")
+            
+            # Note: No longer truncating or padding based on dataset duration
+            # The dataset loader will handle slicing based on timeRange
 
             # Save features
             np.save(output_path, features)
@@ -371,16 +355,9 @@ class VisualFeatureExtractorCLIP:
             self.logger.info(
                 f"Processing video {i}/{total_videos}: {youtube_id}")
 
-            # Get video duration from dataset
-            video_duration = None
-            if 'timeRangeOffset' in video_info:
-                video_duration = video_info['timeRangeOffset'][1] - \
-                    video_info['timeRangeOffset'][0]
-            elif 'timeRange' in video_info:
-                video_duration = video_info['timeRange'][1] - \
-                    video_info['timeRange'][0]
-
-            if self.extract_features_from_video(str(video_file), youtube_id, video_duration):
+            # Extract features for the entire video (ignoring dataset timeRange)
+            # The dataset loader will handle slicing based on timeRange at runtime
+            if self.extract_features_from_video(str(video_file), youtube_id):
                 successful_extractions += 1
             else:
                 failed_extractions += 1
