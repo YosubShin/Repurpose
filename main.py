@@ -13,6 +13,7 @@ import time
 import yaml
 import os
 import wandb
+import logging
 
 
 def load_config(config_file):
@@ -264,5 +265,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_path', type=str, default=None)
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument("--log-level", default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
+
+    # Set up logging
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
     main(args)
