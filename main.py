@@ -37,11 +37,11 @@ def main(args):
     # Initialize multi-GPU strategy
     gpu_strategy = cfg.get('distributed', {}).get('strategy', 'auto')
     multi_gpu = MultiGPUStrategy(strategy=gpu_strategy)
-    
+
     # Setup distributed training if needed
     if not multi_gpu.setup():
         raise RuntimeError("Failed to setup multi-GPU training")
-    
+
     # Print setup info (only from main process)
     if is_main_process():
         multi_gpu.print_setup_info()
@@ -72,18 +72,18 @@ def main(args):
 
     # Create data loaders with multi-GPU support
     train_data_loader = multi_gpu.create_dataloader(
-        train_dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        collate_fn=collate_fn, 
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
         num_workers=min(24, 4)  # Reduce workers for multi-GPU
     )
 
     test_data_loader = multi_gpu.create_dataloader(
-        test_dataset, 
-        batch_size=1, 
-        shuffle=False, 
-        collate_fn=collate_fn_test, 
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_fn_test,
         num_workers=min(24, 4)
     )
 
@@ -144,7 +144,7 @@ def main(args):
             },
             dir=checkpoint_path  # Save wandb files in checkpoint directory
         )
-        
+
         # Watch the model to log gradients and parameters
         # For DDP, watch the underlying module
         model_to_watch = model.module if hasattr(model, 'module') else model
@@ -157,7 +157,7 @@ def main(args):
         # Set epoch for distributed sampler to ensure proper shuffling
         if hasattr(train_data_loader.sampler, 'set_epoch'):
             train_data_loader.sampler.set_epoch(epoch)
-        
+
         model.train()
         total_loss = 0
         total_cls_loss = 0
@@ -166,12 +166,18 @@ def main(args):
 
         for i, batch in enumerate(train_data_loader):
             # Move tensors to appropriate device
-            batch['visual_feats'] = batch['visual_feats'].to(multi_gpu.device, non_blocking=True)
-            batch['audio_feats'] = batch['audio_feats'].to(multi_gpu.device, non_blocking=True)
-            batch['text_feats'] = batch['text_feats'].to(multi_gpu.device, non_blocking=True)
-            batch['masks'] = batch['masks'].to(multi_gpu.device, non_blocking=True)
-            batch['labels'] = batch['labels'].to(multi_gpu.device, non_blocking=True)
-            batch['segments'] = batch['segments'].to(multi_gpu.device, non_blocking=True)
+            batch['visual_feats'] = batch['visual_feats'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['audio_feats'] = batch['audio_feats'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['text_feats'] = batch['text_feats'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['masks'] = batch['masks'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['labels'] = batch['labels'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['segments'] = batch['segments'].to(
+                multi_gpu.device, non_blocking=True)
 
             output = model(batch)
             losses = model.losses(*output)
@@ -184,10 +190,12 @@ def main(args):
             optimizer.step()
 
             # Reduce losses across GPUs for accurate logging
-            cls_loss_tensor = multi_gpu.reduce_tensor(losses["cls_loss"] / batch_size)
-            reg_loss_tensor = multi_gpu.reduce_tensor(losses["reg_loss"] / batch_size)
+            cls_loss_tensor = multi_gpu.reduce_tensor(
+                losses["cls_loss"] / batch_size)
+            reg_loss_tensor = multi_gpu.reduce_tensor(
+                losses["reg_loss"] / batch_size)
             final_loss_tensor = multi_gpu.reduce_tensor(final_loss)
-            
+
             cls_loss = cls_loss_tensor.item()
             reg_loss = reg_loss_tensor.item()
             batch_loss = final_loss_tensor.item()
@@ -195,7 +203,7 @@ def main(args):
             total_reg_loss += reg_loss
             total_loss += batch_loss
 
-                    # Log batch-level metrics (only on main process)
+            # Log batch-level metrics (only on main process)
             if is_main_process():
                 global_step_iter = epoch * len(train_data_loader) + i
                 wandb.log({
@@ -209,14 +217,15 @@ def main(args):
                 warmup_scheduler.step()
             else:
                 cosine_scheduler.step()
-            
+
             # Print progress (only on main process)
             if is_main_process():
                 print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f},  cls Loss: {cls_loss:.3f}, reg Loss: {reg_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
         # save checkpoint to disk (only on main process)
         if epoch % cfg['train']['save_epochs'] == 0 and is_main_process():
             # Handle DDP model state dict
-            model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+            model_state = model.module.state_dict() if hasattr(
+                model, 'module') else model.state_dict()
             checkpoint = {
                 'model': model_state,
                 'optimizer': optimizer.state_dict(),
@@ -238,16 +247,20 @@ def main(args):
         avg_cls_loss = total_cls_loss / num_batches
         avg_reg_loss = total_reg_loss / num_batches
         avg_total_loss = total_loss / num_batches
-        
+
         # Reduce across processes for distributed training
         if multi_gpu.strategy == 'ddp' and multi_gpu.world_size > 1:
-            avg_cls_loss_tensor = torch.tensor(avg_cls_loss, device=multi_gpu.device)
-            avg_reg_loss_tensor = torch.tensor(avg_reg_loss, device=multi_gpu.device)
-            avg_total_loss_tensor = torch.tensor(avg_total_loss, device=multi_gpu.device)
-            
+            avg_cls_loss_tensor = torch.tensor(
+                avg_cls_loss, device=multi_gpu.device)
+            avg_reg_loss_tensor = torch.tensor(
+                avg_reg_loss, device=multi_gpu.device)
+            avg_total_loss_tensor = torch.tensor(
+                avg_total_loss, device=multi_gpu.device)
+
             avg_cls_loss = multi_gpu.reduce_tensor(avg_cls_loss_tensor).item()
             avg_reg_loss = multi_gpu.reduce_tensor(avg_reg_loss_tensor).item()
-            avg_total_loss = multi_gpu.reduce_tensor(avg_total_loss_tensor).item()
+            avg_total_loss = multi_gpu.reduce_tensor(
+                avg_total_loss_tensor).item()
 
         # Log epoch-level metrics (only on main process)
         if is_main_process():
@@ -275,46 +288,52 @@ def main(args):
                 count = 0
                 total_tIoU = []
                 # Use tqdm only on main process for cleaner output
-                data_iter = tqdm(test_data_loader) if is_main_process() else test_data_loader
-                
+                data_iter = tqdm(
+                    test_data_loader) if is_main_process() else test_data_loader
+
                 for batch in data_iter:
                     count += 1
                     # Move tensors to appropriate device
-                    batch['visual_feats'] = batch['visual_feats'].to(multi_gpu.device, non_blocking=True)
-                    batch['audio_feats'] = batch['audio_feats'].to(multi_gpu.device, non_blocking=True)
-                    batch['text_feats'] = batch['text_feats'].to(multi_gpu.device, non_blocking=True)
-                    batch['masks'] = batch['masks'].to(multi_gpu.device, non_blocking=True)
-                    
+                    batch['visual_feats'] = batch['visual_feats'].to(
+                        multi_gpu.device, non_blocking=True)
+                    batch['audio_feats'] = batch['audio_feats'].to(
+                        multi_gpu.device, non_blocking=True)
+                    batch['text_feats'] = batch['text_feats'].to(
+                        multi_gpu.device, non_blocking=True)
+                    batch['masks'] = batch['masks'].to(
+                        multi_gpu.device, non_blocking=True)
+
                     # Get model predictions (handle DDP wrapper)
                     if hasattr(model, 'module'):
                         preds = model.module.inference_(batch, cfg['test_cfg'])
                     else:
                         preds = model.inference_(batch, cfg['test_cfg'])
-                    
+
                     for i in range(len(preds)):
                         thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
                         precision_per_threshold = calculate_tiou(
                             batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
                         total_tIoU.append(precision_per_threshold)
-                
+
                 # Calculate metrics
                 tIoU = {}
                 for threshold in thresholds:
                     tIoU[threshold] = sum([item[threshold]
                                           for item in total_tIoU]) / len(total_tIoU)
                 AtIoU = sum(item for item in tIoU.values()) / len(tIoU)
-                
+
                 # Synchronize evaluation results across processes
                 multi_gpu.barrier()
 
                 if AtIoU > best_tIoU:
                     best_tIoU = AtIoU
                     best_epoch = epoch
-                    
+
                     # Save best checkpoint (only on main process)
                     if is_main_process():
                         # Handle DDP model state dict
-                        model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+                        model_state = model.module.state_dict() if hasattr(
+                            model, 'module') else model.state_dict()
                         checkpoint = {
                             'model': model_state,
                             'optimizer': optimizer.state_dict(),
@@ -347,7 +366,7 @@ def main(args):
     # Cleanup and finish (only on main process)
     if is_main_process():
         wandb.finish()
-    
+
     # Clean up distributed training
     multi_gpu.cleanup()
 
