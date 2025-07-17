@@ -16,7 +16,7 @@ class TextFeatureExtractor:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create transcript directory
-        self.transcript_dir = Path("data/transcripts")
+        self.transcript_dir = self.output_dir.parent / "transcripts"
         self.transcript_dir.mkdir(parents=True, exist_ok=True)
 
         # Setup logging
@@ -99,14 +99,14 @@ class TextFeatureExtractor:
                 f"FFmpeg audio extraction failed: {result.stderr}")
 
         return audio_path
-    
+
     def get_audio_duration(self, audio_path: str) -> float:
         """
         Get the duration of an audio file using ffprobe.
-        
+
         Args:
             audio_path: Path to audio file
-            
+
         Returns:
             float: Duration in seconds
         """
@@ -114,9 +114,10 @@ class TextFeatureExtractor:
             "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", audio_path
         ]
-        
+
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, check=True)
             duration = float(result.stdout.strip())
             self.logger.debug(f"Audio duration: {duration:.2f}s")
             return duration
@@ -248,13 +249,13 @@ class TextFeatureExtractor:
             bool: True if successful, False otherwise
         """
         output_path = self.output_dir / f"{youtube_id}.npy"
-        
+
         # Check if features already exist and are marked as processed
         if youtube_id in self.processed_videos and output_path.exists():
             self.logger.info(
                 f"Text features for {youtube_id} already extracted, skipping...")
             return True
-        
+
         # If marked as processed but features don't exist, remove from processed list
         if youtube_id in self.processed_videos and not output_path.exists():
             self.logger.warning(
@@ -275,13 +276,14 @@ class TextFeatureExtractor:
 
             if segments is None:
                 # No existing transcript, need to transcribe
-                self.logger.info(f"No existing transcript found for {youtube_id}, transcribing...")
+                self.logger.info(
+                    f"No existing transcript found for {youtube_id}, transcribing...")
                 # Create temporary directory for audio extraction
                 with tempfile.TemporaryDirectory() as temp_dir:
                     # Extract audio from video
                     audio_path = self.extract_audio_from_video(
                         video_path, temp_dir)
-                    
+
                     # Get actual audio duration using ffprobe
                     actual_duration = self.get_audio_duration(audio_path)
 
@@ -302,24 +304,30 @@ class TextFeatureExtractor:
 
                     # Save transcript for future use
                     self.save_transcript(youtube_id, segments)
-                    
+
                     # Store actual duration for use after temp_dir cleanup
                     audio_duration_seconds = int(actual_duration)
             else:
                 # Transcript exists, but we still need to get audio duration for full-length features
-                self.logger.info(f"Using existing transcript for {youtube_id}, getting audio duration...")
+                self.logger.info(
+                    f"Using existing transcript for {youtube_id}, getting audio duration...")
                 with tempfile.TemporaryDirectory() as temp_dir:
                     try:
-                        audio_path = self.extract_audio_from_video(video_path, temp_dir)
+                        audio_path = self.extract_audio_from_video(
+                            video_path, temp_dir)
                         actual_duration = self.get_audio_duration(audio_path)
                         audio_duration_seconds = int(actual_duration)
-                        self.logger.debug(f"Got audio duration from existing transcript case: {audio_duration_seconds}s")
+                        self.logger.debug(
+                            f"Got audio duration from existing transcript case: {audio_duration_seconds}s")
                     except Exception as e:
-                        self.logger.warning(f"Failed to get audio duration for existing transcript: {e}")
+                        self.logger.warning(
+                            f"Failed to get audio duration for existing transcript: {e}")
                         # Fallback to transcription duration
                         if segments:
-                            audio_duration_seconds = int(max([s.get('end', 0) for s in segments]) + 1)
-                            self.logger.debug(f"Using transcription duration as fallback: {audio_duration_seconds}s")
+                            audio_duration_seconds = int(
+                                max([s.get('end', 0) for s in segments]) + 1)
+                            self.logger.debug(
+                                f"Using transcription duration as fallback: {audio_duration_seconds}s")
                         else:
                             audio_duration_seconds = 1
 
