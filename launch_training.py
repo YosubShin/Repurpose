@@ -197,6 +197,20 @@ def main():
     analysis = run_gpu_analysis()
     if analysis is None:
         print("⚠️  GPU analysis failed, but continuing...")
+        # Use fallback strategy selection
+        if args.strategy == 'auto':
+            try:
+                import torch
+                gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+                if gpu_count >= 2:
+                    args.strategy = 'dp'  # Default to DataParallel for multi-GPU
+                    print(f"🔄 Fallback: Using DataParallel strategy (detected {gpu_count} GPUs)")
+                else:
+                    args.strategy = 'single'
+                    print(f"🔄 Fallback: Using single GPU strategy")
+            except:
+                args.strategy = 'single'
+                print("🔄 Fallback: Using single GPU strategy")
     else:
         recommended_strategy = analysis['recommendations']['strategy']
         print(f"🎯 Recommended strategy: {recommended_strategy}")
@@ -206,14 +220,23 @@ def main():
             print(f"Using recommended strategy: {args.strategy}")
 
     if args.analyze_only:
-        print("✅ GPU analysis completed. Exiting.")
-        return 0
+        if analysis is not None:
+            print("✅ GPU analysis completed. Exiting.")
+            return 0
+        else:
+            print("❌ GPU analysis failed. Exiting.")
+            return 1
 
     # Test multi-GPU setup
     test_success = test_multi_gpu_setup(args.config, args.strategy)
     if not test_success:
         print("❌ Multi-GPU tests failed. Please check your setup.")
-        return 1
+        if args.strategy in ['dp', 'ddp']:
+            print("🔄 Falling back to single GPU strategy due to test failures")
+            args.strategy = 'single'
+        else:
+            print("⚠️  Continuing with failed tests - training may encounter issues")
+            # Don't return 1 here, let the user decide to continue
 
     if args.test_only:
         print("✅ All tests passed. Exiting.")

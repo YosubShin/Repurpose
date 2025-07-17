@@ -127,23 +127,48 @@ def test_dataloader_creation(multi_gpu, dataset=None):
     """Test DataLoader creation with multi-GPU support."""
     try:
         if dataset is None:
-            # Create a dummy dataset for testing
+            # Create a dummy dataset for testing that mimics RepurposeClip structure
             class DummyDataset(torch.utils.data.Dataset):
                 def __len__(self):
                     return 10
 
                 def __getitem__(self, idx):
-                    return {'data': torch.randn(4), 'target': idx}
+                    # Return data in the format expected by RepurposeClip
+                    return {
+                        'video_id': f'test_{idx}',
+                        'feats': {
+                            'visual': torch.randn(50, 512),  # Fixed size for testing
+                            'audio': torch.randn(50, 2048),
+                            'text': torch.randn(50, 384)
+                        },
+                        'segments': torch.randn(50, 2),
+                        'labels': torch.randint(0, 2, (50,)),
+                        'duration': 50,
+                    }
 
             dataset = DummyDataset()
-
-        # Test DataLoader creation
-        dataloader = multi_gpu.create_dataloader(
-            dataset,
-            batch_size=2,
-            shuffle=True,
-            num_workers=0  # Use 0 workers for testing
-        )
+            
+            # Import the collate function
+            from dataset.RepurposeClip import collate_fn
+            
+            # Test DataLoader creation with proper collate function
+            dataloader = multi_gpu.create_dataloader(
+                dataset,
+                batch_size=2,
+                shuffle=True,
+                num_workers=0,  # Use 0 workers for testing
+                collate_fn=collate_fn
+            )
+        else:
+            # Use the real dataset with proper collate function
+            from dataset.RepurposeClip import collate_fn
+            dataloader = multi_gpu.create_dataloader(
+                dataset,
+                batch_size=2,
+                shuffle=True,
+                num_workers=0,  # Use 0 workers for testing
+                collate_fn=collate_fn
+            )
 
         # Test iteration
         for i, batch in enumerate(dataloader):
@@ -155,6 +180,7 @@ def test_dataloader_creation(multi_gpu, dataset=None):
 
     except Exception as e:
         logging.error(f"DataLoader test failed: {e}")
+        logging.error(f"Full stack trace:", exc_info=True)
         return False
 
 
