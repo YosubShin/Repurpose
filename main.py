@@ -1,9 +1,8 @@
 from dataset.RepurposeClip import RepurposeClip, RepurposeClipTest
 from dataset.RepurposeClip import collate_fn, collate_fn_test
 from models.MMCTransformer import MMCTransformer
-from .utils.metrics import *
+from utils.metrics import *
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
-from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch
@@ -13,17 +12,21 @@ import random
 import time
 import yaml
 import os
+import wandb
+
 
 def load_config(config_file):
     with open(config_file, "r") as fd:
         config = yaml.load(fd, Loader=yaml.FullLoader)
     return config
 
+
 def seed_everything(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
 
 def main(args):
     # load config
@@ -50,11 +53,14 @@ def main(args):
     num_epochs = cfg['train']['epochs']
     warmup_epochs = cfg['train']['warmup_epochs']
 
-    train_data_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=24)
+    train_data_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=24)
 
-    test_data_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn_test, num_workers=24)
+    test_data_loader = DataLoader(
+        test_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn_test, num_workers=24)
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.Adam(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     num_iters = len(train_data_loader)
 
@@ -82,7 +88,28 @@ def main(args):
         start_epoch = checkpoint['epoch']
         global_step = start_epoch * num_iters
 
-    writer = SummaryWriter()
+    # Initialize wandb
+    run_name = f"mmc_{time.strftime('%Y%m%d_%H%M%S')}"
+    wandb.init(
+        project="repurpose-video",
+        name=run_name,
+        config={
+            "architecture": "MMCTransformer",
+            "dataset": "Repurpose",
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "epochs": num_epochs,
+            "warmup_epochs": warmup_epochs,
+            "weight_decay": weight_decay,
+            "checkpoint_path": checkpoint_path,
+            **cfg  # Include all config parameters
+        },
+        dir=checkpoint_path  # Save wandb files in checkpoint directory
+    )
+
+    # Watch the model to log gradients and parameters
+    wandb.watch(model, log="all", log_freq=100)
+
     best_tIoU = 0
     best_epoch = 0
 
@@ -100,12 +127,13 @@ def main(args):
             batch['masks'] = batch['masks'].to(device='cuda')
             batch['labels'] = batch['labels'].to(device='cuda')
             batch['segments'] = batch['segments'].to(device='cuda')
-            
+
             output = model(batch)
             losses = model.losses(*output)
 
             lambda_ = 0.2
-            final_loss = (lambda_ * losses['cls_loss'] + (1-lambda_) * losses['reg_loss']) / batch_size
+            final_loss = (
+                lambda_ * losses['cls_loss'] + (1-lambda_) * losses['reg_loss']) / batch_size
             optimizer.zero_grad()
             final_loss.backward()
             optimizer.step()
@@ -117,9 +145,14 @@ def main(args):
             total_reg_loss += reg_loss
             total_loss += batch_loss
 
-            writer.add_scalar('Loss/cls_loss', cls_loss, epoch * len(train_data_loader) + i)
-            writer.add_scalar('Loss/reg_loss', reg_loss, epoch * len(train_data_loader) + i)
-            writer.add_scalar('Loss/total_loss', batch_loss, epoch * len(train_data_loader) + i)
+            # Log batch-level metrics
+            global_step_iter = epoch * len(train_data_loader) + i
+            wandb.log({
+                'batch/cls_loss': cls_loss,
+                'batch/reg_loss': reg_loss,
+                'batch/total_loss': batch_loss,
+                'batch/learning_rate': optimizer.param_groups[0]['lr']
+            }, step=global_step_iter)
 
             if global_step < warmup_steps:
                 warmup_scheduler.step()
@@ -136,16 +169,26 @@ def main(args):
                 'epoch': epoch,
                 'loss': total_loss / len(train_data_loader)
             }
-            torch.save(checkpoint, os.path.join(checkpoint_path, f'epoch_{epoch}.pth'))
+            checkpoint_file = os.path.join(
+                checkpoint_path, f'epoch_{epoch}.pth')
+            torch.save(checkpoint, checkpoint_file)
+
+            # Log checkpoint to wandb
+            wandb.save(checkpoint_file)
         end_time = time.time()
 
         avg_cls_loss = total_cls_loss / len(train_data_loader)
         avg_reg_loss = total_reg_loss / len(train_data_loader)
         avg_total_loss = total_loss / len(train_data_loader)
 
-        writer.add_scalar('Loss/avg_cls_loss', avg_cls_loss, epoch)
-        writer.add_scalar('Loss/avg_reg_loss', avg_reg_loss, epoch)
-        writer.add_scalar('Loss/avg_total_loss', avg_total_loss, epoch)
+        # Log epoch-level metrics
+        wandb.log({
+            'epoch/avg_cls_loss': avg_cls_loss,
+            'epoch/avg_reg_loss': avg_reg_loss,
+            'epoch/avg_total_loss': avg_total_loss,
+            'epoch/epoch': epoch + 1,
+            'epoch/time': end_time - start_time
+        }, step=epoch)
 
         epoch_message = f"Epoch {epoch+1}/{num_epochs}, Avg Loss: {avg_total_loss:.3f}, Avg cls Loss: {avg_cls_loss:.3f}, Avg reg Loss: {avg_reg_loss:.3f}, Time: {end_time - start_time:.3f}s"
 
@@ -163,18 +206,22 @@ def main(args):
                 total_tIoU = []
                 for batch in tqdm(test_data_loader):
                     count += 1
-                    batch['visual_feats'] = batch['visual_feats'].to(device='cuda')
-                    batch['audio_feats'] = batch['audio_feats'].to(device='cuda')
+                    batch['visual_feats'] = batch['visual_feats'].to(
+                        device='cuda')
+                    batch['audio_feats'] = batch['audio_feats'].to(
+                        device='cuda')
                     batch['text_feats'] = batch['text_feats'].to(device='cuda')
                     batch['masks'] = batch['masks'].to(device='cuda')
                     preds = model.inference_(batch, cfg['test_cfg'])
                     for i in range(len(preds)):
                         thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
-                        precision_per_threshold = calculate_tiou(batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
+                        precision_per_threshold = calculate_tiou(
+                            batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
                         total_tIoU.append(precision_per_threshold)
                 tIoU = {}
                 for threshold in thresholds:
-                    tIoU[threshold] = sum([item[threshold] for item in total_tIoU]) / len(total_tIoU)
+                    tIoU[threshold] = sum([item[threshold]
+                                          for item in total_tIoU]) / len(total_tIoU)
                 AtIoU = sum(item for item in tIoU.values()) / len(tIoU)
 
                 if AtIoU > best_tIoU:
@@ -188,13 +235,29 @@ def main(args):
                         'epoch': epoch,
                         'loss': total_loss / len(train_data_loader)
                     }
-                    torch.save(checkpoint, os.path.join(checkpoint_path, f'best.pth'))
-                writer.add_scalar(f"Eval/AP_threshold={cfg['test_cfg']['pre_nms_thresh']}@tIoU", AtIoU, epoch)
+                    best_checkpoint_file = os.path.join(
+                        checkpoint_path, f'best.pth')
+                    torch.save(checkpoint, best_checkpoint_file)
+
+                    # Log best model to wandb
+                    wandb.save(best_checkpoint_file)
+                    wandb.run.summary["best_tIoU"] = best_tIoU
+                    wandb.run.summary["best_epoch"] = best_epoch
+                # Log evaluation metrics
+                eval_metrics = {
+                    f"eval/tIoU@{threshold}": tIoU[threshold]
+                    for threshold in thresholds
+                }
+                eval_metrics["eval/AtIoU"] = AtIoU
+                eval_metrics[f"eval/AP_threshold={cfg['test_cfg']['pre_nms_thresh']}@tIoU"] = AtIoU
+                wandb.log(eval_metrics, step=epoch)
                 eval_message = f"Epoch {epoch+1}/{num_epochs}, tIoU: {tIoU}, best tIoU: {best_tIoU:.4f}, best epoch: {best_epoch}"
                 print(eval_message)
                 with open(os.path.join(checkpoint_path, 'log.txt'), 'a') as f:
                     f.write(eval_message + '\n')
-    writer.close()
+    # Finish wandb run
+    wandb.finish()
+
 
 if __name__ == '__main__':
     import argparse
