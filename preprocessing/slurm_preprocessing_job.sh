@@ -79,6 +79,10 @@ pip list
 echo "Checking GPU availability..."
 nvidia-smi
 
+if [ -d "$CONDA_PREFIX/lib/python3.9/site-packages/nvidia/cudnn/lib" ]; then
+    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.9/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
+fi
+
 # Verify dependencies
 echo "Checking Python dependencies..."
 python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
