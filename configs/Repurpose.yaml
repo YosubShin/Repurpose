@@ -1,47 +1,53 @@
-train_dataset: {
-  label_path: data/train.json,
-  video_path: data/video_clip_features,
-  audio_path: data/audio_pann_features,
-  text_path: data/caption_features,
-}
-val_dataset: {
-  label_path: data/val.json,
-  video_path: data/video_clip_features,
-  audio_path: data/audio_pann_features,
-  text_path: data/caption_features,
-}
-test_dataset: {
-  label_path: data/test.json,
-  video_path: data/video_clip_features,
-  audio_path: data/audio_pann_features,
-  text_path: data/caption_features,
-}
-model: {
-  vis_dim: 512, 
-  aud_dim: 2048,
-  text_dim: 384,
-  d_model: 512,
-  self_num_layers: 3,
-  text_num_layers: 3,
-  cross_num_layers: 3,
-  num_heads: 8,
-}
-train: {
-  seed: 1234,
-  lr: 0.0001, 
-  epochs: 50,  
-  weight_decay: 0.0001, 
-  warmup_epochs: 5, 
-  save_epochs: 1,
-  batch_size: 16,
-  eval_freq: 1,
-}
-test_cfg: {
-  pre_nms_topk: 1000,
-  pre_nms_thresh: 0.5,
-  duration_thresh: 10,
-  duration_thresh_max: 90, 
-  max_seg_per_min: 0.3, 
-  nms_sigma : 0.5,
-  min_score: 0.01,  
-}
+train_dataset:
+  {
+    label_path: data/train.json,
+    video_path: /home/yosubs/koa_scratch/repurpose/data/video_clip_features,
+    audio_path: /home/yosubs/koa_scratch/repurpose/data/audio_pann_features,
+    text_path: /home/yosubs/koa_scratch/repurpose/data/caption_features,
+  }
+val_dataset:
+  {
+    label_path: data/val.json,
+    video_path: /home/yosubs/koa_scratch/repurpose/data/video_clip_features,
+    audio_path: /home/yosubs/koa_scratch/repurpose/data/audio_pann_features,
+    text_path: /home/yosubs/koa_scratch/repurpose/data/caption_features,
+  }
+test_dataset:
+  {
+    label_path: data/test.json,
+    video_path: /home/yosubs/koa_scratch/repurpose/data/video_clip_features,
+    audio_path: /home/yosubs/koa_scratch/repurpose/data/audio_pann_features,
+    text_path: /home/yosubs/koa_scratch/repurpose/data/caption_features,
+  }
+model:
+  {
+    vis_dim: 512,
+    aud_dim: 2048,
+    text_dim: 384,
+    d_model: 512,
+    self_num_layers: 3,
+    text_num_layers: 3,
+    cross_num_layers: 3,
+    num_heads: 8,
+  }
+train:
+  {
+    seed: 1234,
+    lr: 0.0001,
+    epochs: 50,
+    weight_decay: 0.0001,
+    warmup_epochs: 5,
+    save_epochs: 1,
+    batch_size: 16,
+    eval_freq: 1,
+  }
+test_cfg:
+  {
+    pre_nms_topk: 1000,
+    pre_nms_thresh: 0.5,
+    duration_thresh: 10,
+    duration_thresh_max: 90,
+    max_seg_per_min: 0.3,
+    nms_sigma: 0.5,
+    min_score: 0.01,
+  }
