@@ -221,6 +221,14 @@ def main(args):
             # Print progress (only on main process)
             if is_main_process():
                 print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f},  cls Loss: {cls_loss:.3f}, reg Loss: {reg_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
+        end_time = time.time()
+
+        # Calculate average losses
+        num_batches = len(train_data_loader)
+        avg_cls_loss = total_cls_loss / num_batches
+        avg_reg_loss = total_reg_loss / num_batches
+        avg_total_loss = total_loss / num_batches
+
         # save checkpoint to disk (only on main process)
         if epoch % cfg['train']['save_epochs'] == 0 and is_main_process():
             # Handle DDP model state dict
@@ -240,13 +248,6 @@ def main(args):
 
             # Log checkpoint to wandb
             wandb.save(checkpoint_file)
-        end_time = time.time()
-
-        # Calculate average losses
-        num_batches = len(train_data_loader)
-        avg_cls_loss = total_cls_loss / num_batches
-        avg_reg_loss = total_reg_loss / num_batches
-        avg_total_loss = total_loss / num_batches
 
         # Reduce across processes for distributed training
         if multi_gpu.strategy == 'ddp' and multi_gpu.world_size > 1:
