@@ -81,7 +81,7 @@ def main(args):
 
     test_data_loader = multi_gpu.create_dataloader(
         test_dataset,
-        batch_size=1,
+        batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn_test,
         num_workers=min(24, 4)
@@ -288,6 +288,10 @@ def main(args):
                 totol_recall = []
                 count = 0
                 total_tIoU = []
+                # Track validation losses
+                total_val_cls_loss = 0
+                total_val_reg_loss = 0
+                total_val_loss = 0
                 # Use tqdm only on main process for cleaner output
                 data_iter = tqdm(
                     test_data_loader) if is_main_process() else test_data_loader
@@ -303,6 +307,29 @@ def main(args):
                         multi_gpu.device, non_blocking=True)
                     batch['masks'] = batch['masks'].to(
                         multi_gpu.device, non_blocking=True)
+                    
+                    # Also move labels and segments for loss calculation
+                    if 'labels' in batch:
+                        batch['labels'] = batch['labels'].to(
+                            multi_gpu.device, non_blocking=True)
+                    if 'segments' in batch:
+                        batch['segments'] = batch['segments'].to(
+                            multi_gpu.device, non_blocking=True)
+
+                    # Calculate validation losses
+                    output = model(batch)
+                    losses = model.losses(*output)
+                    batch_size = batch['visual_feats'].shape[0]
+                    
+                    # Accumulate losses
+                    val_cls_loss = losses['cls_loss'].item() / batch_size
+                    val_reg_loss = losses['reg_loss'].item() / batch_size
+                    lambda_ = 0.2
+                    val_total_loss = (lambda_ * val_cls_loss + (1-lambda_) * val_reg_loss)
+                    
+                    total_val_cls_loss += val_cls_loss
+                    total_val_reg_loss += val_reg_loss
+                    total_val_loss += val_total_loss
 
                     # Get model predictions (handle DDP wrapper)
                     if hasattr(model, 'module'):
@@ -322,6 +349,11 @@ def main(args):
                     tIoU[threshold] = sum([item[threshold]
                                           for item in total_tIoU]) / len(total_tIoU)
                 AtIoU = sum(item for item in tIoU.values()) / len(tIoU)
+                
+                # Calculate average validation losses
+                avg_val_cls_loss = total_val_cls_loss / count
+                avg_val_reg_loss = total_val_reg_loss / count
+                avg_val_total_loss = total_val_loss / count
 
                 # Synchronize evaluation results across processes
                 multi_gpu.barrier()
@@ -359,7 +391,15 @@ def main(args):
                     }
                     eval_metrics["eval/AtIoU"] = AtIoU
                     eval_metrics[f"eval/AP_threshold={cfg['test_cfg']['pre_nms_thresh']}@tIoU"] = AtIoU
-                    wandb.log(eval_metrics, step=epoch)
+                    
+                    # Add validation losses
+                    eval_metrics["eval/cls_loss"] = avg_val_cls_loss
+                    eval_metrics["eval/reg_loss"] = avg_val_reg_loss
+                    eval_metrics["eval/total_loss"] = avg_val_total_loss
+                    
+                    # Use global step to align with batch metrics
+                    global_step = (epoch + 1) * len(train_data_loader)
+                    wandb.log(eval_metrics, step=global_step)
                     eval_message = f"Epoch {epoch+1}/{num_epochs}, tIoU: {tIoU}, best tIoU: {best_tIoU:.4f}, best epoch: {best_epoch}"
                     print(eval_message)
                     with open(os.path.join(checkpoint_path, 'log.txt'), 'a') as f:
