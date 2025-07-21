@@ -218,6 +218,83 @@ def main(args):
             else:
                 cosine_scheduler.step()
 
+            # Intra-epoch validation
+            intra_epoch_eval_freq = cfg['train'].get(
+                'intra_epoch_eval_freq', 50)
+            if (i + 1) % intra_epoch_eval_freq == 0:
+                model.eval()
+                with torch.no_grad():
+                    # Sample a few batches from validation set for quick eval
+                    val_cls_losses = []
+                    val_reg_losses = []
+                    val_total_losses = []
+
+                    # Use iterator to get a few validation batches
+                    val_iter = iter(test_data_loader)
+                    # Evaluate on 10 batches max
+                    num_val_batches = min(10, len(test_data_loader))
+
+                    for _ in range(num_val_batches):
+                        try:
+                            val_batch = next(val_iter)
+                        except StopIteration:
+                            break
+
+                        # Move validation batch to device
+                        val_batch['visual_feats'] = val_batch['visual_feats'].to(
+                            multi_gpu.device, non_blocking=True)
+                        val_batch['audio_feats'] = val_batch['audio_feats'].to(
+                            multi_gpu.device, non_blocking=True)
+                        val_batch['text_feats'] = val_batch['text_feats'].to(
+                            multi_gpu.device, non_blocking=True)
+                        val_batch['masks'] = val_batch['masks'].to(
+                            multi_gpu.device, non_blocking=True)
+                        if 'labels' in val_batch:
+                            val_batch['labels'] = val_batch['labels'].to(
+                                multi_gpu.device, non_blocking=True)
+                        if 'segments' in val_batch:
+                            val_batch['segments'] = val_batch['segments'].to(
+                                multi_gpu.device, non_blocking=True)
+
+                        # Calculate validation losses
+                        val_output = model(val_batch)
+                        val_losses = model.losses(*val_output)
+                        val_batch_size = val_batch['visual_feats'].shape[0]
+
+                        val_cls_loss = val_losses['cls_loss'].item(
+                        ) / val_batch_size
+                        val_reg_loss = val_losses['reg_loss'].item(
+                        ) / val_batch_size
+                        val_final_loss = (
+                            lambda_ * val_cls_loss + (1-lambda_) * val_reg_loss)
+
+                        val_cls_losses.append(val_cls_loss)
+                        val_reg_losses.append(val_reg_loss)
+                        val_total_losses.append(val_final_loss)
+
+                    # Calculate average validation losses
+                    if val_cls_losses:
+                        avg_val_cls = sum(val_cls_losses) / len(val_cls_losses)
+                        avg_val_reg = sum(val_reg_losses) / len(val_reg_losses)
+                        avg_val_total = sum(
+                            val_total_losses) / len(val_total_losses)
+
+                        # Log intra-epoch validation metrics
+                        if is_main_process():
+                            wandb.log({
+                                'intra_eval/cls_loss': avg_val_cls,
+                                'intra_eval/reg_loss': avg_val_reg,
+                                'intra_eval/total_loss': avg_val_total,
+                                'intra_eval/iteration': i + 1,
+                                'intra_eval/epoch': epoch
+                            }, step=global_step_iter)
+
+                            print(
+                                f"\nIteration {i+1}: Train Loss: {batch_loss:.4f}, Val Loss: {avg_val_total:.4f}")
+
+                # Switch back to training mode
+                model.train()
+
             # Print progress (only on main process)
             if is_main_process():
                 print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f},  cls Loss: {cls_loss:.3f}, reg Loss: {reg_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
@@ -307,7 +384,7 @@ def main(args):
                         multi_gpu.device, non_blocking=True)
                     batch['masks'] = batch['masks'].to(
                         multi_gpu.device, non_blocking=True)
-                    
+
                     # Also move labels and segments for loss calculation
                     if 'labels' in batch:
                         batch['labels'] = batch['labels'].to(
@@ -320,13 +397,14 @@ def main(args):
                     output = model(batch)
                     losses = model.losses(*output)
                     batch_size = batch['visual_feats'].shape[0]
-                    
+
                     # Accumulate losses
                     val_cls_loss = losses['cls_loss'].item() / batch_size
                     val_reg_loss = losses['reg_loss'].item() / batch_size
                     lambda_ = 0.2
-                    val_total_loss = (lambda_ * val_cls_loss + (1-lambda_) * val_reg_loss)
-                    
+                    val_total_loss = (lambda_ * val_cls_loss +
+                                      (1-lambda_) * val_reg_loss)
+
                     total_val_cls_loss += val_cls_loss
                     total_val_reg_loss += val_reg_loss
                     total_val_loss += val_total_loss
@@ -349,7 +427,7 @@ def main(args):
                     tIoU[threshold] = sum([item[threshold]
                                           for item in total_tIoU]) / len(total_tIoU)
                 AtIoU = sum(item for item in tIoU.values()) / len(tIoU)
-                
+
                 # Calculate average validation losses
                 avg_val_cls_loss = total_val_cls_loss / count
                 avg_val_reg_loss = total_val_reg_loss / count
@@ -391,12 +469,12 @@ def main(args):
                     }
                     eval_metrics["eval/AtIoU"] = AtIoU
                     eval_metrics[f"eval/AP_threshold={cfg['test_cfg']['pre_nms_thresh']}@tIoU"] = AtIoU
-                    
+
                     # Add validation losses
                     eval_metrics["eval/cls_loss"] = avg_val_cls_loss
                     eval_metrics["eval/reg_loss"] = avg_val_reg_loss
                     eval_metrics["eval/total_loss"] = avg_val_total_loss
-                    
+
                     # Use global step to align with batch metrics
                     global_step = (epoch + 1) * len(train_data_loader)
                     wandb.log(eval_metrics, step=global_step)
