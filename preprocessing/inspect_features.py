@@ -135,7 +135,22 @@ def main():
             'audio_pann_features': set(),
             'caption_features': set()
         },
-        'length_mismatches': []
+        'length_mismatches': [],
+        'missing_by_modality': {
+            'video_clip_features': 0,
+            'audio_pann_features': 0,
+            'caption_features': 0
+        },
+        'missing_combinations': {},
+        'examples_by_missing_type': {
+            'missing_video_only': [],
+            'missing_audio_only': [],
+            'missing_caption_only': [],
+            'missing_video_audio': [],
+            'missing_video_caption': [],
+            'missing_audio_caption': [],
+            'missing_all': []
+        }
     }
 
     for i, video_id in enumerate(video_ids, 1):
@@ -184,6 +199,51 @@ def main():
         else:
             summary['videos_with_no_features'] += 1
 
+        # Track missing by modality
+        for missing_feature in results['missing_files']:
+            summary['missing_by_modality'][missing_feature] += 1
+
+        # Track missing combinations and collect examples
+        if results['missing_files']:
+            missing_key = tuple(sorted(results['missing_files']))
+            summary['missing_combinations'][missing_key] = summary['missing_combinations'].get(
+                missing_key, 0) + 1
+
+            # Collect examples (limit to 5 per type)
+            example_entry = {'video_id': video_id,
+                             'missing': results['missing_files']}
+
+            if missing_count == 1:
+                if 'video_clip_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_video_only']) < 5:
+                        summary['examples_by_missing_type']['missing_video_only'].append(
+                            example_entry)
+                elif 'audio_pann_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_audio_only']) < 5:
+                        summary['examples_by_missing_type']['missing_audio_only'].append(
+                            example_entry)
+                elif 'caption_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_caption_only']) < 5:
+                        summary['examples_by_missing_type']['missing_caption_only'].append(
+                            example_entry)
+            elif missing_count == 2:
+                if 'video_clip_features' in results['missing_files'] and 'audio_pann_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_video_audio']) < 5:
+                        summary['examples_by_missing_type']['missing_video_audio'].append(
+                            example_entry)
+                elif 'video_clip_features' in results['missing_files'] and 'caption_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_video_caption']) < 5:
+                        summary['examples_by_missing_type']['missing_video_caption'].append(
+                            example_entry)
+                elif 'audio_pann_features' in results['missing_files'] and 'caption_features' in results['missing_files']:
+                    if len(summary['examples_by_missing_type']['missing_audio_caption']) < 5:
+                        summary['examples_by_missing_type']['missing_audio_caption'].append(
+                            example_entry)
+            elif missing_count == 3:
+                if len(summary['examples_by_missing_type']['missing_all']) < 5:
+                    summary['examples_by_missing_type']['missing_all'].append(
+                        example_entry)
+
         # Print summary
     print("\n" + "=" * 80)
     print("SUMMARY")
@@ -194,6 +254,17 @@ def main():
     print(f"Videos with no features: {summary['videos_with_no_features']}")
     print(
         f"Videos with length mismatches: {summary['videos_with_length_mismatches']}")
+
+    print("\nMissing features by modality:")
+    for feature_name, count in summary['missing_by_modality'].items():
+        percentage = (count / summary['total_videos']) * 100
+        print(f"  {feature_name}: {count} ({percentage:.1f}%)")
+
+    print("\nMissing feature combinations:")
+    for missing_combo, count in sorted(summary['missing_combinations'].items(), key=lambda x: x[1], reverse=True):
+        percentage = (count / summary['total_videos']) * 100
+        combo_str = ', '.join(missing_combo)
+        print(f"  Missing [{combo_str}]: {count} videos ({percentage:.1f}%)")
 
     print("\nFeature shapes found:")
     for feature_name, shapes in summary['feature_shapes'].items():
@@ -221,6 +292,29 @@ def main():
             print(f"  Length difference: {info['length_diff']}")
             print(f"  Features: {info['features']}")
             print()
+
+    # Print examples of videos with missing features
+    print("\n" + "=" * 80)
+    print("EXAMPLES OF VIDEOS WITH MISSING FEATURES")
+    print("=" * 80)
+
+    example_categories = [
+        ('missing_video_only', 'Missing Video Features Only'),
+        ('missing_audio_only', 'Missing Audio Features Only'),
+        ('missing_caption_only', 'Missing Caption Features Only'),
+        ('missing_video_audio', 'Missing Video + Audio Features'),
+        ('missing_video_caption', 'Missing Video + Caption Features'),
+        ('missing_audio_caption', 'Missing Audio + Caption Features'),
+        ('missing_all', 'Missing All Features')
+    ]
+
+    for category_key, category_name in example_categories:
+        examples = summary['examples_by_missing_type'][category_key]
+        if examples:
+            print(
+                f"\n{category_name} ({len(examples)} examples shown, may have more):")
+            for example in examples:
+                print(f"  - {example['video_id']}")
 
     # Print videos with all features
     print("\n" + "=" * 80)
@@ -253,6 +347,24 @@ def main():
         f"Videos with length mismatches: {summary['videos_with_length_mismatches']}")
     output_lines.append("")
 
+    # Add missing features by modality
+    output_lines.append("MISSING FEATURES BY MODALITY")
+    output_lines.append("=" * 50)
+    for feature_name, count in summary['missing_by_modality'].items():
+        percentage = (count / summary['total_videos']) * 100
+        output_lines.append(f"{feature_name}: {count} ({percentage:.1f}%)")
+    output_lines.append("")
+
+    # Add missing feature combinations
+    output_lines.append("MISSING FEATURE COMBINATIONS")
+    output_lines.append("=" * 50)
+    for missing_combo, count in sorted(summary['missing_combinations'].items(), key=lambda x: x[1], reverse=True):
+        percentage = (count / summary['total_videos']) * 100
+        combo_str = ', '.join(missing_combo)
+        output_lines.append(
+            f"Missing [{combo_str}]: {count} videos ({percentage:.1f}%)")
+    output_lines.append("")
+
     # Add length mismatches to output
     if summary['length_mismatches']:
         output_lines.append("LENGTH MISMATCHES")
@@ -265,6 +377,19 @@ def main():
             output_lines.append(f"  Length difference: {info['length_diff']}")
             output_lines.append(f"  Features: {info['features']}")
             output_lines.append("")
+
+    # Add examples of videos with missing features
+    output_lines.append("EXAMPLES OF VIDEOS WITH MISSING FEATURES")
+    output_lines.append("=" * 50)
+
+    for category_key, category_name in example_categories:
+        examples = summary['examples_by_missing_type'][category_key]
+        if examples:
+            output_lines.append(
+                f"\n{category_name} ({len(examples)} examples shown, may have more):")
+            for example in examples:
+                output_lines.append(f"  - {example['video_id']}")
+    output_lines.append("")
 
     # Add videos with all features
     output_lines.append("VIDEOS WITH ALL FEATURES")
