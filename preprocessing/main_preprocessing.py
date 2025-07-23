@@ -11,6 +11,7 @@ from video_downloader_ytdlp import VideoDownloaderYTDLP
 from visual_feature_extractor_clip import VisualFeatureExtractorCLIP
 from audio_feature_extractor import AudioFeatureExtractor
 from text_feature_extractor import TextFeatureExtractor
+from progress_tracker import ProgressTracker
 
 
 class PreprocessingPipeline:
@@ -141,7 +142,8 @@ class PreprocessingPipeline:
 
                 download_stats = self.video_downloader.download_from_dataset(
                     dataset_path=dataset_path,
-                    max_videos=self.config['processing']['max_videos']
+                    max_videos=self.config['processing']['max_videos'],
+                    use_progress_tracker=True
                 )
                 results['download'] = download_stats
 

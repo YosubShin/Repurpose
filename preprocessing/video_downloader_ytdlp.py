@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from progress_tracker import ProgressTracker, ErrorCategory
+
 try:
     import yt_dlp
     HAS_YT_DLP = True
@@ -119,9 +121,19 @@ class VideoDownloaderYTDLP:
             self.logger.error(f"Failed to get info for {youtube_id}: {str(e)}")
             return None
 
+    def check_video_exists(self, youtube_id: str) -> Optional[str]:
+        """Check if video file already exists."""
+        possible_extensions = ['.mp4', '.webm', '.mkv']
+        for ext in possible_extensions:
+            file_path = self.output_dir / f"{youtube_id}{ext}"
+            if file_path.exists():
+                return str(file_path)
+        return None
+
     def download_single_video(self, youtube_id: str,
                               time_range: Optional[List[float]] = None,
-                              retry_count: int = 0) -> DownloadResult:
+                              retry_count: int = 0,
+                              progress_tracker: Optional[ProgressTracker] = None) -> DownloadResult:
         """
         Download a single video using yt-dlp library.
 
@@ -129,25 +141,30 @@ class VideoDownloaderYTDLP:
             youtube_id: YouTube video ID
             time_range: Optional [start, end] time range to download specific segment
             retry_count: Current retry attempt
+            progress_tracker: Optional progress tracker for live updates
 
         Returns:
             DownloadResult with success status and details
         """
+        # Check if file already exists
+        existing_file = self.check_video_exists(youtube_id)
+        if existing_file:
+            self.logger.debug(
+                f"Video {youtube_id} already exists at {existing_file}, skipping download...")
+            if progress_tracker:
+                progress_tracker.update_video_status(youtube_id, 'skipped')
+            return DownloadResult(
+                youtube_id=youtube_id,
+                success=True,
+                file_path=existing_file,
+                retry_count=retry_count
+            )
+        
+        # Check if previously marked as downloaded
         if youtube_id in self.downloaded_videos:
-            output_path = self.output_dir / f"{youtube_id}.mp4"
-            if output_path.exists():
-                self.logger.debug(
-                    f"Video {youtube_id} already downloaded, skipping...")
-                return DownloadResult(
-                    youtube_id=youtube_id,
-                    success=True,
-                    file_path=str(output_path),
-                    retry_count=retry_count
-                )
-            else:
-                # File was marked as downloaded but doesn't exist, remove from progress
-                del self.downloaded_videos[youtube_id]
-                self.save_progress()
+            # File was marked as downloaded but doesn't exist, remove from progress
+            del self.downloaded_videos[youtube_id]
+            self.save_progress()
 
         url = f"https://www.youtube.com/watch?v={youtube_id}"
 
@@ -174,6 +191,9 @@ class VideoDownloaderYTDLP:
         try:
             self.logger.info(
                 f"Downloading {youtube_id}... (attempt {retry_count + 1})")
+            
+            if progress_tracker:
+                progress_tracker.update_video_status(youtube_id, 'processing', retry_count=retry_count)
 
             with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
                 # Download the video
@@ -204,6 +224,8 @@ class VideoDownloaderYTDLP:
                     self.save_progress()
 
                     self.logger.info(f"Successfully downloaded {youtube_id}")
+                    if progress_tracker:
+                        progress_tracker.update_video_status(youtube_id, 'completed')
                     return DownloadResult(
                         youtube_id=youtube_id,
                         success=True,
@@ -215,6 +237,8 @@ class VideoDownloaderYTDLP:
                     error_msg = "Output file not found after download"
                     self.logger.error(
                         f"Download failed for {youtube_id}: {error_msg}")
+                    if progress_tracker and retry_count >= self.max_retries:
+                        progress_tracker.update_video_status(youtube_id, 'failed', error_msg)
                     return DownloadResult(
                         youtube_id=youtube_id,
                         success=False,
@@ -233,6 +257,8 @@ class VideoDownloaderYTDLP:
                 self.logger.error(
                     f"Download error for {youtube_id}: {error_msg}")
 
+            if progress_tracker and retry_count >= self.max_retries:
+                progress_tracker.update_video_status(youtube_id, 'failed', error_msg)
             return DownloadResult(
                 youtube_id=youtube_id,
                 success=False,
@@ -244,6 +270,8 @@ class VideoDownloaderYTDLP:
             error_msg = str(e)
             self.logger.error(
                 f"Unexpected error downloading {youtube_id}: {error_msg}")
+            if progress_tracker and retry_count >= self.max_retries:
+                progress_tracker.update_video_status(youtube_id, 'failed', error_msg)
             return DownloadResult(
                 youtube_id=youtube_id,
                 success=False,
@@ -252,13 +280,14 @@ class VideoDownloaderYTDLP:
             )
 
     def download_video_with_retries(self, youtube_id: str,
-                                    time_range: Optional[List[float]] = None) -> DownloadResult:
+                                    time_range: Optional[List[float]] = None,
+                                    progress_tracker: Optional[ProgressTracker] = None) -> DownloadResult:
         """Download a video with retry logic."""
         last_result = None
 
         for attempt in range(self.max_retries + 1):
             result = self.download_single_video(
-                youtube_id, time_range, attempt)
+                youtube_id, time_range, attempt, progress_tracker)
 
             if result.success:
                 return result
@@ -268,14 +297,22 @@ class VideoDownloaderYTDLP:
             # Check if we should retry
             if attempt < self.max_retries:
                 error_msg = result.error_message or ""
-
-                # Don't retry certain types of errors
-                if any(skip_phrase in error_msg.lower() for skip_phrase in [
-                    "private video", "deleted", "unavailable", "copyright"
-                ]):
-                    self.logger.info(
-                        f"Not retrying {youtube_id} due to: {error_msg}")
-                    break
+                
+                # Check if error is non-retryable
+                if progress_tracker:
+                    error_category = progress_tracker.categorize_error(error_msg)
+                    if not progress_tracker.is_retryable_error(error_category):
+                        self.logger.info(
+                            f"Not retrying {youtube_id} - non-retryable error: {error_category.value}")
+                        break
+                else:
+                    # Fallback to old logic if no progress tracker
+                    if any(skip_phrase in error_msg.lower() for skip_phrase in [
+                        "private video", "deleted", "unavailable", "copyright", "terminated"
+                    ]):
+                        self.logger.info(
+                            f"Not retrying {youtube_id} due to: {error_msg}")
+                        break
 
                 # Exponential backoff with jitter
                 delay = random.uniform(2, 8) * (2 ** attempt)
@@ -285,26 +322,31 @@ class VideoDownloaderYTDLP:
         return last_result
 
     def _download_worker(self, video_info: Tuple[str, Optional[List[float]]],
-                         index: int, total: int) -> DownloadResult:
+                         index: int, total: int,
+                         progress_tracker: Optional[ProgressTracker] = None) -> DownloadResult:
         """Worker function for parallel downloads."""
         youtube_id, time_range = video_info
 
-        self.logger.info(f"Processing video {index + 1}/{total}: {youtube_id}")
+        # Don't log individual video processing when using progress tracker
+        if not progress_tracker:
+            self.logger.info(f"Processing video {index + 1}/{total}: {youtube_id}")
 
         # Rate limiting
         if index > 0:
             time.sleep(self.rate_limit + random.uniform(0, 1))
 
-        return self.download_video_with_retries(youtube_id, time_range)
+        return self.download_video_with_retries(youtube_id, time_range, progress_tracker)
 
     def download_from_dataset(self, dataset_path: str,
-                              max_videos: Optional[int] = None) -> Dict[str, Any]:
+                              max_videos: Optional[int] = None,
+                              use_progress_tracker: bool = True) -> Dict[str, Any]:
         """
         Download videos from a dataset JSON file with parallel processing.
 
         Args:
             dataset_path: Path to the dataset JSON file
             max_videos: Maximum number of videos to download (for testing)
+            use_progress_tracker: Whether to use live progress tracking
 
         Returns:
             Dict containing download statistics
@@ -323,18 +365,26 @@ class VideoDownloaderYTDLP:
             video_list.append((youtube_id, time_range))
 
         self.logger.info(f"Starting download of {len(video_list)} videos...")
+        
+        # Initialize progress tracker
+        progress_tracker = None
+        if use_progress_tracker:
+            progress_tracker = ProgressTracker(len(video_list), "Video Download")
+            for youtube_id, _ in video_list:
+                progress_tracker.add_video(youtube_id)
 
         start_time = time.time()
         results = []
 
         if self.use_parallel and len(video_list) > 1:
-            self.logger.info(
-                f"Using parallel processing with {self.max_workers} workers")
+            if not progress_tracker:
+                self.logger.info(
+                    f"Using parallel processing with {self.max_workers} workers")
 
             with ThreadPoolExecutor(max_workers=min(self.max_workers, len(video_list))) as executor:
                 # Submit all download tasks
                 future_to_video = {
-                    executor.submit(self._download_worker, video_info, i, len(video_list)): video_info
+                    executor.submit(self._download_worker, video_info, i, len(video_list), progress_tracker): video_info
                     for i, video_info in enumerate(video_list)
                 }
 
@@ -344,39 +394,50 @@ class VideoDownloaderYTDLP:
                         result = future.result()
                         results.append(result)
 
-                        if result.success:
-                            self.logger.info(
-                                f"✓ Downloaded {result.youtube_id}")
-                        else:
-                            self.logger.warning(
-                                f"✗ Failed {result.youtube_id}: {result.error_message}")
+                        if not progress_tracker:
+                            if result.success:
+                                self.logger.info(
+                                    f"✓ Downloaded {result.youtube_id}")
+                            else:
+                                self.logger.warning(
+                                    f"✗ Failed {result.youtube_id}: {result.error_message}")
 
                     except Exception as e:
                         video_info = future_to_video[future]
                         youtube_id = video_info[0]
+                        error_msg = str(e)
                         self.logger.error(
-                            f"Worker error for {youtube_id}: {e}")
+                            f"Worker error for {youtube_id}: {error_msg}")
+                        if progress_tracker:
+                            progress_tracker.update_video_status(youtube_id, 'failed', error_msg)
                         results.append(DownloadResult(
                             youtube_id=youtube_id,
                             success=False,
-                            error_message=str(e)
+                            error_message=error_msg
                         ))
         else:
             # Sequential processing
-            self.logger.info("Using sequential processing")
+            if not progress_tracker:
+                self.logger.info("Using sequential processing")
             for i, video_info in enumerate(video_list):
-                result = self._download_worker(video_info, i, len(video_list))
+                result = self._download_worker(video_info, i, len(video_list), progress_tracker)
                 results.append(result)
 
-                if result.success:
-                    self.logger.info(f"✓ Downloaded {result.youtube_id}")
-                else:
-                    self.logger.warning(
-                        f"✗ Failed {result.youtube_id}: {result.error_message}")
+                if not progress_tracker:
+                    if result.success:
+                        self.logger.info(f"✓ Downloaded {result.youtube_id}")
+                    else:
+                        self.logger.warning(
+                            f"✗ Failed {result.youtube_id}: {result.error_message}")
 
+        # Finalize progress tracker
+        if progress_tracker:
+            progress_tracker.finalize()
+        
         # Calculate statistics
         successful_downloads = sum(1 for r in results if r.success)
         failed_downloads = len(results) - successful_downloads
+        skipped_downloads = sum(1 for r in results if r.success and r.file_path and "already exists" in str(r.error_message or ""))
 
         # Count retry statistics
         total_retries = sum(r.retry_count for r in results)
@@ -390,7 +451,8 @@ class VideoDownloaderYTDLP:
             'total_videos': len(video_list),
             'successful_downloads': successful_downloads,
             'failed_downloads': failed_downloads,
-            'success_rate': successful_downloads / len(video_list) * 100,
+            'skipped_downloads': progress_tracker.skipped_count if progress_tracker else skipped_downloads,
+            'success_rate': successful_downloads / len(video_list) * 100 if video_list else 0,
             'total_retries': total_retries,
             'bot_detection_errors': bot_detection_errors,
             'processing_time': processing_time,
@@ -398,14 +460,15 @@ class VideoDownloaderYTDLP:
             'failed_videos': [r.youtube_id for r in results if not r.success]
         }
 
-        self.logger.info(f"Download complete: {successful_downloads}/{len(video_list)} successful "
-                         f"({stats['success_rate']:.1f}%)")
-        self.logger.info(f"Total processing time: {processing_time:.1f}s")
-        if total_retries > 0:
-            self.logger.info(f"Total retries: {total_retries}")
-        if bot_detection_errors > 0:
-            self.logger.warning(
-                f"Bot detection errors: {bot_detection_errors}")
+        if not progress_tracker:
+            self.logger.info(f"Download complete: {successful_downloads}/{len(video_list)} successful "
+                             f"({stats['success_rate']:.1f}%)")
+            self.logger.info(f"Total processing time: {processing_time:.1f}s")
+            if total_retries > 0:
+                self.logger.info(f"Total retries: {total_retries}")
+            if bot_detection_errors > 0:
+                self.logger.warning(
+                    f"Bot detection errors: {bot_detection_errors}")
 
         return stats
 
