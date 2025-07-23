@@ -3,6 +3,7 @@ from dataset.RepurposeClip import collate_fn, collate_fn_test
 from models.MMCTransformer import MMCTransformer
 from utils.metrics import *
 from utils.distributed import MultiGPUStrategy, is_main_process, get_rank, get_world_size
+from utils.debug_visualizer import ValidationDebugger
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 from torch.utils.data import DataLoader
 import torch.optim as optim
@@ -360,6 +361,10 @@ def main(args):
 
         if epoch % cfg['train']['eval_freq'] == 0:
             model.eval()
+            # Initialize debug visualizer for this validation run
+            debug_viz = ValidationDebugger(output_dir=os.path.join(
+                checkpoint_path, "debug_outputs")) if is_main_process() else None
+
             with torch.no_grad():
                 total_AP = []
                 totol_recall = []
@@ -408,6 +413,27 @@ def main(args):
                     total_val_cls_loss += val_cls_loss
                     total_val_reg_loss += val_reg_loss
                     total_val_loss += val_total_loss
+
+                    # Log samples for debugging (only for first 10 batches and on main process)
+                    if debug_viz and count <= 10:
+                        # Unpack the output
+                        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets = output
+
+                        # Log each sample in the batch
+                        # Log max 2 samples per batch
+                        for sample_idx in range(min(batch_size, 2)):
+                            debug_viz.log_validation_sample(
+                                batch_idx=count,
+                                video_id=batch['video_id'][sample_idx].item() if torch.is_tensor(
+                                    batch['video_id'][sample_idx]) else batch['video_id'][sample_idx],
+                                pred_offsets=out_offsets[sample_idx],
+                                gt_offsets=gt_offsets[sample_idx],
+                                cls_logits=out_cls_logits[sample_idx],
+                                gt_labels=gt_cls_labels[sample_idx],
+                                cls_loss=val_cls_loss,
+                                reg_loss=val_reg_loss,
+                                masks=masks[sample_idx]
+                            )
 
                     # Get model predictions (handle DDP wrapper)
                     if hasattr(model, 'module'):
@@ -482,6 +508,15 @@ def main(args):
                     print(eval_message)
                     with open(os.path.join(checkpoint_path, 'log.txt'), 'a') as f:
                         f.write(eval_message + '\n')
+
+                    # Create debug visualizations and save logs
+                    if debug_viz:
+                        debug_viz.visualize_predictions(
+                            epoch=epoch, num_samples=5)
+                        debug_viz.save_debug_logs(epoch=epoch)
+                        debug_summary = debug_viz.get_debug_summary()
+                        print(
+                            f"Debug outputs saved to: {debug_summary['debug_dir']}")
     # Cleanup and finish (only on main process)
     if is_main_process():
         wandb.finish()

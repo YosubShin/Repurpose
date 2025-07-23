@@ -7,20 +7,12 @@ import numpy as np
 class MMCTransformer(nn.Module):
     def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
         super(MMCTransformer, self).__init__()
-        # UniModal Encoders for each modality
-        self.vis_encoder = UniModalEncoder(vis_dim, d_model, self_num_layers, num_heads, d_ff)
-        self.aud_encoder = UniModalEncoder(aud_dim, d_model, self_num_layers, num_heads, d_ff)
+        # Text-only encoder
         self.text_encoder = UniModalEncoder(text_dim, d_model, self_num_layers, num_heads, d_ff)
-
-        self.vis_text_croos_att = nn.ModuleList([CrossSelfEncoderLayer(d_model, num_heads, d_ff) for _ in range(text_num_layers)])
-        self.aud_text_croos_att = nn.ModuleList([CrossSelfEncoderLayer(d_model, num_heads, d_ff) for _ in range(text_num_layers)])
-
-        self.vis_aud_cross_att = nn.ModuleList([CrossAttentionEncoderLayer(d_model, num_heads, d_ff) for _ in range(cross_num_layers)])
-        self.aud_vis_cross_att = nn.ModuleList([CrossAttentionEncoderLayer(d_model, num_heads, d_ff) for _ in range(cross_num_layers)])
 
         hidden_dim = 256
         
-        self.feature_map = nn.Linear(d_model*2, d_model)
+        self.feature_map = nn.Linear(d_model, d_model)
 
         self.cls_head = nn.Sequential(
             nn.Linear(d_model, hidden_dim),
@@ -36,42 +28,19 @@ class MMCTransformer(nn.Module):
         )
 
     def forward(self, batch):
-        vis_feats = batch['visual_feats']
-        aud_feats = batch['audio_feats']
         text_feats = batch['text_feats']
         masks = batch['masks']
         gt_cls_labels = batch['labels']
         gt_offsets = batch['segments']
         # preprocessing 
-        # vis: [batch_size, seq_len, vis_dim]
-        # aud: [batch_size, seq_len, aud_dim]
+        # text: [batch_size, seq_len, text_dim]
         # masks: [batch_size, 1, max_len]
 
         # encode the features via self-attention
-        vis_feats = self.vis_encoder(vis_feats, masks)
-        aud_feats = self.aud_encoder(aud_feats, masks)
         text_feats = self.text_encoder(text_feats, masks)
 
-        # cross attention between vis and text
-        for idx, layer in enumerate(self.vis_text_croos_att):
-            vis_feats = layer(vis_feats, text_feats, masks)
-        
-        # cross attention between aud and text
-        for idx, layer in enumerate(self.aud_text_croos_att):
-            aud_feats = layer(aud_feats, text_feats, masks)
-
-
-        for idx, layer in enumerate(self.vis_aud_cross_att):
-            vis_feats = layer(vis_feats, aud_feats, masks)
-
-        for idx, layer in enumerate(self.aud_vis_cross_att):
-            aud_feats = layer(aud_feats, vis_feats, masks)
-
-
-        # concat them together
-        feats = torch.cat((vis_feats, aud_feats), dim=2)
-
-        feats = self.feature_map(feats)
+        # use text features directly
+        feats = self.feature_map(text_feats)
 
         # out_cls: List[B, #cls, seq_len]
         out_cls_logits = self.cls_head(feats)
