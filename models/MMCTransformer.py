@@ -7,11 +7,12 @@ import numpy as np
 class MMCTransformer(nn.Module):
     def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
         super(MMCTransformer, self).__init__()
-        # Text-only encoder
-        self.text_encoder = UniModalEncoder(text_dim, d_model, self_num_layers, num_heads, d_ff)
+        # Audio-only encoder
+        self.aud_encoder = UniModalEncoder(
+            aud_dim, d_model, self_num_layers, num_heads, d_ff)
 
         hidden_dim = 256
-        
+
         self.feature_map = nn.Linear(d_model, d_model)
 
         self.cls_head = nn.Sequential(
@@ -19,7 +20,7 @@ class MMCTransformer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.Linear(hidden_dim, 1),
         )
-       
+
         self.reg_head = nn.Sequential(
             nn.Linear(d_model, hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
@@ -28,19 +29,19 @@ class MMCTransformer(nn.Module):
         )
 
     def forward(self, batch):
-        text_feats = batch['text_feats']
+        aud_feats = batch['audio_feats']
         masks = batch['masks']
         gt_cls_labels = batch['labels']
         gt_offsets = batch['segments']
-        # preprocessing 
-        # text: [batch_size, seq_len, text_dim]
+        # preprocessing
+        # aud: [batch_size, seq_len, aud_dim]
         # masks: [batch_size, 1, max_len]
 
         # encode the features via self-attention
-        text_feats = self.text_encoder(text_feats, masks)
+        aud_feats = self.aud_encoder(aud_feats, masks)
 
-        # use text features directly
-        feats = self.feature_map(text_feats)
+        # use audio features directly
+        feats = self.feature_map(aud_feats)
 
         # out_cls: List[B, #cls, seq_len]
         out_cls_logits = self.cls_head(feats)
@@ -54,7 +55,6 @@ class MMCTransformer(nn.Module):
         # a hacky way to get the device type
         # will throw an error if parameters are on different devices
         return list(set(p.device for p in self.parameters()))[0]
-
 
     def losses(
         self, masks,
@@ -74,7 +74,7 @@ class MMCTransformer(nn.Module):
         masks = masks.transpose(1, 2).contiguous()
         cls_loss = cls_loss * masks
 
-        cls_loss = cls_loss.sum()   
+        cls_loss = cls_loss.sum()
 
         # 2. regression loss
         cls_mask = (gt_cls_labels != 0).float()
@@ -88,9 +88,8 @@ class MMCTransformer(nn.Module):
 
         reg_loss = (reg_loss * combined_mask.squeeze(-1)).sum()
 
-        return {'cls_loss'   : cls_loss,
-                'reg_loss'   : reg_loss}
-
+        return {'cls_loss': cls_loss,
+                'reg_loss': reg_loss}
 
     @torch.no_grad()
     def inference_single_video(self, masks, out_cls_logits, out_offsets, inference_settings):
@@ -138,15 +137,15 @@ class MMCTransformer(nn.Module):
             torch.cat(x) for x in [segs_all, scores_all, cls_idxs_all]
         ]
         results = {'segments': segs_all,
-                'scores': scores_all,
-                'labels': cls_idxs_all}
+                   'scores': scores_all,
+                   'labels': cls_idxs_all}
         return results
-
 
     @torch.no_grad()
     def inference_(self, batch, inference_settings):
-        
-        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets = self.forward(batch)
+
+        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets = self.forward(
+            batch)
 
         # batch seq_len
         pred_prob = out_cls_logits.squeeze(-1)
@@ -166,7 +165,7 @@ class MMCTransformer(nn.Module):
             cls_logits_per_vid = pred_prob[idx]
             offsets_per_vid = out_offsets[idx]
             masks_per_vid = masks[idx]
-            mins = vlen // 60 
+            mins = vlen // 60
             max_seg_num = mins * inference_settings['max_seg_per_min']
             max_seg_num = int(np.ceil(max_seg_num))
 
@@ -176,7 +175,8 @@ class MMCTransformer(nn.Module):
                 cls_logits_per_vid, offsets_per_vid, inference_settings
             )
             # results_per_vid_nms_idx = soft_nms_intervals(results_per_vid['scores'], results_per_vid['segments'], sigma=inference_settings['nms_sigma'], thresh=inference_settings['min_score'])
-            results_per_vid_nms_idx = soft_nms_intervals_cpu(results_per_vid['scores'], results_per_vid['segments'], sigma=inference_settings['nms_sigma'], thresh=inference_settings['min_score'], max_seg_num=max_seg_num)
+            results_per_vid_nms_idx = soft_nms_intervals_cpu(
+                results_per_vid['scores'], results_per_vid['segments'], sigma=inference_settings['nms_sigma'], thresh=inference_settings['min_score'], max_seg_num=max_seg_num)
             results_per_vid['segments'] = results_per_vid['segments'][results_per_vid_nms_idx]
             results_per_vid['scores'] = results_per_vid['scores'][results_per_vid_nms_idx]
             results_per_vid['labels'] = results_per_vid['labels'][results_per_vid_nms_idx]

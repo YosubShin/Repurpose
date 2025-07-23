@@ -324,9 +324,6 @@ def main(args):
                 checkpoint_path, f'epoch_{epoch}.pth')
             torch.save(checkpoint, checkpoint_file)
 
-            # Log checkpoint to wandb
-            wandb.save(checkpoint_file)
-
         # Reduce across processes for distributed training
         if multi_gpu.strategy == 'ddp' and multi_gpu.world_size > 1:
             avg_cls_loss_tensor = torch.tensor(
@@ -483,8 +480,7 @@ def main(args):
                             checkpoint_path, f'best.pth')
                         torch.save(checkpoint, best_checkpoint_file)
 
-                        # Log best model to wandb
-                        wandb.save(best_checkpoint_file)
+                        # Log best metrics to wandb
                         wandb.run.summary["best_tIoU"] = best_tIoU
                         wandb.run.summary["best_epoch"] = best_epoch
                 # Log evaluation metrics (only on main process)
@@ -511,12 +507,34 @@ def main(args):
 
                     # Create debug visualizations and save logs
                     if debug_viz:
-                        debug_viz.visualize_predictions(
+                        viz_paths = debug_viz.visualize_predictions(
                             epoch=epoch, num_samples=5)
-                        debug_viz.save_debug_logs(epoch=epoch)
+                        log_paths = debug_viz.save_debug_logs(epoch=epoch)
                         debug_summary = debug_viz.get_debug_summary()
                         print(
                             f"Debug outputs saved to: {debug_summary['debug_dir']}")
+
+                        # Upload debug files to wandb
+                        # Log all visualizations together, grouped by epoch
+                        if viz_paths:
+                            # Extract video ID from filename
+                            viz_log = {}
+                            for viz_path in viz_paths:
+                                # Extract video ID from path like "epoch_0_sample_0_video_123.png"
+                                filename = os.path.basename(viz_path)
+                                parts = filename.split('_')
+                                video_id = parts[-1].replace('.png', '')
+
+                                # Create grouped key: video_Y
+                                key = f"debug/video_{video_id}"
+                                viz_log[key] = wandb.Image(viz_path,
+                                                           caption=f"Epoch {epoch}, Video {video_id}")
+
+                            wandb.log(viz_log, step=global_step)
+
+                        # Save log files to wandb
+                        for log_path in log_paths:
+                            wandb.save(log_path, base_path=checkpoint_path)
     # Cleanup and finish (only on main process)
     if is_main_process():
         wandb.finish()

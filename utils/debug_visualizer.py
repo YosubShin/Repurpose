@@ -44,8 +44,10 @@ class ValidationDebugger:
     def visualize_predictions(self, epoch, num_samples=5):
         """Create visualizations comparing predictions vs ground truth"""
         if not self.sample_data:
-            return
+            return []
             
+        visualization_paths = []
+        
         # Select samples to visualize
         samples_to_viz = self.sample_data[:num_samples]
         
@@ -134,9 +136,14 @@ class ValidationDebugger:
             plt.savefig(viz_path, dpi=150, bbox_inches='tight')
             plt.close()
             
+            visualization_paths.append(viz_path)
+        
+        return visualization_paths
+            
     def save_debug_logs(self, epoch):
         """Save detailed logs to JSON file"""
         log_path = os.path.join(self.log_dir, f'epoch_{epoch}_debug_log.json')
+        log_paths = []
         
         # Calculate statistics
         if self.sample_data:
@@ -188,6 +195,7 @@ class ValidationDebugger:
             
             with open(log_path, 'w') as f:
                 json.dump(full_log, f, indent=2)
+            log_paths.append(log_path)
                 
             # Create summary log
             summary_path = os.path.join(self.log_dir, f'epoch_{epoch}_summary.txt')
@@ -206,9 +214,13 @@ class ValidationDebugger:
                 
                 if stats['prediction_analysis']['offset_variance_warning']:
                     f.write("\n⚠️  WARNING: Low variance in predictions - possible model collapse!\n")
+            
+            log_paths.append(summary_path)
                     
         # Clear sample data for next epoch
         self.sample_data = []
+        
+        return log_paths
         
     def get_debug_summary(self):
         """Get a summary of the current debugging session"""
