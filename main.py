@@ -111,6 +111,10 @@ def main(args):
     train_dataset = RepurposeClip(**cfg['train_dataset'])
     logger.debug(f"Train dataset created with {len(train_dataset)} samples - rank {multi_gpu.rank}")
     
+    logger.debug(f"Creating validation dataset - rank {multi_gpu.rank}")
+    val_dataset = RepurposeClipTest(**cfg['val_dataset'])
+    logger.debug(f"Validation dataset created with {len(val_dataset)} samples - rank {multi_gpu.rank}")
+    
     logger.debug(f"Creating test dataset - rank {multi_gpu.rank}")
     test_dataset = RepurposeClipTest(**cfg['test_dataset'])
     logger.debug(f"Test dataset created with {len(test_dataset)} samples - rank {multi_gpu.rank}")
@@ -147,6 +151,16 @@ def main(args):
         num_workers=min(24, 4)  # Reduce workers for multi-GPU
     )
     logger.debug(f"Train data loader created with {len(train_data_loader)} batches - rank {multi_gpu.rank}")
+
+    logger.debug(f"Creating validation data loader - rank {multi_gpu.rank}")
+    val_data_loader = multi_gpu.create_dataloader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn_test,
+        num_workers=min(24, 4)
+    )
+    logger.debug(f"Validation data loader created with {len(val_data_loader)} batches - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating test data loader - rank {multi_gpu.rank}")
     test_data_loader = multi_gpu.create_dataloader(
@@ -328,7 +342,7 @@ def main(args):
             if i == 0:
                 logger.debug(f"Learning rate scheduler updated, global_step: {global_step} - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
 
-            # Intra-epoch validation
+            # Intra-epoch validation (using validation dataset, not test dataset)
             intra_epoch_eval_freq = cfg['train'].get(
                 'intra_epoch_eval_freq', 50)
             if (i + 1) % intra_epoch_eval_freq == 0:
@@ -340,9 +354,9 @@ def main(args):
                     val_total_losses = []
 
                     # Use iterator to get a few validation batches
-                    val_iter = iter(test_data_loader)
+                    val_iter = iter(val_data_loader)
                     # Evaluate on 10 batches max
-                    num_val_batches = min(10, len(test_data_loader))
+                    num_val_batches = min(10, len(val_data_loader))
 
                     for _ in range(num_val_batches):
                         try:
@@ -470,7 +484,7 @@ def main(args):
             logger.debug(f"Epoch message written to log file - epoch {epoch+1}")
 
         if epoch % cfg['train']['eval_freq'] == 0:
-            logger.debug(f"Starting evaluation for epoch {epoch+1} - rank {multi_gpu.rank}")
+            logger.debug(f"Starting final evaluation for epoch {epoch+1} - rank {multi_gpu.rank}")
             logger.debug(f"Test data loader has {len(test_data_loader)} batches - rank {multi_gpu.rank}")
             model.eval()
             logger.debug(f"Model set to eval mode - rank {multi_gpu.rank}")
