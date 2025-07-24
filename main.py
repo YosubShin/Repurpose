@@ -260,7 +260,8 @@ def main(args):
         # Watch the model to log gradients and parameters
         # For DDP, watch the underlying module
         model_to_watch = model.module if hasattr(model, 'module') else model
-        wandb.watch(model_to_watch, log="all", log_freq=100)
+        # Log only parameters to avoid None gradient issues in DDP
+        wandb.watch(model_to_watch, log="parameters", log_freq=100)
         logger.debug("WandB watching model")
     else:
         logger.debug(
@@ -601,10 +602,10 @@ def main(args):
                         logger.debug(
                             f"Validation forward pass completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     # Access losses method through module for DDP-wrapped models
-            if hasattr(model, 'module'):
-                losses = model.module.losses(*output)
-            else:
-                losses = model.losses(*output)
+                    if hasattr(model, 'module'):
+                        losses = model.module.losses(*output)
+                    else:
+                        losses = model.losses(*output)
                     if batch_idx == 0:
                         logger.debug(
                             f"Validation loss computation completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
