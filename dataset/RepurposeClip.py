@@ -70,7 +70,14 @@ class RepurposeClip(Dataset):
                     filtered_labels = cache_data['filtered_labels']
                     self.logger.info(
                         f"Cache loaded successfully: {len(filtered_labels)} samples")
-                    self.logger.info(f"Cache stats: {cache_data['stats']}")
+                    stats = cache_data['stats']
+                    self.logger.info(
+                        f"Cache summary: total_dropped={stats.get('total_dropped', 0)}, "
+                        f"missing_visual={stats.get('missing_visual_count', 0)}, "
+                        f"missing_audio={stats.get('missing_audio_count', 0)}, "
+                        f"missing_text={stats.get('missing_text_count', 0)}, "
+                        f"invalid_data={stats.get('invalid_data_count', 0)}, "
+                        f"keep_rate={stats.get('keep_rate', 0):.2f}%")
                     return filtered_labels
                 else:
                     self.logger.warning(
@@ -629,8 +636,13 @@ class RepurposeClipTest(Dataset):
                     filtered_labels = cache_data['filtered_labels']
                     self.logger.info(
                         f"Test cache loaded successfully: {len(filtered_labels)} samples")
+                    stats = cache_data['stats']
                     self.logger.info(
-                        f"Test cache stats: {cache_data['stats']}")
+                        f"Test cache summary: total_dropped={stats.get('total_dropped', 0)}, "
+                        f"missing_visual={stats.get('missing_visual_count', 0)}, "
+                        f"missing_audio={stats.get('missing_audio_count', 0)}, "
+                        f"missing_text={stats.get('missing_text_count', 0)}, "
+                        f"keep_rate={stats.get('keep_rate', 0):.2f}%")
                     return filtered_labels
                 else:
                     self.logger.warning(
