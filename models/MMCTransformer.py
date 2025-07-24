@@ -7,9 +7,15 @@ import numpy as np
 class MMCTransformer(nn.Module):
     def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
         super(MMCTransformer, self).__init__()
-        # Text-only encoder
-        self.text_encoder = UniModalEncoder(
-            text_dim, d_model, self_num_layers, num_heads, d_ff)
+        # Concatenated feature dimension
+        concat_dim = vis_dim + aud_dim + text_dim
+        
+        # Linear layer to project concatenated features to d_model
+        self.input_projection = nn.Linear(concat_dim, d_model)
+        
+        # Multimodal encoder (using the same architecture as the text encoder)
+        self.multimodal_encoder = UniModalEncoder(
+            d_model, d_model, self_num_layers, num_heads, d_ff)
 
         hidden_dim = 256
 
@@ -29,19 +35,28 @@ class MMCTransformer(nn.Module):
         )
 
     def forward(self, batch):
+        visual_feats = batch['visual_feats']
+        audio_feats = batch['audio_feats']
         text_feats = batch['text_feats']
         masks = batch['masks']
         gt_cls_labels = batch['labels']
         gt_offsets = batch['segments']
-        # preprocessing
+        
+        # Concatenate all three modalities
+        # visual: [batch_size, seq_len, vis_dim]
+        # audio: [batch_size, seq_len, aud_dim]
         # text: [batch_size, seq_len, text_dim]
-        # masks: [batch_size, 1, max_len]
+        # concatenated: [batch_size, seq_len, vis_dim + aud_dim + text_dim]
+        concatenated_feats = torch.cat([visual_feats, audio_feats, text_feats], dim=-1)
+        
+        # Project concatenated features to d_model
+        projected_feats = self.input_projection(concatenated_feats)
+        
+        # Encode the features via self-attention
+        encoded_feats = self.multimodal_encoder(projected_feats, masks)
 
-        # encode the features via self-attention
-        text_feats = self.text_encoder(text_feats, masks)
-
-        # use text features directly
-        feats = self.feature_map(text_feats)
+        # Apply feature mapping
+        feats = self.feature_map(encoded_feats)
 
         # out_cls: List[B, #cls, seq_len]
         out_cls_logits = self.cls_head(feats)

@@ -22,6 +22,10 @@ class ValidationDebugger:
         
         self.sample_data = []
         
+    def clear_samples(self):
+        """Clear stored samples"""
+        self.sample_data = []
+        
     def log_validation_sample(self, batch_idx, video_id, 
                             pred_offsets, gt_offsets, 
                             cls_logits, gt_labels,
@@ -41,8 +45,14 @@ class ValidationDebugger:
         }
         self.sample_data.append(sample_info)
         
-    def visualize_predictions(self, epoch, num_samples=5):
-        """Create visualizations comparing predictions vs ground truth"""
+    def visualize_predictions(self, epoch, num_samples=5, prefix="test"):
+        """Create visualizations comparing predictions vs ground truth
+        
+        Args:
+            epoch: Current epoch number
+            num_samples: Number of samples to visualize
+            prefix: Prefix for the visualization (e.g., 'train' or 'test')
+        """
         if not self.sample_data:
             return []
             
@@ -131,12 +141,12 @@ class ValidationDebugger:
             
             plt.tight_layout()
             
-            # Save visualization
-            viz_path = os.path.join(self.viz_dir, f'epoch_{epoch}_sample_{idx}_video_{sample["video_id"]}.png')
+            # Save visualization with prefix
+            viz_path = os.path.join(self.viz_dir, f'{prefix}_epoch_{epoch}_sample_{idx}_video_{sample["video_id"]}.png')
             plt.savefig(viz_path, dpi=150, bbox_inches='tight')
             plt.close()
             
-            visualization_paths.append(viz_path)
+            visualization_paths.append((viz_path, sample["video_id"], prefix))
         
         return visualization_paths
             

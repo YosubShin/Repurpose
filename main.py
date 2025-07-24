@@ -31,6 +31,24 @@ def seed_everything(seed=42):
     random.seed(seed)
 
 
+def get_debug_samples(dataset, num_samples=5, seed=42):
+    """Get a fixed set of samples for debugging visualization"""
+    # Use a fixed seed to always get the same samples
+    rng = np.random.RandomState(seed)
+    total_samples = len(dataset)
+    sample_indices = rng.choice(total_samples, size=min(num_samples, total_samples), replace=False)
+    
+    samples = []
+    for idx in sample_indices:
+        sample = dataset[idx]
+        samples.append({
+            'idx': idx,
+            'video_id': sample['video_id'],
+            'data': sample
+        })
+    return samples
+
+
 def main(args):
     # load config
     cfg = load_config(args.config_path)
@@ -61,6 +79,11 @@ def main(args):
 
     train_dataset = RepurposeClip(**cfg['train_dataset'])
     test_dataset = RepurposeClipTest(**cfg['test_dataset'])
+    
+    # Get fixed training samples for debugging visualization
+    debug_train_samples = get_debug_samples(train_dataset, num_samples=5, seed=42)
+    if is_main_process():
+        print(f"Selected training samples for debug visualization: {[s['video_id'] for s in debug_train_samples]}")
 
     model = MMCTransformer(**cfg['model'])
     model = multi_gpu.wrap_model(model)
@@ -166,6 +189,10 @@ def main(args):
 
         for i, batch in enumerate(train_data_loader):
             # Move tensors to appropriate device
+            batch['visual_feats'] = batch['visual_feats'].to(
+                multi_gpu.device, non_blocking=True)
+            batch['audio_feats'] = batch['audio_feats'].to(
+                multi_gpu.device, non_blocking=True)
             batch['text_feats'] = batch['text_feats'].to(
                 multi_gpu.device, non_blocking=True)
             batch['masks'] = batch['masks'].to(
@@ -229,6 +256,10 @@ def main(args):
                             break
 
                         # Move validation batch to device
+                        val_batch['visual_feats'] = val_batch['visual_feats'].to(
+                            multi_gpu.device, non_blocking=True)
+                        val_batch['audio_feats'] = val_batch['audio_feats'].to(
+                            multi_gpu.device, non_blocking=True)
                         val_batch['text_feats'] = val_batch['text_feats'].to(
                             multi_gpu.device, non_blocking=True)
                         val_batch['masks'] = val_batch['masks'].to(
@@ -349,6 +380,10 @@ def main(args):
                 for batch in data_iter:
                     count += 1
                     # Move tensors to appropriate device
+                    batch['visual_feats'] = batch['visual_feats'].to(
+                        multi_gpu.device, non_blocking=True)
+                    batch['audio_feats'] = batch['audio_feats'].to(
+                        multi_gpu.device, non_blocking=True)
                     batch['text_feats'] = batch['text_feats'].to(
                         multi_gpu.device, non_blocking=True)
                     batch['masks'] = batch['masks'].to(
@@ -469,7 +504,7 @@ def main(args):
                     # Create debug visualizations and save logs
                     if debug_viz:
                         viz_paths = debug_viz.visualize_predictions(
-                            epoch=epoch, num_samples=5)
+                            epoch=epoch, num_samples=5, prefix="test")
                         log_paths = debug_viz.save_debug_logs(epoch=epoch)
                         debug_summary = debug_viz.get_debug_summary()
                         print(
@@ -478,24 +513,82 @@ def main(args):
                         # Upload debug files to wandb
                         # Log all visualizations together, grouped by epoch
                         if viz_paths:
-                            # Extract video ID from filename
                             viz_log = {}
-                            for viz_path in viz_paths:
-                                # Extract video ID from path like "epoch_0_sample_0_video_123.png"
-                                filename = os.path.basename(viz_path)
-                                parts = filename.split('_')
-                                video_id = parts[-1].replace('.png', '')
-
-                                # Create grouped key: video_Y
-                                key = f"debug/video_{video_id}"
+                            for viz_path, video_id, prefix in viz_paths:
+                                # Create grouped key with prefix
+                                key = f"debug/{prefix}/{video_id}"
                                 viz_log[key] = wandb.Image(viz_path,
-                                                           caption=f"Epoch {epoch}, Video {video_id}")
+                                                           caption=f"Epoch {epoch}, {prefix.capitalize()} Video {video_id}")
 
                             wandb.log(viz_log, step=global_step)
 
                         # Save log files to wandb
                         for log_path in log_paths:
                             wandb.save(log_path, base_path=checkpoint_path)
+                    
+                    # Visualize training samples
+                    if is_main_process():
+                        print("\nProcessing training samples for visualization...")
+                        train_debug_viz = ValidationDebugger(output_dir=os.path.join(
+                            checkpoint_path, "debug_outputs"))
+                        
+                        # Process each debug training sample
+                        for sample_info in debug_train_samples[:5]:  # Limit to 5 samples
+                            # Create a single-sample batch
+                            sample_data = sample_info['data']
+                            train_batch = collate_fn([sample_data])
+                            
+                            # Move to device
+                            train_batch['visual_feats'] = train_batch['visual_feats'].to(
+                                multi_gpu.device, non_blocking=True)
+                            train_batch['audio_feats'] = train_batch['audio_feats'].to(
+                                multi_gpu.device, non_blocking=True)
+                            train_batch['text_feats'] = train_batch['text_feats'].to(
+                                multi_gpu.device, non_blocking=True)
+                            train_batch['masks'] = train_batch['masks'].to(
+                                multi_gpu.device, non_blocking=True)
+                            train_batch['labels'] = train_batch['labels'].to(
+                                multi_gpu.device, non_blocking=True)
+                            train_batch['segments'] = train_batch['segments'].to(
+                                multi_gpu.device, non_blocking=True)
+                            
+                            # Get model predictions
+                            with torch.no_grad():
+                                output = model(train_batch)
+                                losses = model.losses(*output)
+                                batch_size = train_batch['text_feats'].shape[0]
+                                train_cls_loss = losses['cls_loss'].item() / batch_size
+                                
+                                # Unpack the output
+                                masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = output
+                                
+                                # Log the sample
+                                train_debug_viz.log_validation_sample(
+                                    batch_idx=0,
+                                    video_id=sample_info['video_id'],
+                                    pred_offsets=out_offsets[0],
+                                    gt_offsets=gt_offsets[0],
+                                    cls_logits=out_cls_logits[0],
+                                    gt_labels=gt_cls_labels[0],
+                                    cls_loss=train_cls_loss,
+                                    reg_loss=0.0,
+                                    masks=masks[0]
+                                )
+                        
+                        # Create visualizations for training samples
+                        train_viz_paths = train_debug_viz.visualize_predictions(
+                            epoch=epoch, num_samples=5, prefix="train")
+                        
+                        # Upload training visualizations to wandb
+                        if train_viz_paths:
+                            train_viz_log = {}
+                            for viz_path, video_id, prefix in train_viz_paths:
+                                # Create grouped key with prefix
+                                key = f"debug/{prefix}/{video_id}"
+                                train_viz_log[key] = wandb.Image(viz_path,
+                                                               caption=f"Epoch {epoch}, {prefix.capitalize()} Video {video_id}")
+                            
+                            wandb.log(train_viz_log, step=global_step)
     # Cleanup and finish (only on main process)
     if is_main_process():
         wandb.finish()
