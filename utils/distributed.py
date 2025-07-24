@@ -38,8 +38,12 @@ def detect_slurm_env() -> Dict[str, Any]:
     """
     slurm_info = {}
 
-    # Check if running under SLURM
-    if 'SLURM_PROCID' in os.environ:
+    # Prioritize torchrun/distributed.launch environment variables over SLURM
+    # Only use SLURM if we're not in a torchrun environment
+    if ('RANK' in os.environ and 'WORLD_SIZE' in os.environ):
+        # Running with torchrun or torch.distributed.launch - don't use SLURM detection
+        slurm_info['is_slurm'] = False
+    elif 'SLURM_PROCID' in os.environ and 'SLURM_NTASKS' in os.environ and int(os.environ.get('SLURM_NTASKS', 1)) > 1:
         slurm_info['rank'] = int(os.environ['SLURM_PROCID'])
         slurm_info['world_size'] = int(os.environ['SLURM_NTASKS'])
         slurm_info['local_rank'] = int(os.environ.get('SLURM_LOCALID', 0))
