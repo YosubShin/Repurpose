@@ -33,10 +33,10 @@ model:
 train:
   {
     seed: 1234,
-    lr: 0.0005,
+    lr: 0.001,
     epochs: 50,
     weight_decay: 0.0001,
-    warmup_epochs: 5,
+    warmup_epochs: 0,
     save_epochs: 5,
     batch_size: 6,
     eval_freq: 1,
@@ -44,8 +44,10 @@ train:
   }
 distributed:
   {
-    strategy: single,  # Options: auto, single, dp, ddp
+    strategy: auto,  # Options: auto, single, dp, ddp
     backend: nccl,   # Communication backend for DDP
+    timeout: 1800,   # Timeout for distributed initialization (seconds)
+    find_unused_parameters: false,  # Set to true if you have unused parameters
   }
 test_cfg:
   {

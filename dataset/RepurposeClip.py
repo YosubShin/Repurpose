@@ -27,7 +27,8 @@ class RepurposeClip(Dataset):
         self.text_format = os.path.join(text_path, '{}.npy')
 
         # Filter labels to only include samples with all three modalities (with caching)
-        self.label = self._filter_available_samples_cached(original_labels, label_path)
+        self.label = self._filter_available_samples_cached(
+            original_labels, label_path)
 
         self.video_ids = list(set([k['youtube_id'] for k in self.label]))
 
@@ -42,42 +43,46 @@ class RepurposeClip(Dataset):
         # Create a hash of the configuration to detect changes
         config_str = f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
-        
+
         # Get label file modification time for cache invalidation
         label_mtime = os.path.getmtime(label_path)
-        
+
         cache_filename = f"{os.path.splitext(os.path.basename(label_path))[0]}_filter_cache_{config_hash}_{int(label_mtime)}.json"
         cache_dir = os.path.dirname(label_path)
         return os.path.join(cache_dir, cache_filename)
-    
+
     def _filter_available_samples_cached(self, original_labels, label_path):
         """Filter samples with caching to avoid re-processing on every run"""
         cache_path = self._get_cache_path(label_path)
-        
+
         # Try to load from cache
         if os.path.exists(cache_path):
             try:
-                self.logger.info(f"Loading filtered samples from cache: {cache_path}")
+                self.logger.info(
+                    f"Loading filtered samples from cache: {cache_path}")
                 with open(cache_path, 'r') as f:
                     cache_data = json.load(f)
-                
+
                 # Verify cache integrity
-                if (cache_data.get('total_original') == len(original_labels) and 
-                    cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
-                    
+                if (cache_data.get('total_original') == len(original_labels) and
+                        cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
+
                     filtered_labels = cache_data['filtered_labels']
-                    self.logger.info(f"Cache loaded successfully: {len(filtered_labels)} samples")
+                    self.logger.info(
+                        f"Cache loaded successfully: {len(filtered_labels)} samples")
                     self.logger.info(f"Cache stats: {cache_data['stats']}")
                     return filtered_labels
                 else:
-                    self.logger.warning("Cache integrity check failed, will regenerate")
+                    self.logger.warning(
+                        "Cache integrity check failed, will regenerate")
             except Exception as e:
                 self.logger.warning(f"Failed to load cache {cache_path}: {e}")
-        
+
         # Filter samples and save to cache
         self.logger.info("Filtering samples and creating cache...")
-        filtered_labels, filter_stats = self._filter_available_samples(original_labels)
-        
+        filtered_labels, filter_stats = self._filter_available_samples(
+            original_labels)
+
         # Save to cache
         try:
             cache_data = {
@@ -87,19 +92,20 @@ class RepurposeClip(Dataset):
                 'config_hash': hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8],
                 'timestamp': time.time()
             }
-            
+
             with open(cache_path, 'w') as f:
                 json.dump(cache_data, f, indent=2)
             self.logger.info(f"Filter cache saved to: {cache_path}")
-            
+
             # Clean up old cache files
-            self._cleanup_old_cache_files(os.path.dirname(cache_path), os.path.basename(label_path))
-            
+            self._cleanup_old_cache_files(os.path.dirname(
+                cache_path), os.path.basename(label_path))
+
         except Exception as e:
             self.logger.warning(f"Failed to save cache {cache_path}: {e}")
-        
+
         return filtered_labels
-    
+
     def _cleanup_old_cache_files(self, cache_dir, label_basename):
         """Remove old cache files for the same label file"""
         try:
@@ -108,10 +114,12 @@ class RepurposeClip(Dataset):
                 if filename.startswith(label_prefix) and filename.endswith('.json'):
                     # Keep only the most recent cache file
                     cache_path = os.path.join(cache_dir, filename)
-                    if os.path.getmtime(cache_path) < time.time() - 86400:  # Older than 1 day
+                    # Older than 1 day
+                    if os.path.getmtime(cache_path) < time.time() - 86400:
                         try:
                             os.remove(cache_path)
-                            self.logger.debug(f"Removed old cache file: {filename}")
+                            self.logger.debug(
+                                f"Removed old cache file: {filename}")
                         except:
                             pass
         except Exception as e:
@@ -134,8 +142,9 @@ class RepurposeClip(Dataset):
         invalid_data = []
         skipped_reasons = {}  # Track reasons why samples were skipped
 
-        self.logger.info(f"Filtering {len(original_labels)} samples for available data...")
-        
+        self.logger.info(
+            f"Filtering {len(original_labels)} samples for available data...")
+
         for label_item in tqdm(original_labels, desc="Filtering samples", unit="sample"):
             video_id = label_item['youtube_id']
 
@@ -577,7 +586,8 @@ class RepurposeClipTest(Dataset):
         self.text_format = os.path.join(text_path, '{}.npy')
 
         # Filter labels to only include samples with all three modalities (with caching)
-        self.label = self._filter_available_samples_cached(original_labels, label_path)
+        self.label = self._filter_available_samples_cached(
+            original_labels, label_path)
 
         self.video_ids = list(set([k['youtube_id'] for k in self.label]))
 
@@ -592,42 +602,48 @@ class RepurposeClipTest(Dataset):
         # Create a hash of the configuration to detect changes
         config_str = f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
-        
+
         # Get label file modification time for cache invalidation
         label_mtime = os.path.getmtime(label_path)
-        
+
         cache_filename = f"{os.path.splitext(os.path.basename(label_path))[0]}_test_filter_cache_{config_hash}_{int(label_mtime)}.json"
         cache_dir = os.path.dirname(label_path)
         return os.path.join(cache_dir, cache_filename)
-    
+
     def _filter_available_samples_cached(self, original_labels, label_path):
         """Filter samples with caching to avoid re-processing on every run"""
         cache_path = self._get_cache_path(label_path)
-        
+
         # Try to load from cache
         if os.path.exists(cache_path):
             try:
-                self.logger.info(f"Loading filtered test samples from cache: {cache_path}")
+                self.logger.info(
+                    f"Loading filtered test samples from cache: {cache_path}")
                 with open(cache_path, 'r') as f:
                     cache_data = json.load(f)
-                
+
                 # Verify cache integrity
-                if (cache_data.get('total_original') == len(original_labels) and 
-                    cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
-                    
+                if (cache_data.get('total_original') == len(original_labels) and
+                        cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
+
                     filtered_labels = cache_data['filtered_labels']
-                    self.logger.info(f"Test cache loaded successfully: {len(filtered_labels)} samples")
-                    self.logger.info(f"Test cache stats: {cache_data['stats']}")
+                    self.logger.info(
+                        f"Test cache loaded successfully: {len(filtered_labels)} samples")
+                    self.logger.info(
+                        f"Test cache stats: {cache_data['stats']}")
                     return filtered_labels
                 else:
-                    self.logger.warning("Test cache integrity check failed, will regenerate")
+                    self.logger.warning(
+                        "Test cache integrity check failed, will regenerate")
             except Exception as e:
-                self.logger.warning(f"Failed to load test cache {cache_path}: {e}")
-        
+                self.logger.warning(
+                    f"Failed to load test cache {cache_path}: {e}")
+
         # Filter samples and save to cache
         self.logger.info("Filtering test samples and creating cache...")
-        filtered_labels, filter_stats = self._filter_available_samples(original_labels)
-        
+        filtered_labels, filter_stats = self._filter_available_samples(
+            original_labels)
+
         # Save to cache
         try:
             cache_data = {
@@ -637,19 +653,20 @@ class RepurposeClipTest(Dataset):
                 'config_hash': hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8],
                 'timestamp': time.time()
             }
-            
+
             with open(cache_path, 'w') as f:
                 json.dump(cache_data, f, indent=2)
             self.logger.info(f"Test filter cache saved to: {cache_path}")
-            
+
             # Clean up old cache files
-            self._cleanup_old_cache_files(os.path.dirname(cache_path), os.path.basename(label_path))
-            
+            self._cleanup_old_cache_files(os.path.dirname(
+                cache_path), os.path.basename(label_path))
+
         except Exception as e:
             self.logger.warning(f"Failed to save test cache {cache_path}: {e}")
-        
+
         return filtered_labels
-    
+
     def _cleanup_old_cache_files(self, cache_dir, label_basename):
         """Remove old cache files for the same label file"""
         try:
@@ -658,10 +675,12 @@ class RepurposeClipTest(Dataset):
                 if filename.startswith(label_prefix) and filename.endswith('.json'):
                     # Keep only the most recent cache file
                     cache_path = os.path.join(cache_dir, filename)
-                    if os.path.getmtime(cache_path) < time.time() - 86400:  # Older than 1 day
+                    # Older than 1 day
+                    if os.path.getmtime(cache_path) < time.time() - 86400:
                         try:
                             os.remove(cache_path)
-                            self.logger.debug(f"Removed old test cache file: {filename}")
+                            self.logger.debug(
+                                f"Removed old test cache file: {filename}")
                         except:
                             pass
         except Exception as e:
@@ -683,8 +702,9 @@ class RepurposeClipTest(Dataset):
         missing_text = []
         skipped_reasons = {}  # Track reasons why samples were skipped
 
-        print(f"Filtering {len(original_labels)} test samples for available data...")
-        
+        print(
+            f"Filtering {len(original_labels)} test samples for available data...")
+
         for label_item in tqdm(original_labels, desc="Filtering test samples", unit="sample"):
             video_id = label_item['youtube_id']
 
@@ -823,8 +843,8 @@ class RepurposeClipTest(Dataset):
             min_len = min(visual_slice.shape[0], audio_slice.shape[0], text_slice.shape[0], len(
                 labels), len(reg_offsets))
             if min_len <= 0:
-                self.logger.debug(
-                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}")
+                self.logger.info(
+                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}, visual_slice.shape={visual_slice.shape}, audio_slice.shape={audio_slice.shape}, text_slice.shape={text_slice.shape}, labels={len(labels)}, reg_offsets={len(reg_offsets)}")
                 return False
 
             return True

@@ -36,8 +36,9 @@ def get_debug_samples(dataset, num_samples=5, seed=42):
     # Use a fixed seed to always get the same samples
     rng = np.random.RandomState(seed)
     total_samples = len(dataset)
-    sample_indices = rng.choice(total_samples, size=min(num_samples, total_samples), replace=False)
-    
+    sample_indices = rng.choice(total_samples, size=min(
+        num_samples, total_samples), replace=False)
+
     samples = []
     for idx in sample_indices:
         sample = dataset[idx]
@@ -52,10 +53,10 @@ def get_debug_samples(dataset, num_samples=5, seed=42):
 def main(args):
     # Set up logger for this function
     logger = logging.getLogger(__name__)
-    
+
     logger.debug(f"Starting main() function - PID: {os.getpid()}")
     logger.debug(f"Arguments: {args}")
-    
+
     # load config
     logger.debug(f"Loading config from: {args.config_path}")
     cfg = load_config(args.config_path)
@@ -69,9 +70,11 @@ def main(args):
         strategy=distributed_cfg.get('strategy', 'auto'),
         backend=distributed_cfg.get('backend', 'nccl'),
         timeout=distributed_cfg.get('timeout', 1800),
-        find_unused_parameters=distributed_cfg.get('find_unused_parameters', False)
+        find_unused_parameters=distributed_cfg.get(
+            'find_unused_parameters', False)
     )
-    logger.debug(f"MultiGPUStrategy created - strategy: {multi_gpu.strategy}, rank: {multi_gpu.rank}, world_size: {multi_gpu.world_size}")
+    logger.debug(
+        f"MultiGPUStrategy created - strategy: {multi_gpu.strategy}, rank: {multi_gpu.rank}, world_size: {multi_gpu.world_size}")
 
     # Setup distributed training if needed
     logger.debug("Setting up distributed training...")
@@ -100,7 +103,8 @@ def main(args):
             yaml.dump(cfg, f)
         print('The checkpoint path is %s' % checkpoint_path)
     else:
-        logger.debug("Worker process - waiting for main process to create checkpoint path")
+        logger.debug(
+            "Worker process - waiting for main process to create checkpoint path")
 
     # Synchronize all processes
     logger.debug(f"About to call multi_gpu.barrier() - rank {multi_gpu.rank}")
@@ -109,28 +113,34 @@ def main(args):
 
     logger.debug(f"Creating train dataset - rank {multi_gpu.rank}")
     train_dataset = RepurposeClip(**cfg['train_dataset'])
-    logger.debug(f"Train dataset created with {len(train_dataset)} samples - rank {multi_gpu.rank}")
-    
+    logger.debug(
+        f"Train dataset created with {len(train_dataset)} samples - rank {multi_gpu.rank}")
+
     logger.debug(f"Creating validation dataset - rank {multi_gpu.rank}")
     val_dataset = RepurposeClipTest(**cfg['val_dataset'])
-    logger.debug(f"Validation dataset created with {len(val_dataset)} samples - rank {multi_gpu.rank}")
-    
+    logger.debug(
+        f"Validation dataset created with {len(val_dataset)} samples - rank {multi_gpu.rank}")
+
     logger.debug(f"Creating test dataset - rank {multi_gpu.rank}")
     test_dataset = RepurposeClipTest(**cfg['test_dataset'])
-    logger.debug(f"Test dataset created with {len(test_dataset)} samples - rank {multi_gpu.rank}")
-    
+    logger.debug(
+        f"Test dataset created with {len(test_dataset)} samples - rank {multi_gpu.rank}")
+
     # Get fixed training samples for debugging visualization
     logger.debug(f"Getting debug samples - rank {multi_gpu.rank}")
-    debug_train_samples = get_debug_samples(train_dataset, num_samples=5, seed=42)
+    debug_train_samples = get_debug_samples(
+        train_dataset, num_samples=5, seed=42)
     if is_main_process():
-        print(f"Selected training samples for debug visualization: {[s['video_id'] for s in debug_train_samples]}")
+        print(
+            f"Selected training samples for debug visualization: {[s['video_id'] for s in debug_train_samples]}")
     logger.debug(f"Debug samples obtained - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating model - rank {multi_gpu.rank}")
     model = MMCTransformer(**cfg['model'])
     logger.debug(f"Model created - rank {multi_gpu.rank}")
-    
-    logger.debug(f"Wrapping model with multi-GPU strategy - rank {multi_gpu.rank}")
+
+    logger.debug(
+        f"Wrapping model with multi-GPU strategy - rank {multi_gpu.rank}")
     model = multi_gpu.wrap_model(model)
     logger.debug(f"Model wrapped - rank {multi_gpu.rank}")
 
@@ -139,7 +149,8 @@ def main(args):
     batch_size = cfg['train']['batch_size']
     num_epochs = cfg['train']['epochs']
     warmup_epochs = cfg['train']['warmup_epochs']
-    logger.debug(f"Training params - lr: {learning_rate}, batch_size: {batch_size}, epochs: {num_epochs} - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Training params - lr: {learning_rate}, batch_size: {batch_size}, epochs: {num_epochs} - rank {multi_gpu.rank}")
 
     # Create data loaders with multi-GPU support
     logger.debug(f"Creating train data loader - rank {multi_gpu.rank}")
@@ -150,7 +161,8 @@ def main(args):
         collate_fn=collate_fn,
         num_workers=min(24, 4)  # Reduce workers for multi-GPU
     )
-    logger.debug(f"Train data loader created with {len(train_data_loader)} batches - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Train data loader created with {len(train_data_loader)} batches - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating validation data loader - rank {multi_gpu.rank}")
     val_data_loader = multi_gpu.create_dataloader(
@@ -160,7 +172,8 @@ def main(args):
         collate_fn=collate_fn_test,
         num_workers=min(24, 4)
     )
-    logger.debug(f"Validation data loader created with {len(val_data_loader)} batches - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Validation data loader created with {len(val_data_loader)} batches - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating test data loader - rank {multi_gpu.rank}")
     test_data_loader = multi_gpu.create_dataloader(
@@ -170,7 +183,8 @@ def main(args):
         collate_fn=collate_fn_test,
         num_workers=min(24, 4)
     )
-    logger.debug(f"Test data loader created with {len(test_data_loader)} batches - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Test data loader created with {len(test_data_loader)} batches - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating optimizer - rank {multi_gpu.rank}")
     optimizer = optim.Adam(
@@ -180,7 +194,8 @@ def main(args):
     num_iters = len(train_data_loader)
     warmup_steps = warmup_epochs * num_iters
     total_steps = num_epochs * num_iters
-    logger.debug(f"Scheduler params - num_iters: {num_iters}, warmup_steps: {warmup_steps}, total_steps: {total_steps} - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Scheduler params - num_iters: {num_iters}, warmup_steps: {warmup_steps}, total_steps: {total_steps} - rank {multi_gpu.rank}")
 
     def warmup_lambda(global_step):
         return (global_step + 1) / warmup_steps if (global_step + 1) <= warmup_steps else 1
@@ -192,10 +207,12 @@ def main(args):
 
     start_epoch = 0
     global_step = 0
-    logger.debug(f"Initial values - start_epoch: {start_epoch}, global_step: {global_step} - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Initial values - start_epoch: {start_epoch}, global_step: {global_step} - rank {multi_gpu.rank}")
 
     if args.resume:
-        logger.debug(f"Loading checkpoint from {args.resume} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Loading checkpoint from {args.resume} - rank {multi_gpu.rank}")
         checkpoint = torch.load(args.resume, map_location=multi_gpu.device)
         # Handle DDP module loading
         if hasattr(model, 'module'):
@@ -207,7 +224,8 @@ def main(args):
         cosine_scheduler.load_state_dict(checkpoint['cosine_scheduler'])
         start_epoch = checkpoint['epoch']
         global_step = start_epoch * num_iters
-        logger.debug(f"Checkpoint loaded - start_epoch: {start_epoch}, global_step: {global_step} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Checkpoint loaded - start_epoch: {start_epoch}, global_step: {global_step} - rank {multi_gpu.rank}")
     else:
         logger.debug(f"No checkpoint to resume from - rank {multi_gpu.rank}")
 
@@ -245,17 +263,21 @@ def main(args):
         wandb.watch(model_to_watch, log="all", log_freq=100)
         logger.debug("WandB watching model")
     else:
-        logger.debug(f"Worker process - skipping wandb init - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Worker process - skipping wandb init - rank {multi_gpu.rank}")
 
     best_tIoU = 0
     best_epoch = 0
-    logger.debug(f"About to start training loop - epochs {start_epoch} to {num_epochs} - rank {multi_gpu.rank}")
+    logger.debug(
+        f"About to start training loop - epochs {start_epoch} to {num_epochs} - rank {multi_gpu.rank}")
 
     for epoch in range(start_epoch, num_epochs):
-        logger.debug(f"Starting epoch {epoch+1}/{num_epochs} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Starting epoch {epoch+1}/{num_epochs} - rank {multi_gpu.rank}")
         # Set epoch for distributed sampler to ensure proper shuffling
         if hasattr(train_data_loader.sampler, 'set_epoch'):
-            logger.debug(f"Setting epoch {epoch} for distributed sampler - rank {multi_gpu.rank}")
+            logger.debug(
+                f"Setting epoch {epoch} for distributed sampler - rank {multi_gpu.rank}")
             train_data_loader.sampler.set_epoch(epoch)
 
         logger.debug(f"Setting model to train mode - rank {multi_gpu.rank}")
@@ -263,14 +285,18 @@ def main(args):
         total_loss = 0
         total_cls_loss = 0
         start_time = time.time()
-        logger.debug(f"Starting training loop for epoch {epoch+1} - rank {multi_gpu.rank}")
-        logger.debug(f"Training data loader has {len(train_data_loader)} batches - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Starting training loop for epoch {epoch+1} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Training data loader has {len(train_data_loader)} batches - rank {multi_gpu.rank}")
 
         for i, batch in enumerate(train_data_loader):
             if i == 0:
-                logger.debug(f"Processing first batch of epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Processing first batch of epoch {epoch+1} - rank {multi_gpu.rank}")
             elif i % 10 == 0:
-                logger.debug(f"Processing batch {i+1}/{len(train_data_loader)} of epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Processing batch {i+1}/{len(train_data_loader)} of epoch {epoch+1} - rank {multi_gpu.rank}")
             # Move tensors to appropriate device
             batch['visual_feats'] = batch['visual_feats'].to(
                 multi_gpu.device, non_blocking=True)
@@ -286,35 +312,44 @@ def main(args):
                 multi_gpu.device, non_blocking=True)
 
             if i == 0:
-                logger.debug(f"About to call model forward pass - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"About to call model forward pass - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             output = model(batch)
             if i == 0:
-                logger.debug(f"Model forward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Model forward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             losses = model.losses(*output)
             if i == 0:
-                logger.debug(f"Loss computation completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Loss computation completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
 
             final_loss = losses['cls_loss'] / batch_size
             if i == 0:
-                logger.debug(f"About to start backward pass - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"About to start backward pass - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             optimizer.zero_grad()
             if i == 0:
-                logger.debug(f"Zero grad completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Zero grad completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             final_loss.backward()
             if i == 0:
-                logger.debug(f"Backward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Backward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             optimizer.step()
             if i == 0:
-                logger.debug(f"Optimizer step completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Optimizer step completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
 
             # Reduce losses across GPUs for accurate logging
             if i == 0:
-                logger.debug(f"About to reduce losses across GPUs - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"About to reduce losses across GPUs - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             cls_loss_tensor = multi_gpu.reduce_tensor(
                 losses["cls_loss"] / batch_size)
             final_loss_tensor = multi_gpu.reduce_tensor(final_loss)
             if i == 0:
-                logger.debug(f"Loss reduction completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Loss reduction completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
 
             cls_loss = cls_loss_tensor.item()
             batch_loss = final_loss_tensor.item()
@@ -330,23 +365,27 @@ def main(args):
                     'batch/learning_rate': optimizer.param_groups[0]['lr']
                 }, step=global_step_iter)
                 if i == 0:
-                    logger.debug(f"Batch-level metrics logged to wandb - batch {i+1}, epoch {epoch+1}")
+                    logger.debug(
+                        f"Batch-level metrics logged to wandb - batch {i+1}, epoch {epoch+1}")
 
             if i == 0:
-                logger.debug(f"About to update learning rate scheduler - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"About to update learning rate scheduler - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
             if global_step < warmup_steps:
                 warmup_scheduler.step()
             else:
                 cosine_scheduler.step()
             global_step += 1
             if i == 0:
-                logger.debug(f"Learning rate scheduler updated, global_step: {global_step} - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Learning rate scheduler updated, global_step: {global_step} - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
 
             # Intra-epoch validation (using validation dataset, not test dataset)
             intra_epoch_eval_freq = cfg['train'].get(
                 'intra_epoch_eval_freq', 50)
             if (i + 1) % intra_epoch_eval_freq == 0:
-                logger.debug(f"Starting intra-epoch validation - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Starting intra-epoch validation - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
                 model.eval()
                 with torch.no_grad():
                     # Sample a few batches from validation set for quick eval
@@ -411,21 +450,25 @@ def main(args):
                                 f"\nIteration {i+1}: Train Loss: {batch_loss:.4f}, Val Loss: {avg_val_total:.4f}")
 
                 # Switch back to training mode
-                logger.debug(f"Intra-epoch validation completed, switching back to train mode - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Intra-epoch validation completed, switching back to train mode - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
                 model.train()
 
             # Print progress (only on main process)
             if is_main_process():
                 print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f}, cls Loss: {cls_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
-            
+
             # Add periodic debug checkpoint
             if i > 0 and i % 100 == 0:
-                logger.debug(f"Completed {i+1} batches in epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Completed {i+1} batches in epoch {epoch+1} - rank {multi_gpu.rank}")
         end_time = time.time()
-        logger.debug(f"Training loop completed for epoch {epoch+1} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Training loop completed for epoch {epoch+1} - rank {multi_gpu.rank}")
 
         # Calculate average losses
-        logger.debug(f"Calculating average losses for epoch {epoch+1} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"Calculating average losses for epoch {epoch+1} - rank {multi_gpu.rank}")
         num_batches = len(train_data_loader)
         avg_cls_loss = total_cls_loss / num_batches
         avg_total_loss = total_loss / num_batches
@@ -433,7 +476,8 @@ def main(args):
 
         # save checkpoint to disk (only on main process)
         if epoch % cfg['train']['save_epochs'] == 0 and is_main_process():
-            logger.debug(f"Saving checkpoint for epoch {epoch+1} - main process")
+            logger.debug(
+                f"Saving checkpoint for epoch {epoch+1} - main process")
             # Handle DDP model state dict
             model_state = model.module.state_dict() if hasattr(
                 model, 'module') else model.state_dict()
@@ -448,10 +492,12 @@ def main(args):
             checkpoint_file = os.path.join(
                 checkpoint_path, f'epoch_{epoch}.pth')
             torch.save(checkpoint, checkpoint_file)
-            logger.debug(f"Checkpoint saved to {checkpoint_file} - main process")
+            logger.debug(
+                f"Checkpoint saved to {checkpoint_file} - main process")
 
         # Reduce across processes for distributed training
-        logger.debug(f"About to reduce losses across processes for distributed training - epoch {epoch+1} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"About to reduce losses across processes for distributed training - epoch {epoch+1} - rank {multi_gpu.rank}")
         if multi_gpu.strategy == 'ddp' and multi_gpu.world_size > 1:
             avg_cls_loss_tensor = torch.tensor(
                 avg_cls_loss, device=multi_gpu.device)
@@ -461,10 +507,12 @@ def main(args):
             avg_cls_loss = multi_gpu.reduce_tensor(avg_cls_loss_tensor).item()
             avg_total_loss = multi_gpu.reduce_tensor(
                 avg_total_loss_tensor).item()
-            logger.debug(f"Cross-process loss reduction completed - epoch {epoch+1} - rank {multi_gpu.rank}")
+            logger.debug(
+                f"Cross-process loss reduction completed - epoch {epoch+1} - rank {multi_gpu.rank}")
 
         # Log epoch-level metrics (only on main process)
-        logger.debug(f"About to log epoch-level metrics - epoch {epoch+1} - rank {multi_gpu.rank}")
+        logger.debug(
+            f"About to log epoch-level metrics - epoch {epoch+1} - rank {multi_gpu.rank}")
         if is_main_process():
             wandb.log({
                 'epoch/avg_cls_loss': avg_cls_loss,
@@ -472,7 +520,8 @@ def main(args):
                 'epoch/epoch': epoch + 1,
                 'epoch/time': end_time - start_time
             }, step=epoch)
-            logger.debug(f"Epoch-level metrics logged to wandb - epoch {epoch+1}")
+            logger.debug(
+                f"Epoch-level metrics logged to wandb - epoch {epoch+1}")
 
         epoch_message = f"Epoch {epoch+1}/{num_epochs}, Avg Loss: {avg_total_loss:.3f}, Avg cls Loss: {avg_cls_loss:.3f}, Time: {end_time - start_time:.3f}s"
 
@@ -481,17 +530,21 @@ def main(args):
 
             with open(os.path.join(checkpoint_path, 'a-log.txt'), 'a') as f:
                 f.write(epoch_message + '\n')
-            logger.debug(f"Epoch message written to log file - epoch {epoch+1}")
+            logger.debug(
+                f"Epoch message written to log file - epoch {epoch+1}")
 
         if epoch % cfg['train']['eval_freq'] == 0:
-            logger.debug(f"Starting final evaluation for epoch {epoch+1} - rank {multi_gpu.rank}")
-            logger.debug(f"Test data loader has {len(test_data_loader)} batches - rank {multi_gpu.rank}")
+            logger.debug(
+                f"Starting final evaluation for epoch {epoch+1} - rank {multi_gpu.rank}")
+            logger.debug(
+                f"Test data loader has {len(test_data_loader)} batches - rank {multi_gpu.rank}")
             model.eval()
             logger.debug(f"Model set to eval mode - rank {multi_gpu.rank}")
             # Initialize debug visualizer for this validation run
             debug_viz = ValidationDebugger(output_dir=os.path.join(
                 checkpoint_path, "debug_outputs")) if is_main_process() else None
-            logger.debug(f"Debug visualizer initialized - rank {multi_gpu.rank}")
+            logger.debug(
+                f"Debug visualizer initialized - rank {multi_gpu.rank}")
 
             with torch.no_grad():
                 total_AP = []
@@ -508,9 +561,11 @@ def main(args):
                 for batch_idx, batch in enumerate(data_iter):
                     count += 1
                     if batch_idx == 0:
-                        logger.debug(f"Processing first validation batch - epoch {epoch+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"Processing first validation batch - epoch {epoch+1} - rank {multi_gpu.rank}")
                     elif batch_idx % 10 == 0:
-                        logger.debug(f"Processing validation batch {batch_idx+1} - epoch {epoch+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"Processing validation batch {batch_idx+1} - epoch {epoch+1} - rank {multi_gpu.rank}")
                     # Move tensors to appropriate device
                     batch['visual_feats'] = batch['visual_feats'].to(
                         multi_gpu.device, non_blocking=True)
@@ -531,13 +586,16 @@ def main(args):
 
                     # Calculate validation losses
                     if batch_idx == 0:
-                        logger.debug(f"About to call model forward pass for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"About to call model forward pass for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     output = model(batch)
                     if batch_idx == 0:
-                        logger.debug(f"Validation forward pass completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"Validation forward pass completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     losses = model.losses(*output)
                     if batch_idx == 0:
-                        logger.debug(f"Validation loss computation completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"Validation loss computation completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     batch_size = batch['text_feats'].shape[0]
 
                     # Accumulate losses
@@ -570,41 +628,49 @@ def main(args):
 
                     # Get model predictions (handle DDP wrapper)
                     if batch_idx == 0:
-                        logger.debug(f"About to get model predictions for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"About to get model predictions for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     if hasattr(model, 'module'):
                         preds = model.module.inference_(batch, cfg['test_cfg'])
                     else:
                         preds = model.inference_(batch, cfg['test_cfg'])
                     if batch_idx == 0:
-                        logger.debug(f"Model predictions completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"Model predictions completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
 
-                        if batch_idx == 0:
-                        logger.debug(f"About to calculate tIoU metrics - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                    if batch_idx == 0:
+                        logger.debug(
+                            f"About to calculate tIoU metrics - batch {batch_idx+1} - rank {multi_gpu.rank}")
                     for i in range(len(preds)):
                         thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
                         precision_per_threshold = calculate_tiou(
                             batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
                         total_tIoU.append(precision_per_threshold)
                     if batch_idx == 0:
-                        logger.debug(f"tIoU metrics calculated - batch {batch_idx+1} - rank {multi_gpu.rank}")
+                        logger.debug(
+                            f"tIoU metrics calculated - batch {batch_idx+1} - rank {multi_gpu.rank}")
 
                 # Calculate metrics
-                logger.debug(f"Calculating final evaluation metrics - epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Calculating final evaluation metrics - epoch {epoch+1} - rank {multi_gpu.rank}")
                 tIoU = {}
                 for threshold in thresholds:
                     tIoU[threshold] = sum([item[threshold]
                                           for item in total_tIoU]) / len(total_tIoU)
                 AtIoU = sum(item for item in tIoU.values()) / len(tIoU)
-                logger.debug(f"Final evaluation metrics calculated - epoch {epoch+1} - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Final evaluation metrics calculated - epoch {epoch+1} - rank {multi_gpu.rank}")
 
                 # Calculate average validation losses
                 avg_val_cls_loss = total_val_cls_loss / count
                 avg_val_total_loss = total_val_loss / count
 
                 # Synchronize evaluation results across processes
-                logger.debug(f"About to synchronize evaluation results across processes - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"About to synchronize evaluation results across processes - rank {multi_gpu.rank}")
                 multi_gpu.barrier()
-                logger.debug(f"Evaluation synchronization completed - rank {multi_gpu.rank}")
+                logger.debug(
+                    f"Evaluation synchronization completed - rank {multi_gpu.rank}")
 
                 if AtIoU > best_tIoU:
                     best_tIoU = AtIoU
@@ -626,7 +692,8 @@ def main(args):
                         best_checkpoint_file = os.path.join(
                             checkpoint_path, f'best.pth')
                         torch.save(checkpoint, best_checkpoint_file)
-                        logger.debug(f"Best checkpoint saved to {best_checkpoint_file} - main process")
+                        logger.debug(
+                            f"Best checkpoint saved to {best_checkpoint_file} - main process")
 
                         # Log best metrics to wandb
                         wandb.run.summary["best_tIoU"] = best_tIoU
@@ -676,21 +743,24 @@ def main(args):
                         # Save log files to wandb
                         for log_path in log_paths:
                             wandb.save(log_path, base_path=checkpoint_path)
-                    
+
                     # Visualize training samples
                     if is_main_process():
                         print("\nProcessing training samples for visualization...")
                         train_debug_viz = ValidationDebugger(output_dir=os.path.join(
                             checkpoint_path, "debug_outputs"))
-                        
+
                         # Process each debug training sample
-                        logger.debug(f"Processing debug training samples - epoch {epoch+1}")
-                        for sample_idx, sample_info in enumerate(debug_train_samples[:5]):  # Limit to 5 samples
-                            logger.debug(f"Processing debug training sample {sample_idx+1}/5 - video_id: {sample_info['video_id']} - epoch {epoch+1}")
+                        logger.debug(
+                            f"Processing debug training samples - epoch {epoch+1}")
+                        # Limit to 5 samples
+                        for sample_idx, sample_info in enumerate(debug_train_samples[:5]):
+                            logger.debug(
+                                f"Processing debug training sample {sample_idx+1}/5 - video_id: {sample_info['video_id']} - epoch {epoch+1}")
                             # Create a single-sample batch
                             sample_data = sample_info['data']
                             train_batch = collate_fn([sample_data])
-                            
+
                             # Move to device
                             train_batch['visual_feats'] = train_batch['visual_feats'].to(
                                 multi_gpu.device, non_blocking=True)
@@ -704,19 +774,22 @@ def main(args):
                                 multi_gpu.device, non_blocking=True)
                             train_batch['segments'] = train_batch['segments'].to(
                                 multi_gpu.device, non_blocking=True)
-                            
+
                             # Get model predictions
-                            logger.debug(f"About to get training sample predictions - sample {sample_idx+1} - epoch {epoch+1}")
+                            logger.debug(
+                                f"About to get training sample predictions - sample {sample_idx+1} - epoch {epoch+1}")
                             with torch.no_grad():
                                 output = model(train_batch)
-                                logger.debug(f"Training sample forward pass completed - sample {sample_idx+1} - epoch {epoch+1}")
+                                logger.debug(
+                                    f"Training sample forward pass completed - sample {sample_idx+1} - epoch {epoch+1}")
                                 losses = model.losses(*output)
                                 batch_size = train_batch['text_feats'].shape[0]
-                                train_cls_loss = losses['cls_loss'].item() / batch_size
-                                
+                                train_cls_loss = losses['cls_loss'].item(
+                                ) / batch_size
+
                                 # Unpack the output
                                 masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = output
-                                
+
                                 # Log the sample
                                 train_debug_viz.log_validation_sample(
                                     batch_idx=0,
@@ -729,25 +802,29 @@ def main(args):
                                     reg_loss=0.0,
                                     masks=masks[0]
                                 )
-                        
+
                         # Create visualizations for training samples
                         train_viz_paths = train_debug_viz.visualize_predictions(
                             epoch=epoch, num_samples=5, prefix="train")
-                        
-                        logger.debug(f"Debug training sample processing completed - epoch {epoch+1}")
+
+                        logger.debug(
+                            f"Debug training sample processing completed - epoch {epoch+1}")
                         # Upload training visualizations to wandb
                         if train_viz_paths:
-                            logger.debug(f"Uploading training visualizations to wandb - epoch {epoch+1}")
+                            logger.debug(
+                                f"Uploading training visualizations to wandb - epoch {epoch+1}")
                             train_viz_log = {}
                             for viz_path, video_id, prefix in train_viz_paths:
                                 # Create grouped key with prefix
                                 key = f"debug/{prefix}/{video_id}"
                                 train_viz_log[key] = wandb.Image(viz_path,
-                                                               caption=f"Epoch {epoch}, {prefix.capitalize()} Video {video_id}")
-                            
+                                                                 caption=f"Epoch {epoch}, {prefix.capitalize()} Video {video_id}")
+
                             wandb.log(train_viz_log, step=global_step)
-                            logger.debug(f"Training visualizations uploaded - epoch {epoch+1}")
-    logger.debug(f"Training completed, starting cleanup - rank {multi_gpu.rank}")
+                            logger.debug(
+                                f"Training visualizations uploaded - epoch {epoch+1}")
+    logger.debug(
+        f"Training completed, starting cleanup - rank {multi_gpu.rank}")
     # Cleanup and finish (only on main process)
     if is_main_process():
         logger.debug(f"Finishing wandb - main process")
@@ -755,9 +832,11 @@ def main(args):
         logger.debug(f"WandB finished - main process")
 
     # Clean up distributed training
-    logger.debug(f"About to cleanup distributed training - rank {multi_gpu.rank}")
+    logger.debug(
+        f"About to cleanup distributed training - rank {multi_gpu.rank}")
     multi_gpu.cleanup()
-    logger.debug(f"Distributed training cleanup completed - rank {multi_gpu.rank}")
+    logger.debug(
+        f"Distributed training cleanup completed - rank {multi_gpu.rank}")
 
 
 if __name__ == '__main__':
