@@ -16,6 +16,8 @@ import logging
 from typing import Optional, Tuple, Dict, Any
 import socket
 import subprocess
+import time
+import datetime
 
 
 def find_free_port() -> int:
@@ -27,10 +29,73 @@ def find_free_port() -> int:
     return port
 
 
-def setup_distributed(rank: int, world_size: int, backend: str = 'nccl', 
-                     master_addr: str = 'localhost', master_port: str = None) -> bool:
+def detect_slurm_env() -> Dict[str, Any]:
     """
-    Initialize distributed training process group.
+    Detect SLURM environment variables and return distributed training parameters.
+    
+    Returns:
+        Dict containing rank, world_size, local_rank, and master_addr/port
+    """
+    slurm_info = {}
+    
+    # Check if running under SLURM
+    if 'SLURM_PROCID' in os.environ:
+        slurm_info['rank'] = int(os.environ['SLURM_PROCID'])
+        slurm_info['world_size'] = int(os.environ['SLURM_NTASKS'])
+        slurm_info['local_rank'] = int(os.environ.get('SLURM_LOCALID', 0))
+        
+        # Get master node information
+        slurm_info['master_addr'] = os.environ.get('SLURM_LAUNCH_NODE_IPADDR', 'localhost')
+        if 'SLURM_STEP_NODELIST' in os.environ:
+            # Parse first node from nodelist
+            nodelist = os.environ['SLURM_STEP_NODELIST']
+            if '[' in nodelist:
+                # Handle compressed nodelist like "node[01-04]"
+                master_node = nodelist.split('[')[0] + nodelist.split('[')[1].split('-')[0].split(',')[0]
+            else:
+                master_node = nodelist.split(',')[0]
+            slurm_info['master_addr'] = master_node
+        
+        # Set a fixed port for SLURM jobs (can be overridden by environment)
+        slurm_info['master_port'] = int(os.environ.get('MASTER_PORT', 29500))
+        
+        slurm_info['is_slurm'] = True
+        logging.info(f"Detected SLURM environment: rank={slurm_info['rank']}, "
+                    f"world_size={slurm_info['world_size']}, master_addr={slurm_info['master_addr']}")
+    else:
+        slurm_info['is_slurm'] = False
+    
+    return slurm_info
+
+
+def get_network_interface() -> str:
+    """
+    Get the appropriate network interface for distributed training.
+    
+    Returns:
+        Network interface name or IP address
+    """
+    # Common HPC network interfaces
+    hpc_interfaces = ['ib0', 'ib1', 'eth0', 'enp0s8']
+    
+    try:
+        # Try to get IP from hostname
+        hostname = socket.gethostname()
+        ip = socket.gethostbyname(hostname)
+        if not ip.startswith('127.'):
+            return ip
+    except:
+        pass
+    
+    # Fallback to localhost
+    return 'localhost'
+
+
+def setup_distributed(rank: int, world_size: int, backend: str = 'nccl', 
+                     master_addr: str = 'localhost', master_port: str = None,
+                     timeout: int = 1800) -> bool:
+    """
+    Initialize distributed training process group with HPC support.
     
     Args:
         rank: Process rank (0 to world_size-1)
@@ -38,34 +103,88 @@ def setup_distributed(rank: int, world_size: int, backend: str = 'nccl',
         backend: Communication backend ('nccl' for GPU, 'gloo' for CPU)
         master_addr: Address of rank 0 process
         master_port: Port for communication
+        timeout: Timeout for initialization in seconds
         
     Returns:
         bool: True if setup successful, False otherwise
     """
+    logger = logging.getLogger(__name__)
+    
     try:
+        # Detect SLURM environment
+        slurm_info = detect_slurm_env()
+        
+        if slurm_info['is_slurm']:
+            # Use SLURM-provided values
+            rank = slurm_info['rank']
+            world_size = slurm_info['world_size']
+            master_addr = slurm_info['master_addr']
+            master_port = str(slurm_info['master_port'])
+            local_rank = slurm_info['local_rank']
+        else:
+            # Use provided values or environment variables
+            rank = int(os.environ.get('RANK', rank))
+            world_size = int(os.environ.get('WORLD_SIZE', world_size))
+            master_addr = os.environ.get('MASTER_ADDR', master_addr)
+            local_rank = int(os.environ.get('LOCAL_RANK', rank % torch.cuda.device_count()))
+            
+            if master_port is None:
+                master_port = os.environ.get('MASTER_PORT', str(find_free_port()))
+            
         # Set environment variables
         os.environ['MASTER_ADDR'] = master_addr
-        if master_port is None:
-            master_port = str(find_free_port())
-        os.environ['MASTER_PORT'] = master_port
+        os.environ['MASTER_PORT'] = str(master_port)
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['LOCAL_RANK'] = str(local_rank)
         
-        # Initialize process group
+        logger.info(f"Initializing distributed training:")
+        logger.info(f"  Backend: {backend}")
+        logger.info(f"  Rank: {rank}/{world_size}")
+        logger.info(f"  Local Rank: {local_rank}")
+        logger.info(f"  Master: {master_addr}:{master_port}")
+        logger.info(f"  Timeout: {timeout}s")
+        
+        # Set device for this process
+        if torch.cuda.is_available() and backend == 'nccl':
+            device_id = local_rank % torch.cuda.device_count()
+            torch.cuda.set_device(device_id)
+            logger.info(f"  CUDA Device: {device_id}")
+        
+        # Initialize process group with timeout
+        start_time = time.time()
+        timeout_timedelta = datetime.timedelta(seconds=timeout)
+        
         dist.init_process_group(
             backend=backend,
             rank=rank,
-            world_size=world_size
+            world_size=world_size,
+            timeout=timeout_timedelta
         )
         
-        # Set device for this process
-        if torch.cuda.is_available():
-            torch.cuda.set_device(rank)
+        init_time = time.time() - start_time
+        logger.info(f"Distributed initialization successful in {init_time:.2f}s")
+        
+        # Test communication
+        if dist.is_initialized():
+            # Simple all-reduce test
+            test_tensor = torch.ones(1).cuda() if torch.cuda.is_available() else torch.ones(1)
+            dist.all_reduce(test_tensor)
+            expected_sum = world_size
+            if abs(test_tensor.item() - expected_sum) < 1e-6:
+                logger.info("Distributed communication test passed")
+                return True
+            else:
+                logger.error(f"Distributed communication test failed: expected {expected_sum}, got {test_tensor.item()}")
+                return False
         
         return True
         
     except Exception as e:
-        logging.error(f"Failed to setup distributed training: {e}")
+        logger.error(f"Failed to setup distributed training: {e}")
+        logger.error(f"Environment variables:")
+        for key in ['RANK', 'WORLD_SIZE', 'LOCAL_RANK', 'MASTER_ADDR', 'MASTER_PORT']:
+            logger.error(f"  {key}: {os.environ.get(key, 'Not set')}")
         return False
 
 
@@ -108,48 +227,70 @@ class MultiGPUStrategy:
     """
     Multi-GPU training strategy manager.
     
-    Handles both DataParallel and DistributedDataParallel strategies.
+    Handles both DataParallel and DistributedDataParallel strategies with HPC support.
     """
     
-    def __init__(self, strategy: str = 'auto', backend: str = 'nccl'):
+    def __init__(self, strategy: str = 'auto', backend: str = 'nccl', 
+                 timeout: int = 1800, find_unused_parameters: bool = False):
         """
         Initialize multi-GPU strategy.
         
         Args:
             strategy: 'auto', 'dp', 'ddp', or 'single'
             backend: Communication backend for DDP
+            timeout: Timeout for distributed initialization
+            find_unused_parameters: Whether to find unused parameters in DDP
         """
         self.strategy = strategy
         self.backend = backend
+        self.timeout = timeout
+        self.find_unused_parameters = find_unused_parameters
         self.world_size = 1
         self.rank = 0
+        self.local_rank = 0
         self.device = torch.device('cpu')
         self.is_distributed = False
+        self.slurm_info = detect_slurm_env()
         
         # Auto-detect strategy if needed
         if strategy == 'auto':
             self.strategy = self._auto_detect_strategy()
         
         self._setup_device_info()
+        
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
     
     def _auto_detect_strategy(self) -> str:
-        """Auto-detect the best multi-GPU strategy."""
+        """Auto-detect the best multi-GPU strategy with HPC support."""
         if not torch.cuda.is_available():
             return 'single'
         
         gpu_count = torch.cuda.device_count()
+        
+        # Check for SLURM environment first
+        if self.slurm_info['is_slurm']:
+            world_size = self.slurm_info['world_size']
+            if world_size > 1:
+                self.logger.info(f"SLURM detected with {world_size} processes - using DDP")
+                return 'ddp'
+        
+        # Check if we're in a distributed environment (torchrun, torch.distributed.launch)
+        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+            world_size = int(os.environ['WORLD_SIZE'])
+            if world_size > 1:
+                self.logger.info(f"Distributed environment detected with {world_size} processes - using DDP")
+                return 'ddp'
+        
+        # Single process cases
         if gpu_count < 2:
             return 'single'
+        elif gpu_count == 1:
+            return 'single'
         
-        # Check if we're in a distributed environment
-        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-            return 'ddp'
-        
-        # Default to DataParallel for single-node multi-GPU
-        if gpu_count <= 4:
-            return 'dp'
-        else:
-            return 'ddp'
+        # Multi-GPU single-node: prefer DDP for better performance and memory usage
+        self.logger.info(f"Single-node multi-GPU detected ({gpu_count} GPUs) - using DDP")
+        return 'ddp'
     
     def _setup_device_info(self):
         """Setup device information based on strategy."""
@@ -157,31 +298,67 @@ class MultiGPUStrategy:
             self.device = get_device()
             self.world_size = 1
             self.rank = 0
+            self.local_rank = 0
         
         elif self.strategy == 'dp':
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.world_size = 1
             self.rank = 0
+            self.local_rank = 0
         
         elif self.strategy == 'ddp':
             self.is_distributed = True
-            if 'RANK' in os.environ:
+            
+            # Use SLURM info if available
+            if self.slurm_info['is_slurm']:
+                self.rank = self.slurm_info['rank']
+                self.world_size = self.slurm_info['world_size']
+                self.local_rank = self.slurm_info['local_rank']
+            elif 'RANK' in os.environ:
                 self.rank = int(os.environ['RANK'])
                 self.world_size = int(os.environ['WORLD_SIZE'])
+                self.local_rank = int(os.environ.get('LOCAL_RANK', self.rank % torch.cuda.device_count()))
             else:
+                # Single-node multi-GPU case
+                gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 1
                 self.rank = 0
-                self.world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
+                self.world_size = gpu_count
+                self.local_rank = 0
             
             self.device = get_device()
     
     def setup(self) -> bool:
         """Setup the multi-GPU environment."""
         if self.strategy == 'ddp' and self.world_size > 1:
-            return setup_distributed(
+            # Get master address and port
+            master_addr = 'localhost'
+            master_port = None
+            
+            if self.slurm_info['is_slurm']:
+                master_addr = self.slurm_info['master_addr']
+                master_port = str(self.slurm_info['master_port'])
+            else:
+                master_addr = os.environ.get('MASTER_ADDR', get_network_interface())
+                master_port = os.environ.get('MASTER_PORT')
+            
+            success = setup_distributed(
                 rank=self.rank,
                 world_size=self.world_size,
-                backend=self.backend
+                backend=self.backend,
+                master_addr=master_addr,
+                master_port=master_port,
+                timeout=self.timeout
             )
+            
+            if not success:
+                self.logger.warning("DDP setup failed, falling back to DataParallel")
+                self.strategy = 'dp'
+                self.is_distributed = False
+                self.world_size = 1
+                self.rank = 0
+                return True
+            
+            return success
         return True
     
     def cleanup(self):
@@ -209,12 +386,17 @@ class MultiGPUStrategy:
         
         elif self.strategy == 'ddp' and self.world_size > 1:
             # DistributedDataParallel
+            device_ids = [self.local_rank] if torch.cuda.is_available() else None
+            output_device = self.local_rank if torch.cuda.is_available() else None
+            
             model = DDP(
                 model,
-                device_ids=[self.rank] if torch.cuda.is_available() else None,
-                output_device=self.rank if torch.cuda.is_available() else None
+                device_ids=device_ids,
+                output_device=output_device,
+                find_unused_parameters=self.find_unused_parameters
             )
-            logging.info(f"Model wrapped with DistributedDataParallel, rank {self.rank}/{self.world_size}")
+            logging.info(f"Model wrapped with DistributedDataParallel, rank {self.rank}/{self.world_size}, "
+                        f"local_rank {self.local_rank}, find_unused_parameters={self.find_unused_parameters}")
         
         else:
             logging.info(f"Model using single GPU/CPU: {self.device}")
@@ -290,6 +472,39 @@ class MultiGPUStrategy:
         """Synchronize all processes."""
         if self.strategy == 'ddp' and self.world_size > 1:
             dist.barrier()
+    
+    def print_setup_info(self):
+        """Print detailed setup information."""
+        self.logger.info("=" * 60)
+        self.logger.info("DISTRIBUTED TRAINING SETUP")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Strategy: {self.strategy}")
+        self.logger.info(f"Backend: {self.backend}")
+        self.logger.info(f"World Size: {self.world_size}")
+        self.logger.info(f"Rank: {self.rank}")
+        self.logger.info(f"Local Rank: {self.local_rank}")
+        self.logger.info(f"Device: {self.device}")
+        self.logger.info(f"CUDA Available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            self.logger.info(f"CUDA Device Count: {torch.cuda.device_count()}")
+            self.logger.info(f"Current CUDA Device: {torch.cuda.current_device()}")
+        
+        # Environment variables
+        self.logger.info("Environment Variables:")
+        env_vars = ['RANK', 'WORLD_SIZE', 'LOCAL_RANK', 'MASTER_ADDR', 'MASTER_PORT']
+        for var in env_vars:
+            value = os.environ.get(var, 'Not set')
+            self.logger.info(f"  {var}: {value}")
+        
+        # SLURM info
+        if self.slurm_info['is_slurm']:
+            self.logger.info("SLURM Environment:")
+            slurm_vars = ['SLURM_PROCID', 'SLURM_NTASKS', 'SLURM_LOCALID', 'SLURM_STEP_NODELIST']
+            for var in slurm_vars:
+                value = os.environ.get(var, 'Not set')
+                self.logger.info(f"  {var}: {value}")
+        
+        self.logger.info("=" * 60)
     
     def save_checkpoint(self, state_dict: Dict[str, Any], filepath: str):
         """

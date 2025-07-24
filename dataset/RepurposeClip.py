@@ -4,6 +4,7 @@ import numpy as np
 import os
 import json
 import logging
+from tqdm import tqdm
 
 
 class RepurposeClip(Dataset):
@@ -50,7 +51,9 @@ class RepurposeClip(Dataset):
         missing_text = []
         invalid_data = []
 
-        for label_item in original_labels:
+        self.logger.info(f"Filtering {len(original_labels)} samples for available data...")
+        
+        for label_item in tqdm(original_labels, desc="Filtering samples", unit="sample"):
             video_id = label_item['youtube_id']
 
             # Check if all three modality files exist
@@ -496,7 +499,9 @@ class RepurposeClipTest(Dataset):
         missing_audio = []
         missing_text = []
 
-        for label_item in original_labels:
+        print(f"Filtering {len(original_labels)} test samples for available data...")
+        
+        for label_item in tqdm(original_labels, desc="Filtering test samples", unit="sample"):
             video_id = label_item['youtube_id']
 
             # Check if all three modality files exist
