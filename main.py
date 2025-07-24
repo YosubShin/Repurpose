@@ -643,11 +643,11 @@ def main(args):
                     if batch_idx == 0:
                         logger.debug(
                             f"About to get model predictions for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
-                        # Access inference method through module for DDP-wrapped models
-                        if hasattr(model, 'module'):
-                            preds = model.module.inference_(batch, cfg['test_cfg'])
-                        else:
-                            preds = model.inference_(batch, cfg['test_cfg'])
+                    # Access inference method through module for DDP-wrapped models
+                    if hasattr(model, 'module'):
+                        preds = model.module.inference_(batch, cfg['test_cfg'])
+                    else:
+                        preds = model.inference_(batch, cfg['test_cfg'])
                     if batch_idx == 0:
                         logger.debug(
                             f"Model predictions completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
@@ -655,11 +655,14 @@ def main(args):
                     if batch_idx == 0:
                         logger.debug(
                             f"About to calculate tIoU metrics - batch {batch_idx+1} - rank {multi_gpu.rank}")
-                    for i in range(len(preds)):
+                    # Ensure we don't go out of bounds with batch indexing
+                    batch_size = min(len(preds), len(batch['gt_segments']))
+                    for i in range(batch_size):
                         thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
-                        precision_per_threshold = calculate_tiou(
-                            batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
-                        total_tIoU.append(precision_per_threshold)
+                        if i < len(preds) and 'segments' in preds[i]:
+                            precision_per_threshold = calculate_tiou(
+                                batch['gt_segments'][i], preds[i]['segments'].tolist(), thresholds)
+                            total_tIoU.append(precision_per_threshold)
                     if batch_idx == 0:
                         logger.debug(
                             f"tIoU metrics calculated - batch {batch_idx+1} - rank {multi_gpu.rank}")
