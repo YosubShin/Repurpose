@@ -162,15 +162,10 @@ def main(args):
         model.train()
         total_loss = 0
         total_cls_loss = 0
-        total_reg_loss = 0
         start_time = time.time()
 
         for i, batch in enumerate(train_data_loader):
             # Move tensors to appropriate device
-            batch['visual_feats'] = batch['visual_feats'].to(
-                multi_gpu.device, non_blocking=True)
-            batch['audio_feats'] = batch['audio_feats'].to(
-                multi_gpu.device, non_blocking=True)
             batch['text_feats'] = batch['text_feats'].to(
                 multi_gpu.device, non_blocking=True)
             batch['masks'] = batch['masks'].to(
@@ -183,9 +178,7 @@ def main(args):
             output = model(batch)
             losses = model.losses(*output)
 
-            lambda_ = 0.2
-            final_loss = (
-                lambda_ * losses['cls_loss'] + (1-lambda_) * losses['reg_loss']) / batch_size
+            final_loss = losses['cls_loss'] / batch_size
             optimizer.zero_grad()
             final_loss.backward()
             optimizer.step()
@@ -193,15 +186,11 @@ def main(args):
             # Reduce losses across GPUs for accurate logging
             cls_loss_tensor = multi_gpu.reduce_tensor(
                 losses["cls_loss"] / batch_size)
-            reg_loss_tensor = multi_gpu.reduce_tensor(
-                losses["reg_loss"] / batch_size)
             final_loss_tensor = multi_gpu.reduce_tensor(final_loss)
 
             cls_loss = cls_loss_tensor.item()
-            reg_loss = reg_loss_tensor.item()
             batch_loss = final_loss_tensor.item()
             total_cls_loss += cls_loss
-            total_reg_loss += reg_loss
             total_loss += batch_loss
 
             # Log batch-level metrics (only on main process)
@@ -209,7 +198,6 @@ def main(args):
                 global_step_iter = epoch * len(train_data_loader) + i
                 wandb.log({
                     'batch/cls_loss': cls_loss,
-                    'batch/reg_loss': reg_loss,
                     'batch/total_loss': batch_loss,
                     'batch/learning_rate': optimizer.param_groups[0]['lr']
                 }, step=global_step_iter)
@@ -227,7 +215,6 @@ def main(args):
                 with torch.no_grad():
                     # Sample a few batches from validation set for quick eval
                     val_cls_losses = []
-                    val_reg_losses = []
                     val_total_losses = []
 
                     # Use iterator to get a few validation batches
@@ -242,10 +229,6 @@ def main(args):
                             break
 
                         # Move validation batch to device
-                        val_batch['visual_feats'] = val_batch['visual_feats'].to(
-                            multi_gpu.device, non_blocking=True)
-                        val_batch['audio_feats'] = val_batch['audio_feats'].to(
-                            multi_gpu.device, non_blocking=True)
                         val_batch['text_feats'] = val_batch['text_feats'].to(
                             multi_gpu.device, non_blocking=True)
                         val_batch['masks'] = val_batch['masks'].to(
@@ -260,23 +243,18 @@ def main(args):
                         # Calculate validation losses
                         val_output = model(val_batch)
                         val_losses = model.losses(*val_output)
-                        val_batch_size = val_batch['visual_feats'].shape[0]
+                        val_batch_size = val_batch['text_feats'].shape[0]
 
                         val_cls_loss = val_losses['cls_loss'].item(
                         ) / val_batch_size
-                        val_reg_loss = val_losses['reg_loss'].item(
-                        ) / val_batch_size
-                        val_final_loss = (
-                            lambda_ * val_cls_loss + (1-lambda_) * val_reg_loss)
+                        val_final_loss = val_cls_loss
 
                         val_cls_losses.append(val_cls_loss)
-                        val_reg_losses.append(val_reg_loss)
                         val_total_losses.append(val_final_loss)
 
                     # Calculate average validation losses
                     if val_cls_losses:
                         avg_val_cls = sum(val_cls_losses) / len(val_cls_losses)
-                        avg_val_reg = sum(val_reg_losses) / len(val_reg_losses)
                         avg_val_total = sum(
                             val_total_losses) / len(val_total_losses)
 
@@ -284,7 +262,6 @@ def main(args):
                         if is_main_process():
                             wandb.log({
                                 'intra_eval/cls_loss': avg_val_cls,
-                                'intra_eval/reg_loss': avg_val_reg,
                                 'intra_eval/total_loss': avg_val_total,
                                 'intra_eval/iteration': i + 1,
                                 'intra_eval/epoch': epoch
@@ -298,13 +275,12 @@ def main(args):
 
             # Print progress (only on main process)
             if is_main_process():
-                print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f},  cls Loss: {cls_loss:.3f}, reg Loss: {reg_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
+                print(f"Epoch {epoch+1}/{num_epochs}, Iter {i+1}/{len(train_data_loader)}, Total Loss: {batch_loss:.3f}, cls Loss: {cls_loss:.3f}, Time: {time.time() - start_time:.3f}s", end='\r')
         end_time = time.time()
 
         # Calculate average losses
         num_batches = len(train_data_loader)
         avg_cls_loss = total_cls_loss / num_batches
-        avg_reg_loss = total_reg_loss / num_batches
         avg_total_loss = total_loss / num_batches
 
         # save checkpoint to disk (only on main process)
@@ -328,13 +304,10 @@ def main(args):
         if multi_gpu.strategy == 'ddp' and multi_gpu.world_size > 1:
             avg_cls_loss_tensor = torch.tensor(
                 avg_cls_loss, device=multi_gpu.device)
-            avg_reg_loss_tensor = torch.tensor(
-                avg_reg_loss, device=multi_gpu.device)
             avg_total_loss_tensor = torch.tensor(
                 avg_total_loss, device=multi_gpu.device)
 
             avg_cls_loss = multi_gpu.reduce_tensor(avg_cls_loss_tensor).item()
-            avg_reg_loss = multi_gpu.reduce_tensor(avg_reg_loss_tensor).item()
             avg_total_loss = multi_gpu.reduce_tensor(
                 avg_total_loss_tensor).item()
 
@@ -342,13 +315,12 @@ def main(args):
         if is_main_process():
             wandb.log({
                 'epoch/avg_cls_loss': avg_cls_loss,
-                'epoch/avg_reg_loss': avg_reg_loss,
                 'epoch/avg_total_loss': avg_total_loss,
                 'epoch/epoch': epoch + 1,
                 'epoch/time': end_time - start_time
             }, step=epoch)
 
-        epoch_message = f"Epoch {epoch+1}/{num_epochs}, Avg Loss: {avg_total_loss:.3f}, Avg cls Loss: {avg_cls_loss:.3f}, Avg reg Loss: {avg_reg_loss:.3f}, Time: {end_time - start_time:.3f}s"
+        epoch_message = f"Epoch {epoch+1}/{num_epochs}, Avg Loss: {avg_total_loss:.3f}, Avg cls Loss: {avg_cls_loss:.3f}, Time: {end_time - start_time:.3f}s"
 
         if is_main_process():
             print(epoch_message)
@@ -369,7 +341,6 @@ def main(args):
                 total_tIoU = []
                 # Track validation losses
                 total_val_cls_loss = 0
-                total_val_reg_loss = 0
                 total_val_loss = 0
                 # Use tqdm only on main process for cleaner output
                 data_iter = tqdm(
@@ -378,10 +349,6 @@ def main(args):
                 for batch in data_iter:
                     count += 1
                     # Move tensors to appropriate device
-                    batch['visual_feats'] = batch['visual_feats'].to(
-                        multi_gpu.device, non_blocking=True)
-                    batch['audio_feats'] = batch['audio_feats'].to(
-                        multi_gpu.device, non_blocking=True)
                     batch['text_feats'] = batch['text_feats'].to(
                         multi_gpu.device, non_blocking=True)
                     batch['masks'] = batch['masks'].to(
@@ -398,23 +365,19 @@ def main(args):
                     # Calculate validation losses
                     output = model(batch)
                     losses = model.losses(*output)
-                    batch_size = batch['visual_feats'].shape[0]
+                    batch_size = batch['text_feats'].shape[0]
 
                     # Accumulate losses
                     val_cls_loss = losses['cls_loss'].item() / batch_size
-                    val_reg_loss = losses['reg_loss'].item() / batch_size
-                    lambda_ = 0.2
-                    val_total_loss = (lambda_ * val_cls_loss +
-                                      (1-lambda_) * val_reg_loss)
+                    val_total_loss = val_cls_loss
 
                     total_val_cls_loss += val_cls_loss
-                    total_val_reg_loss += val_reg_loss
                     total_val_loss += val_total_loss
 
                     # Log samples for debugging (only for first 10 batches and on main process)
                     if debug_viz and count <= 10:
                         # Unpack the output
-                        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets = output
+                        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = output
 
                         # Log each sample in the batch
                         # Log max 2 samples per batch
@@ -428,7 +391,7 @@ def main(args):
                                 cls_logits=out_cls_logits[sample_idx],
                                 gt_labels=gt_cls_labels[sample_idx],
                                 cls_loss=val_cls_loss,
-                                reg_loss=val_reg_loss,
+                                reg_loss=0.0,  # Regression loss removed, using placeholder
                                 masks=masks[sample_idx]
                             )
 
@@ -453,7 +416,6 @@ def main(args):
 
                 # Calculate average validation losses
                 avg_val_cls_loss = total_val_cls_loss / count
-                avg_val_reg_loss = total_val_reg_loss / count
                 avg_val_total_loss = total_val_loss / count
 
                 # Synchronize evaluation results across processes
@@ -494,7 +456,6 @@ def main(args):
 
                     # Add validation losses
                     eval_metrics["eval/cls_loss"] = avg_val_cls_loss
-                    eval_metrics["eval/reg_loss"] = avg_val_reg_loss
                     eval_metrics["eval/total_loss"] = avg_val_total_loss
 
                     # Use global step to align with batch metrics

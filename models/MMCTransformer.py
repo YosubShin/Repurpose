@@ -1,5 +1,5 @@
 from .transformer import *
-from .losses import ctr_diou_loss_1d, sigmoid_focal_loss
+from .losses import sigmoid_focal_loss
 from .softnms import soft_nms_intervals_cpu
 import numpy as np
 
@@ -7,9 +7,9 @@ import numpy as np
 class MMCTransformer(nn.Module):
     def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
         super(MMCTransformer, self).__init__()
-        # Audio-only encoder
-        self.aud_encoder = UniModalEncoder(
-            aud_dim, d_model, self_num_layers, num_heads, d_ff)
+        # Text-only encoder
+        self.text_encoder = UniModalEncoder(
+            text_dim, d_model, self_num_layers, num_heads, d_ff)
 
         hidden_dim = 256
 
@@ -29,26 +29,26 @@ class MMCTransformer(nn.Module):
         )
 
     def forward(self, batch):
-        aud_feats = batch['audio_feats']
+        text_feats = batch['text_feats']
         masks = batch['masks']
         gt_cls_labels = batch['labels']
         gt_offsets = batch['segments']
         # preprocessing
-        # aud: [batch_size, seq_len, aud_dim]
+        # text: [batch_size, seq_len, text_dim]
         # masks: [batch_size, 1, max_len]
 
         # encode the features via self-attention
-        aud_feats = self.aud_encoder(aud_feats, masks)
+        text_feats = self.text_encoder(text_feats, masks)
 
-        # use audio features directly
-        feats = self.feature_map(aud_feats)
+        # use text features directly
+        feats = self.feature_map(text_feats)
 
         # out_cls: List[B, #cls, seq_len]
         out_cls_logits = self.cls_head(feats)
         # out_offset: List[B, 2, seq_len]
         out_offsets = self.reg_head(feats)
 
-        return masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets
+        return masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats
 
     @property
     def device(self):
@@ -59,7 +59,7 @@ class MMCTransformer(nn.Module):
     def losses(
         self, masks,
         out_cls_logits, out_offsets,
-        gt_cls_labels, gt_offsets
+        gt_cls_labels, gt_offsets, feats
     ):
         # mask: batch_size, max_len
         # out_cls_logits: List[B, seq_len, 1]
@@ -76,20 +76,7 @@ class MMCTransformer(nn.Module):
 
         cls_loss = cls_loss.sum()
 
-        # 2. regression loss
-        cls_mask = (gt_cls_labels != 0).float()
-
-        combined_mask = masks * cls_mask
-
-        reg_loss = ctr_diou_loss_1d(
-            out_offsets,
-            gt_offsets,
-        )
-
-        reg_loss = (reg_loss * combined_mask.squeeze(-1)).sum()
-
-        return {'cls_loss': cls_loss,
-                'reg_loss': reg_loss}
+        return {'cls_loss': cls_loss}
 
     @torch.no_grad()
     def inference_single_video(self, masks, out_cls_logits, out_offsets, inference_settings):
@@ -144,7 +131,7 @@ class MMCTransformer(nn.Module):
     @torch.no_grad()
     def inference_(self, batch, inference_settings):
 
-        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets = self.forward(
+        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = self.forward(
             batch)
 
         # batch seq_len

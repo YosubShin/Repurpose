@@ -213,7 +213,7 @@ class ValidationDebugger:
                        f"Std: {stats['prediction_analysis']['right_offset_std']:.4f}\n")
                 
                 if stats['prediction_analysis']['offset_variance_warning']:
-                    f.write("\n⚠️  WARNING: Low variance in predictions - possible model collapse!\n")
+                    f.write("\nWARNING: Low variance in predictions - possible model collapse!\n")
             
             log_paths.append(summary_path)
                     
