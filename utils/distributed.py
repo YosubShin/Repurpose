@@ -154,6 +154,9 @@ def setup_distributed(rank: int, world_size: int, backend: str = 'nccl',
             device_id = local_rank % torch.cuda.device_count()
             torch.cuda.set_device(device_id)
             logger.info(f"  CUDA Device: {device_id}")
+            # Log additional device info for debugging
+            logger.info(f"  Available GPUs: {torch.cuda.device_count()}")
+            logger.info(f"  Current device: {torch.cuda.current_device()}")
 
         # Initialize process group with timeout
         start_time = time.time()
@@ -224,7 +227,9 @@ def get_device() -> torch.device:
     """Get the appropriate device for current process."""
     if torch.cuda.is_available():
         if dist.is_available() and dist.is_initialized():
-            return torch.device(f'cuda:{get_rank()}')
+            # Use LOCAL_RANK instead of RANK for proper GPU assignment
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            return torch.device(f'cuda:{local_rank}')
         else:
             return torch.device('cuda')
     return torch.device('cpu')
@@ -336,7 +341,12 @@ class MultiGPUStrategy:
                 self.world_size = gpu_count
                 self.local_rank = 0
 
-            self.device = get_device()
+            # Set device based on local_rank for proper GPU assignment
+            if torch.cuda.is_available():
+                self.device = torch.device(f'cuda:{self.local_rank}')
+                self.logger.info(f"DDP process rank {self.rank} assigned to GPU {self.local_rank}")
+            else:
+                self.device = torch.device('cpu')
 
     def setup(self) -> bool:
         """Setup the multi-GPU environment."""
