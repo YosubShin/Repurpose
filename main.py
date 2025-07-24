@@ -318,7 +318,11 @@ def main(args):
             if i == 0:
                 logger.debug(
                     f"Model forward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
-            losses = model.losses(*output)
+            # Access losses method through module for DDP-wrapped models
+            if hasattr(model, 'module'):
+                losses = model.module.losses(*output)
+            else:
+                losses = model.losses(*output)
             if i == 0:
                 logger.debug(
                     f"Loss computation completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
@@ -421,7 +425,11 @@ def main(args):
 
                         # Calculate validation losses
                         val_output = model(val_batch)
-                        val_losses = model.losses(*val_output)
+                        # Access losses method through module for DDP-wrapped models
+                        if hasattr(model, 'module'):
+                            val_losses = model.module.losses(*val_output)
+                        else:
+                            val_losses = model.losses(*val_output)
                         val_batch_size = val_batch['text_feats'].shape[0]
 
                         val_cls_loss = val_losses['cls_loss'].item(
@@ -592,7 +600,11 @@ def main(args):
                     if batch_idx == 0:
                         logger.debug(
                             f"Validation forward pass completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
-                    losses = model.losses(*output)
+                    # Access losses method through module for DDP-wrapped models
+            if hasattr(model, 'module'):
+                losses = model.module.losses(*output)
+            else:
+                losses = model.losses(*output)
                     if batch_idx == 0:
                         logger.debug(
                             f"Validation loss computation completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
@@ -630,10 +642,11 @@ def main(args):
                     if batch_idx == 0:
                         logger.debug(
                             f"About to get model predictions for validation - batch {batch_idx+1} - rank {multi_gpu.rank}")
-                    if hasattr(model, 'module'):
-                        preds = model.module.inference_(batch, cfg['test_cfg'])
-                    else:
-                        preds = model.inference_(batch, cfg['test_cfg'])
+                        # Access inference method through module for DDP-wrapped models
+                        if hasattr(model, 'module'):
+                            preds = model.module.inference_(batch, cfg['test_cfg'])
+                        else:
+                            preds = model.inference_(batch, cfg['test_cfg'])
                     if batch_idx == 0:
                         logger.debug(
                             f"Model predictions completed - batch {batch_idx+1} - rank {multi_gpu.rank}")
@@ -782,7 +795,11 @@ def main(args):
                                 output = model(train_batch)
                                 logger.debug(
                                     f"Training sample forward pass completed - sample {sample_idx+1} - epoch {epoch+1}")
-                                losses = model.losses(*output)
+                                # Access losses method through module for DDP-wrapped models
+                                if hasattr(model, 'module'):
+                                    losses = model.module.losses(*output)
+                                else:
+                                    losses = model.losses(*output)
                                 batch_size = train_batch['text_feats'].shape[0]
                                 train_cls_loss = losses['cls_loss'].item(
                                 ) / batch_size
