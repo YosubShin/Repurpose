@@ -14,6 +14,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import pearsonr, spearmanr
+from scipy.signal import correlate
+from sklearn.linear_model import LogisticRegression
 import torch
 from dataset.RepurposeClip import RepurposeClipTest
 import argparse
@@ -214,6 +216,81 @@ class ModalityCorrelationAnalyzer:
         
         return results
     
+    def analyze_feature_label_regression(self, sample, max_lag=50):
+        """
+        Analyze correlation between logistic regression scores and labels
+        
+        Args:
+            sample: Dictionary containing features and labels
+            max_lag: Maximum lag for cross-correlation
+        
+        Returns:
+            Dictionary of cross-correlation results
+        """
+        labels = np.array(sample['labels'])
+        visual = sample['visual_features']
+        audio = sample['audio_features'] 
+        text = sample['text_features']
+        
+        # Skip if too few positive samples
+        if np.sum(labels) < 10:
+            return None
+            
+        results = {}
+        
+        # Test each modality separately and combined
+        modalities = {
+            'visual': visual,
+            'audio': audio,
+            'text': text,
+            'combined': np.hstack([visual, audio, text])
+        }
+        
+        for modality_name, features in modalities.items():
+            try:
+                # Train logistic regression
+                lr = LogisticRegression(max_iter=1000, random_state=42)
+                lr.fit(features, labels)
+                
+                # Compute scores
+                w = lr.coef_.ravel()
+                scores = features @ w
+                
+                # Convert labels to zero-mean format
+                zero_mean_labels = (2 * labels - 1)
+                zero_mean_labels = zero_mean_labels - zero_mean_labels.mean()
+                
+                # Compute cross-correlation
+                # Using 'full' mode to get all lags from -N+1 to N-1
+                cross_corr = correlate(scores, zero_mean_labels, mode='full', method='auto')
+                
+                # Normalize by the number of overlapping points
+                norm = np.sqrt(np.sum(scores**2) * np.sum(zero_mean_labels**2))
+                if norm > 0:
+                    cross_corr = cross_corr / norm
+                
+                # Get lags
+                lags = np.arange(-len(labels) + 1, len(labels))
+                
+                # Restrict to max_lag
+                center = len(labels) - 1
+                lag_mask = np.abs(lags) <= max_lag
+                
+                results[modality_name] = {
+                    'cross_correlation': cross_corr[lag_mask],
+                    'lags': lags[lag_mask],
+                    'lr_score': lr.score(features, labels),
+                    'weights_norm': np.linalg.norm(w),
+                    'peak_lag': lags[lag_mask][np.argmax(np.abs(cross_corr[lag_mask]))],
+                    'peak_correlation': np.max(np.abs(cross_corr[lag_mask]))
+                }
+                
+            except Exception as e:
+                print(f"Failed to analyze {modality_name}: {e}")
+                results[modality_name] = None
+        
+        return results
+    
     def plot_temporal_correlations(self, all_results):
         """Plot temporal correlation analysis results"""
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -364,6 +441,127 @@ class ModalityCorrelationAnalyzer:
                    dpi=300, bbox_inches='tight')
         plt.close()
     
+    def plot_regression_correlation(self, all_results):
+        """Plot logistic regression cross-correlation analysis"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        axes = axes.flatten()
+        
+        modality_names = ['visual', 'audio', 'text', 'combined']
+        colors = ['blue', 'orange', 'green', 'red']
+        
+        # Collect all regression results
+        valid_results = []
+        for video_id, results in all_results.items():
+            if 'regression_analysis' in results and results['regression_analysis'] is not None:
+                valid_results.append((video_id, results['regression_analysis']))
+        
+        if not valid_results:
+            print("No valid regression analysis results to plot")
+            return
+        
+        # Plot cross-correlation for each modality
+        for idx, (modality_name, color) in enumerate(zip(modality_names, colors)):
+            ax = axes[idx]
+            
+            # Plot individual videos
+            all_correlations = []
+            all_lags = None
+            
+            for video_id, reg_results in valid_results:
+                if modality_name in reg_results and reg_results[modality_name] is not None:
+                    result = reg_results[modality_name]
+                    lags = result['lags']
+                    cross_corr = result['cross_correlation']
+                    
+                    ax.plot(lags, cross_corr, alpha=0.3, color=color, linewidth=1)
+                    all_correlations.append(cross_corr)
+                    if all_lags is None:
+                        all_lags = lags
+            
+            # Plot average if we have data
+            if all_correlations:
+                avg_corr = np.mean(all_correlations, axis=0)
+                std_corr = np.std(all_correlations, axis=0)
+                
+                ax.plot(all_lags, avg_corr, color=color, linewidth=2, 
+                       label=f'{modality_name.capitalize()} (avg)')
+                ax.fill_between(all_lags, avg_corr - std_corr, avg_corr + std_corr,
+                               alpha=0.2, color=color)
+                
+                # Mark peak
+                peak_idx = np.argmax(np.abs(avg_corr))
+                ax.plot(all_lags[peak_idx], avg_corr[peak_idx], 'o', 
+                       color=color, markersize=8)
+                ax.text(all_lags[peak_idx], avg_corr[peak_idx] + 0.01,
+                       f'Peak: {avg_corr[peak_idx]:.3f}\nLag: {all_lags[peak_idx]}',
+                       ha='center', fontsize=9)
+            
+            ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+            ax.axvline(x=0, color='red', linestyle='--', alpha=0.5)
+            ax.set_xlabel('Lag (timesteps)')
+            ax.set_ylabel('Cross-correlation')
+            ax.set_title(f'{modality_name.capitalize()} - Logistic Regression Score vs Labels')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        plt.suptitle('Cross-correlation: Logistic Regression Scores vs Zero-mean Labels', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'regression_correlation.png'),
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create summary statistics plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Collect peak correlations and lags
+        peak_corrs = {mod: [] for mod in modality_names}
+        peak_lags = {mod: [] for mod in modality_names}
+        lr_scores = {mod: [] for mod in modality_names}
+        
+        for video_id, reg_results in valid_results:
+            for modality_name in modality_names:
+                if modality_name in reg_results and reg_results[modality_name] is not None:
+                    result = reg_results[modality_name]
+                    peak_corrs[modality_name].append(result['peak_correlation'])
+                    peak_lags[modality_name].append(result['peak_lag'])
+                    lr_scores[modality_name].append(result['lr_score'])
+        
+        # Plot 1: Peak correlations by modality
+        positions = np.arange(len(modality_names))
+        for i, modality in enumerate(modality_names):
+            if peak_corrs[modality]:
+                ax1.bar(i, np.mean(peak_corrs[modality]), yerr=np.std(peak_corrs[modality]),
+                       color=colors[i], alpha=0.7, label=modality.capitalize())
+                ax1.text(i, np.mean(peak_corrs[modality]) + 0.01, 
+                        f'{np.mean(peak_corrs[modality]):.3f}',
+                        ha='center', fontsize=9)
+        
+        ax1.set_xticks(positions)
+        ax1.set_xticklabels([m.capitalize() for m in modality_names])
+        ax1.set_ylabel('Peak Cross-correlation')
+        ax1.set_title('Peak Cross-correlation by Modality')
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Logistic regression accuracy
+        for i, modality in enumerate(modality_names):
+            if lr_scores[modality]:
+                ax2.bar(i, np.mean(lr_scores[modality]), yerr=np.std(lr_scores[modality]),
+                       color=colors[i], alpha=0.7)
+                ax2.text(i, np.mean(lr_scores[modality]) + 0.01,
+                        f'{np.mean(lr_scores[modality]):.3f}',
+                        ha='center', fontsize=9)
+        
+        ax2.set_xticks(positions)
+        ax2.set_xticklabels([m.capitalize() for m in modality_names])
+        ax2.set_ylabel('Logistic Regression Accuracy')
+        ax2.set_title('Classification Accuracy by Modality')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'regression_summary.png'),
+                   dpi=300, bbox_inches='tight')
+        plt.close()
+    
     def create_summary_report(self, all_results):
         """Create a comprehensive summary report"""
         report_path = os.path.join(self.output_dir, 'correlation_analysis_report.txt')
@@ -464,12 +662,60 @@ class ModalityCorrelationAnalyzer:
             else:
                 f.write("✓ Inter-modality correlations appear reasonable\n")
             
+            # Add regression analysis summary
+            f.write("\nLOGISTIC REGRESSION ANALYSIS:\n")
+            f.write("-" * 30 + "\n")
+            
+            # Collect regression results
+            reg_peak_corrs = defaultdict(list)
+            reg_peak_lags = defaultdict(list)
+            reg_accuracies = defaultdict(list)
+            
+            for video_id, results in all_results.items():
+                if 'regression_analysis' in results and results['regression_analysis'] is not None:
+                    reg_results = results['regression_analysis']
+                    for modality in ['visual', 'audio', 'text', 'combined']:
+                        if modality in reg_results and reg_results[modality] is not None:
+                            reg_peak_corrs[modality].append(reg_results[modality]['peak_correlation'])
+                            reg_peak_lags[modality].append(reg_results[modality]['peak_lag'])
+                            reg_accuracies[modality].append(reg_results[modality]['lr_score'])
+            
+            if reg_peak_corrs:
+                f.write("Peak cross-correlations (LR scores vs labels):\n")
+                for modality in ['visual', 'audio', 'text', 'combined']:
+                    if reg_peak_corrs[modality]:
+                        f.write(f"  {modality.capitalize()}: {np.mean(reg_peak_corrs[modality]):.4f} "
+                               f"(±{np.std(reg_peak_corrs[modality]):.4f}) at lag {np.mean(reg_peak_lags[modality]):.1f}\n")
+                
+                f.write("\nLogistic Regression accuracies:\n")
+                for modality in ['visual', 'audio', 'text', 'combined']:
+                    if reg_accuracies[modality]:
+                        f.write(f"  {modality.capitalize()}: {np.mean(reg_accuracies[modality]):.3f} "
+                               f"(±{np.std(reg_accuracies[modality]):.3f})\n")
+                
+                # Assessment of regression results
+                f.write("\nRegression Analysis Assessment:\n")
+                avg_peak_corr = np.mean([np.mean(reg_peak_corrs[m]) for m in reg_peak_corrs if reg_peak_corrs[m]])
+                if avg_peak_corr < 0.1:
+                    f.write("⚠️ Very low cross-correlations between LR scores and labels\n")
+                    f.write("   This is expected given the complex nature of highlight detection\n")
+                    f.write("   The transformer model is needed to capture temporal dependencies\n")
+                elif avg_peak_corr < 0.3:
+                    f.write("✓ Modest cross-correlations detected\n")
+                    f.write("   Features contain some linearly separable signal\n")
+                else:
+                    f.write("✓ Good cross-correlations detected\n")
+                    f.write("   Features contain reasonably strong linear signal\n")
+            else:
+                f.write("No regression analysis results available\n")
+            
             f.write("\nRECOMMENDATIONS:\n")
             f.write("-" * 20 + "\n")
             f.write("1. If correlations don't peak at zero offset, check temporal alignment\n")
             f.write("2. If correlations are very low, verify feature extraction\n")
             f.write("3. Compare highlight vs background correlations - highlights should show stronger correlations\n")
             f.write("4. Visual-Audio correlation should typically be strongest\n")
+            f.write("5. Low LR cross-correlations are expected - transformers capture complex patterns\n")
         
         print(f"\nSummary report saved to: {report_path}")
     
@@ -493,7 +739,8 @@ class ModalityCorrelationAnalyzer:
             results = {
                 'video_id': video_id,
                 'temporal': self.analyze_temporal_correlations(sample),
-                'highlight_background': self.analyze_highlight_vs_background(sample)
+                'highlight_background': self.analyze_highlight_vs_background(sample),
+                'regression_analysis': self.analyze_feature_label_regression(sample)
             }
             
             all_results[video_id] = results
@@ -506,11 +753,20 @@ class ModalityCorrelationAnalyzer:
                 print(f"    Visual-Audio: {temporal['visual_audio'][zero_idx]:.4f}")
                 print(f"    Visual-Text: {temporal['visual_text'][zero_idx]:.4f}")
                 print(f"    Audio-Text: {temporal['audio_text'][zero_idx]:.4f}")
+            
+            # Print regression summary if available
+            if results['regression_analysis'] is not None:
+                print(f"  Logistic regression peak correlations:")
+                for modality in ['visual', 'audio', 'text', 'combined']:
+                    if modality in results['regression_analysis'] and results['regression_analysis'][modality] is not None:
+                        reg_result = results['regression_analysis'][modality]
+                        print(f"    {modality.capitalize()}: {reg_result['peak_correlation']:.4f} at lag {reg_result['peak_lag']}")
         
         # Create visualizations
         print("\nCreating visualizations...")
         self.plot_temporal_correlations(all_results)
         self.plot_highlight_analysis(all_results)
+        self.plot_regression_correlation(all_results)
         
         # Create summary report
         self.create_summary_report(all_results)
@@ -527,7 +783,8 @@ class ModalityCorrelationAnalyzer:
                             [float(x) if isinstance(x, np.number) else x for x in v] if isinstance(v, list) else v)
                         for k, v in results['temporal'].items()
                     },
-                    'highlight_background': {}
+                    'highlight_background': {},
+                    'regression_analysis': {}
                 }
                 
                 # Convert highlight_background data
@@ -538,6 +795,19 @@ class ModalityCorrelationAnalyzer:
                             k: float(v) if isinstance(v, np.number) else int(v) if isinstance(v, np.integer) else v
                             for k, v in hb[segment_type].items()
                         }
+                
+                # Convert regression analysis data
+                if results['regression_analysis'] is not None:
+                    for modality, reg_data in results['regression_analysis'].items():
+                        if reg_data is not None:
+                            json_results[video_id]['regression_analysis'][modality] = {
+                                'cross_correlation': reg_data['cross_correlation'].tolist(),
+                                'lags': reg_data['lags'].tolist(),
+                                'lr_score': float(reg_data['lr_score']),
+                                'weights_norm': float(reg_data['weights_norm']),
+                                'peak_lag': int(reg_data['peak_lag']),
+                                'peak_correlation': float(reg_data['peak_correlation'])
+                            }
             
             json.dump(json_results, f, indent=2)
         
