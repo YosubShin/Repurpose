@@ -47,7 +47,7 @@ distributed:
     strategy: auto,  # Options: auto, single, dp, ddp
     backend: nccl,   # Communication backend for DDP
     timeout: 1800,   # Timeout for distributed initialization (seconds)
-    find_unused_parameters: false,  # Set to true if you have unused parameters
+    find_unused_parameters: true,  # Set to true if you have unused parameters
   }
 test_cfg:
   {
