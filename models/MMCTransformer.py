@@ -128,7 +128,8 @@ class MMCTransformer(nn.Module):
         
         # Create attention mask for PyTorch transformer
         # PyTorch expects True values to be masked (ignored)
-        src_key_padding_mask = (masks == 0)
+        # Squeeze the middle dimension to get [batch_size, seq_len]
+        src_key_padding_mask = (masks == 0).squeeze(1)
         
         # Encode the features via transformer
         encoded_feats = self.multimodal_encoder(
