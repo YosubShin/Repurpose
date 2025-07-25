@@ -340,6 +340,32 @@ def main(args):
             if i == 0:
                 logger.debug(
                     f"Backward pass completed - batch {i+1}, epoch {epoch+1} - rank {multi_gpu.rank}")
+            
+            # Log gradient norms for all linear layers
+            if is_main_process() and i % 10 == 0:  # Log every 10 iterations
+                grad_norms = {}
+                model_to_check = model.module if hasattr(model, 'module') else model
+                
+                for name, module in model_to_check.named_modules():
+                    if isinstance(module, torch.nn.Linear):
+                        if module.weight.grad is not None:
+                            grad_norm = module.weight.grad.norm().item()
+                            grad_norms[f"grad_norm/{name}_weight"] = grad_norm
+                        if module.bias is not None and module.bias.grad is not None:
+                            grad_norm = module.bias.grad.norm().item()
+                            grad_norms[f"grad_norm/{name}_bias"] = grad_norm
+                
+                # Also log the total gradient norm
+                total_norm = 0
+                for p in model_to_check.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** 0.5
+                grad_norms["grad_norm/total"] = total_norm
+                
+                wandb.log(grad_norms, step=global_step)
+            
             optimizer.step()
             if i == 0:
                 logger.debug(
