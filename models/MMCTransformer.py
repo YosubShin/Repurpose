@@ -1,7 +1,25 @@
-from .transformer import *
+import torch
+import torch.nn as nn
+import math
 from .losses import sigmoid_focal_loss
 from .softnms import soft_nms_intervals_cpu
 import numpy as np
+
+
+class PositionalEncoding(nn.Module):
+    """Minimal positional encoding implementation"""
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
+
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, d_model]
+        return x + self.pe[:, :x.size(1)]
 
 
 class MMCTransformer(nn.Module):
@@ -13,26 +31,80 @@ class MMCTransformer(nn.Module):
         # Linear layer to project concatenated features to d_model
         self.input_projection = nn.Linear(concat_dim, d_model)
         
-        # Multimodal encoder (using the same architecture as the text encoder)
-        self.multimodal_encoder = UniModalEncoder(
-            d_model, d_model, self_num_layers, num_heads, d_ff)
-
+        # Add input layer normalization to help with gradient flow
+        self.input_norm = nn.LayerNorm(d_model)
+        
+        # Positional encoding
+        self.positional_encoding = PositionalEncoding(d_model)
+        
+        # Use PyTorch's built-in TransformerEncoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_ff,
+            dropout=0.1,  # Add dropout to help with regularization
+            activation='relu',
+            batch_first=True,  # Important: use batch_first=True for consistency
+            norm_first=True  # Pre-LN architecture, helps with gradient flow
+        )
+        
+        self.multimodal_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self_num_layers,
+            enable_nested_tensor=False  # Disable for better compatibility
+        )
+        
+        # Additional normalization after encoder
+        self.encoder_norm = nn.LayerNorm(d_model)
+        
         hidden_dim = 256
-
-        self.feature_map = nn.Linear(d_model, d_model)
-
+        
+        # Feature projection with additional normalization
+        self.feature_map = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),  # Extra norm layer
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        
+        # Classification head with layer normalization
         self.cls_head = nn.Sequential(
+            nn.LayerNorm(d_model),  # Pre-norm before classification
             nn.Linear(d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, 1),
         )
-
+        
+        # Regression head with layer normalization
         self.reg_head = nn.Sequential(
+            nn.LayerNorm(d_model),  # Pre-norm before regression
             nn.Linear(d_model, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, 2),
             nn.ReLU()
         )
+        
+        # Initialize weights
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights with Xavier/Glorot initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         visual_feats = batch['visual_feats']
@@ -43,24 +115,36 @@ class MMCTransformer(nn.Module):
         gt_offsets = batch['segments']
         
         # Concatenate all three modalities
-        # visual: [batch_size, seq_len, vis_dim]
-        # audio: [batch_size, seq_len, aud_dim]
-        # text: [batch_size, seq_len, text_dim]
-        # concatenated: [batch_size, seq_len, vis_dim + aud_dim + text_dim]
         concatenated_feats = torch.cat([visual_feats, audio_feats, text_feats], dim=-1)
         
         # Project concatenated features to d_model
         projected_feats = self.input_projection(concatenated_feats)
         
-        # Encode the features via self-attention
-        encoded_feats = self.multimodal_encoder(projected_feats, masks)
-
+        # Apply input normalization
+        projected_feats = self.input_norm(projected_feats)
+        
+        # Add positional encoding
+        projected_feats = self.positional_encoding(projected_feats)
+        
+        # Create attention mask for PyTorch transformer
+        # PyTorch expects True values to be masked (ignored)
+        src_key_padding_mask = (masks == 0)
+        
+        # Encode the features via transformer
+        encoded_feats = self.multimodal_encoder(
+            projected_feats,
+            src_key_padding_mask=src_key_padding_mask
+        )
+        
+        # Apply post-encoder normalization
+        encoded_feats = self.encoder_norm(encoded_feats)
+        
         # Apply feature mapping
         feats = self.feature_map(encoded_feats)
-
-        # out_cls: List[B, #cls, seq_len]
+        
+        # out_cls: [B, seq_len, 1]
         out_cls_logits = self.cls_head(feats)
-        # out_offset: List[B, 2, seq_len]
+        # out_offset: [B, seq_len, 2]
         out_offsets = self.reg_head(feats)
 
         return masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats
