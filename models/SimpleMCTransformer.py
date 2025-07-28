@@ -92,12 +92,13 @@ class SimpleMCTransformer(nn.Module):
 
         # Simple focal loss for classification
         # Try alpha=0.25 to give more weight to positive examples
-        # cls_loss = sigmoid_focal_loss(out_cls_logits, gt_cls_labels, alpha=0.25, reduction='none')
+        cls_loss = sigmoid_focal_loss(
+            out_cls_logits, gt_cls_labels, alpha=0.25, reduction='none')
 
         # Alternative: Try standard BCE if focal loss doesn't work
-        cls_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            out_cls_logits, gt_cls_labels, reduction='none'
-        )
+        # cls_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+        #     out_cls_logits, gt_cls_labels, reduction='none'
+        # )
 
         # Apply mask
         if masks.dim() == 3:  # [batch, 1, seq_len]
