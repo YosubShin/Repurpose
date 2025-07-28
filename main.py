@@ -1,6 +1,7 @@
 from dataset.RepurposeClip import RepurposeClip, RepurposeClipTest
 from dataset.RepurposeClip import collate_fn, collate_fn_test
 from models.MMCTransformer import MMCTransformer
+from models.SimpleMCTransformer import SimpleMCTransformer
 from utils.metrics import *
 from utils.distributed import MultiGPUStrategy, is_main_process, get_rank, get_world_size
 from utils.debug_visualizer import ValidationDebugger
@@ -136,7 +137,11 @@ def main(args):
     logger.debug(f"Debug samples obtained - rank {multi_gpu.rank}")
 
     logger.debug(f"Creating model - rank {multi_gpu.rank}")
-    model = MMCTransformer(**cfg['model'])
+    if hasattr(args, 'use_simple_model') and args.use_simple_model:
+        logger.info("Using SimpleMCTransformer for debugging")
+        model = SimpleMCTransformer(**cfg['model'])
+    else:
+        model = MMCTransformer(**cfg['model'])
     logger.debug(f"Model created - rank {multi_gpu.rank}")
 
     logger.debug(
@@ -893,6 +898,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument('--use-simple-model', action='store_true',
+                        help='Use SimpleMCTransformer for debugging overfitting')
     args = parser.parse_args()
 
     # Set up logging
