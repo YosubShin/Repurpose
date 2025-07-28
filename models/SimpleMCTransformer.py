@@ -10,12 +10,13 @@ class SimpleMCTransformer(nn.Module):
     Minimal model for debugging - just linear layers, no transformers.
     This should be able to overfit on 4 samples easily.
     """
+
     def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
         super(SimpleMCTransformer, self).__init__()
-        
+
         # Concatenated feature dimension
         concat_dim = vis_dim + aud_dim + text_dim
-        
+
         # Super simple architecture - just linear layers
         self.layers = nn.Sequential(
             nn.Linear(concat_dim, 512),
@@ -25,52 +26,59 @@ class SimpleMCTransformer(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(),
         )
-        
+
         # Direct prediction heads - no fancy stuff
         self.cls_head = nn.Linear(128, 1)  # Binary classification
         self.reg_head = nn.Sequential(
             nn.Linear(128, 2),
             nn.ReLU()  # Ensure positive offsets
         )
-        
+
         # Initialize weights
         self._init_weights()
-        
+
         print(f"SimpleMCTransformer initialized with input_dim={concat_dim}")
-    
+
     def _init_weights(self):
         """Simple weight initialization"""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+                    # Special initialization for classification head
+                    if m.out_features == 1:  # This is the cls_head
+                        nn.init.constant_(m.bias, 0.5)  # Slight positive bias
+                        print("Initialized cls_head with positive bias = 0.5")
+                    else:
+                        nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
         visual_feats = batch['visual_feats']
-        audio_feats = batch['audio_feats'] 
+        audio_feats = batch['audio_feats']
         text_feats = batch['text_feats']
         masks = batch['masks']
         gt_cls_labels = batch['labels']
         gt_offsets = batch['segments']
-        
+
         # Print shapes for debugging
         if not hasattr(self, '_printed_shapes'):
-            print(f"Input shapes - visual: {visual_feats.shape}, audio: {audio_feats.shape}, text: {text_feats.shape}")
+            print(
+                f"Input shapes - visual: {visual_feats.shape}, audio: {audio_feats.shape}, text: {text_feats.shape}")
             print(f"Masks shape: {masks.shape}")
             print(f"Labels shape: {gt_cls_labels.shape}")
             self._printed_shapes = True
-        
+
         # Concatenate all modalities
-        concatenated_feats = torch.cat([visual_feats, audio_feats, text_feats], dim=-1)
-        
+        concatenated_feats = torch.cat(
+            [visual_feats, audio_feats, text_feats], dim=-1)
+
         # Apply simple layers
         feats = self.layers(concatenated_feats)
-        
+
         # Get predictions
         out_cls_logits = self.cls_head(feats)
         out_offsets = self.reg_head(feats)
-        
+
         return masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats
 
     @property
@@ -81,33 +89,42 @@ class SimpleMCTransformer(nn.Module):
         # Ensure correct shapes
         if gt_cls_labels.dim() == 2:
             gt_cls_labels = gt_cls_labels.unsqueeze(-1)
-        
+
         # Simple focal loss for classification
-        cls_loss = sigmoid_focal_loss(out_cls_logits, gt_cls_labels, reduction='none')
-        
+        # Try alpha=0.25 to give more weight to positive examples
+        # cls_loss = sigmoid_focal_loss(out_cls_logits, gt_cls_labels, alpha=0.25, reduction='none')
+
+        # Alternative: Try standard BCE if focal loss doesn't work
+        cls_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            out_cls_logits, gt_cls_labels, reduction='none'
+        )
+
         # Apply mask
         if masks.dim() == 3:  # [batch, 1, seq_len]
             masks = masks.transpose(1, 2).contiguous()
         else:  # [batch, seq_len]
             masks = masks.unsqueeze(-1)
-            
+
         cls_loss = cls_loss * masks
-        
+
         # Debug prints
         if not hasattr(self, '_printed_loss_info'):
-            print(f"Loss computation - cls_loss shape: {cls_loss.shape}, masks shape: {masks.shape}")
-            print(f"Number of positive labels: {(gt_cls_labels > 0.5).sum().item()}")
+            print(
+                f"Loss computation - cls_loss shape: {cls_loss.shape}, masks shape: {masks.shape}")
+            print(
+                f"Number of positive labels: {(gt_cls_labels > 0.5).sum().item()}")
             print(f"Number of valid positions (mask=1): {masks.sum().item()}")
-            print(f"Mean cls_loss before masking: {sigmoid_focal_loss(out_cls_logits, gt_cls_labels, reduction='mean').item():.4f}")
+            print(
+                f"Mean cls_loss before masking: {sigmoid_focal_loss(out_cls_logits, gt_cls_labels, reduction='mean').item():.4f}")
             self._printed_loss_info = True
-        
+
         # Average over all valid positions
         num_valid = masks.sum()
         if num_valid > 0:
             cls_loss = cls_loss.sum() / num_valid
         else:
             cls_loss = cls_loss.sum()
-        
+
         return {'cls_loss': cls_loss}
 
     @torch.no_grad()
@@ -162,7 +179,8 @@ class SimpleMCTransformer(nn.Module):
 
     @torch.no_grad()
     def inference_(self, batch, inference_settings):
-        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = self.forward(batch)
+        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = self.forward(
+            batch)
 
         # batch seq_len
         pred_prob = out_cls_logits.squeeze(-1)
@@ -189,9 +207,9 @@ class SimpleMCTransformer(nn.Module):
                 cls_logits_per_vid, offsets_per_vid, inference_settings
             )
             results_per_vid_nms_idx = soft_nms_intervals_cpu(
-                results_per_vid['scores'], results_per_vid['segments'], 
-                sigma=inference_settings['nms_sigma'], 
-                thresh=inference_settings['min_score'], 
+                results_per_vid['scores'], results_per_vid['segments'],
+                sigma=inference_settings['nms_sigma'],
+                thresh=inference_settings['min_score'],
                 max_seg_num=max_seg_num
             )
             results_per_vid['segments'] = results_per_vid['segments'][results_per_vid_nms_idx]
