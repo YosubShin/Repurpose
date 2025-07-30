@@ -428,26 +428,35 @@ class EndOfEpochVisualizationCallback(Callback):
                 logit_a, logit_v, logit_f = pl_module(
                     audio, visual, caption)
 
-                # Apply sequence mask
-                valid_positions = seq_mask.bool()
-                logit_f_valid = logit_f[valid_positions]
-                labels_valid = labels[valid_positions]
-
-                # Convert to numpy for visualization
-                pred_probs = torch.sigmoid(logit_f_valid).cpu().numpy()
-                labels_np = labels_valid.cpu().numpy()
-
-                # Extract video ID from batch
-                video_id = batch['video_ids'][0] if sample_count == 0 else batch['video_ids'][0]
-                
-                viz_data.append({
-                    'predictions': pred_probs,
-                    'labels': labels_np,
-                    'sample_id': sample_count,
-                    'video_id': video_id
-                })
-
-                sample_count += 1
+                # Process each sequence in the batch individually
+                batch_size = logit_f.shape[0]
+                for seq_idx in range(batch_size):
+                    if sample_count >= self.num_samples:
+                        break
+                    
+                    # Get sequence mask for this specific sequence
+                    seq_mask_single = seq_mask[seq_idx]
+                    valid_length = int(seq_mask_single.sum().item())
+                    
+                    # Extract predictions and labels for this sequence only
+                    logit_f_seq = logit_f[seq_idx, :valid_length]
+                    labels_seq = labels[seq_idx, :valid_length]
+                    
+                    # Convert to numpy for visualization
+                    pred_probs = torch.sigmoid(logit_f_seq).cpu().numpy()
+                    labels_np = labels_seq.cpu().numpy()
+                    
+                    # Extract video ID for this sequence
+                    video_id = batch['video_ids'][seq_idx]
+                    
+                    viz_data.append({
+                        'predictions': pred_probs,
+                        'labels': labels_np,
+                        'sample_id': sample_count,
+                        'video_id': video_id
+                    })
+                    
+                    sample_count += 1
 
             # Create and log visualizations to wandb
             if hasattr(trainer.logger, 'experiment'):
@@ -535,8 +544,9 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
     saved_paths = []
 
     with torch.no_grad():
-        for idx, batch in enumerate(dataloader):
-            if idx >= num_samples:
+        sample_count = 0
+        for batch_idx, batch in enumerate(dataloader):
+            if sample_count >= num_samples:
                 break
 
             # Get predictions from dict batch format
@@ -544,115 +554,123 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
             visual = batch['features']['visual'].to(device)
             caption = batch['features']['caption'].to(device)
             labels = batch['labels'].to(device)
+            seq_mask = batch['sequence_masks']
 
             _, _, logit_f = model(audio, visual, caption)
-            labels_np = labels.cpu().numpy()
 
-            pred_probs = torch.sigmoid(logit_f).cpu().numpy()
+            # Process each sequence in the batch individually
+            batch_size = logit_f.shape[0]
+            for seq_idx in range(batch_size):
+                if sample_count >= num_samples:
+                    break
+                
+                # Get valid length for this sequence
+                valid_length = int(seq_mask[seq_idx].sum().item())
+                
+                # Extract predictions and labels for this sequence only
+                pred_probs = torch.sigmoid(logit_f[seq_idx, :valid_length]).cpu().numpy()
+                labels_np = labels[seq_idx, :valid_length].cpu().numpy()
+                
+                # Create visualization
+                fig, axes = plt.subplots(3, 1, figsize=(15, 10))
+                seq_len = len(pred_probs)
+                time_points = np.arange(seq_len)
 
-            # Handle batch dimension
-            if pred_probs.ndim == 2:
-                pred_probs = pred_probs[0]
-                labels_np = labels_np[0]
+                # Plot 1: Classification scores
+                ax1 = axes[0]
+                ax1.plot(time_points, pred_probs, 'b-',
+                         label='Predicted Prob', alpha=0.7)
+                positive_idx = labels_np > 0.5
+                if np.any(positive_idx):
+                    ax1.scatter(time_points[positive_idx],
+                                np.ones(np.sum(positive_idx)),
+                                color='red', s=50, label='GT Positive', zorder=5)
+                ax1.set_ylabel('Classification Score')
+                ax1.set_title(f'Sample {sample_count} - Classification Predictions')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                ax1.set_ylim(-0.1, 1.1)
 
-            # Create visualization
-            fig, axes = plt.subplots(3, 1, figsize=(15, 10))
-            seq_len = len(pred_probs)
-            time_points = np.arange(seq_len)
+                # Plot 2: Confidence over time
+                ax2 = axes[1]
+                confidence = np.abs(pred_probs - 0.5) * 2
+                ax2.plot(time_points, confidence, 'g-',
+                         label='Confidence', alpha=0.7)
+                ax2.set_ylabel('Confidence')
+                ax2.set_title('Prediction Confidence')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                ax2.set_ylim(0, 1)
 
-            # Plot 1: Classification scores
-            ax1 = axes[0]
-            ax1.plot(time_points, pred_probs, 'b-',
-                     label='Predicted Prob', alpha=0.7)
-            positive_idx = labels_np > 0.5
-            if np.any(positive_idx):
-                ax1.scatter(time_points[positive_idx],
-                            np.ones(np.sum(positive_idx)),
-                            color='red', s=50, label='GT Positive', zorder=5)
-            ax1.set_ylabel('Classification Score')
-            ax1.set_title(f'Sample {idx} - Classification Predictions')
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-            ax1.set_ylim(-0.1, 1.1)
+                # Plot 3: Segments visualization
+                ax3 = axes[2]
 
-            # Plot 2: Confidence over time
-            ax2 = axes[1]
-            confidence = np.abs(pred_probs - 0.5) * 2
-            ax2.plot(time_points, confidence, 'g-',
-                     label='Confidence', alpha=0.7)
-            ax2.set_ylabel('Confidence')
-            ax2.set_title('Prediction Confidence')
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
-            ax2.set_ylim(0, 1)
+                # Draw predicted segments
+                threshold = 0.5
+                in_segment = False
+                segment_start = 0
 
-            # Plot 3: Segments visualization
-            ax3 = axes[2]
+                for t in range(seq_len):
+                    if pred_probs[t] > threshold and not in_segment:
+                        in_segment = True
+                        segment_start = t
+                    elif pred_probs[t] <= threshold and in_segment:
+                        in_segment = False
+                        ax3.add_patch(patches.Rectangle(
+                            (segment_start, 0.6), t - segment_start, 0.3,
+                            facecolor='blue', alpha=0.5
+                        ))
 
-            # Draw predicted segments
-            threshold = 0.5
-            in_segment = False
-            segment_start = 0
-
-            for t in range(seq_len):
-                if pred_probs[t] > threshold and not in_segment:
-                    in_segment = True
-                    segment_start = t
-                elif pred_probs[t] <= threshold and in_segment:
-                    in_segment = False
+                if in_segment:
                     ax3.add_patch(patches.Rectangle(
-                        (segment_start, 0.6), t - segment_start, 0.3,
+                        (segment_start, 0.6), seq_len - segment_start, 0.3,
                         facecolor='blue', alpha=0.5
                     ))
 
-            if in_segment:
-                ax3.add_patch(patches.Rectangle(
-                    (segment_start, 0.6), seq_len - segment_start, 0.3,
-                    facecolor='blue', alpha=0.5
-                ))
+                # Draw GT segments
+                in_gt_segment = False
+                gt_segment_start = 0
 
-            # Draw GT segments
-            in_gt_segment = False
-            gt_segment_start = 0
+                for t in range(seq_len):
+                    if labels_np[t] > 0.5 and not in_gt_segment:
+                        in_gt_segment = True
+                        gt_segment_start = t
+                    elif labels_np[t] <= 0.5 and in_gt_segment:
+                        in_gt_segment = False
+                        ax3.add_patch(patches.Rectangle(
+                            (gt_segment_start, 0.1), t - gt_segment_start, 0.3,
+                            facecolor='red', alpha=0.5
+                        ))
 
-            for t in range(seq_len):
-                if labels_np[t] > 0.5 and not in_gt_segment:
-                    in_gt_segment = True
-                    gt_segment_start = t
-                elif labels_np[t] <= 0.5 and in_gt_segment:
-                    in_gt_segment = False
+                if in_gt_segment:
                     ax3.add_patch(patches.Rectangle(
-                        (gt_segment_start, 0.1), t - gt_segment_start, 0.3,
+                        (gt_segment_start, 0.1), seq_len - gt_segment_start, 0.3,
                         facecolor='red', alpha=0.5
                     ))
 
-            if in_gt_segment:
-                ax3.add_patch(patches.Rectangle(
-                    (gt_segment_start, 0.1), seq_len - gt_segment_start, 0.3,
-                    facecolor='red', alpha=0.5
-                ))
+                ax3.set_xlim(0, seq_len)
+                ax3.set_ylim(0, 1)
+                ax3.set_xlabel('Time Steps')
+                ax3.set_title('Segments (Blue: Predicted, Red: Ground Truth)')
+                ax3.grid(True, alpha=0.3, axis='x')
 
-            ax3.set_xlim(0, seq_len)
-            ax3.set_ylim(0, 1)
-            ax3.set_xlabel('Time Steps')
-            ax3.set_title('Segments (Blue: Predicted, Red: Ground Truth)')
-            ax3.grid(True, alpha=0.3, axis='x')
+                blue_patch = patches.Patch(
+                    color='blue', alpha=0.5, label='Predicted')
+                red_patch = patches.Patch(
+                    color='red', alpha=0.5, label='Ground Truth')
+                ax3.legend(handles=[blue_patch, red_patch])
 
-            blue_patch = patches.Patch(
-                color='blue', alpha=0.5, label='Predicted')
-            red_patch = patches.Patch(
-                color='red', alpha=0.5, label='Ground Truth')
-            ax3.legend(handles=[blue_patch, red_patch])
+                plt.tight_layout()
 
-            plt.tight_layout()
+                # Save figure
+                path = os.path.join(save_dir, f'visualization_sample_{sample_count}.png')
+                plt.savefig(path, dpi=150, bbox_inches='tight')
+                saved_paths.append(path)
+                logger.info(f"Saved visualization to {path}")
 
-            # Save figure
-            path = os.path.join(save_dir, f'visualization_sample_{idx}.png')
-            plt.savefig(path, dpi=150, bbox_inches='tight')
-            saved_paths.append(path)
-            logger.info(f"Saved visualization to {path}")
-
-            plt.close()
+                plt.close()
+                
+                sample_count += 1
 
     return saved_paths
 
