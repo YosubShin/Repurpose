@@ -231,15 +231,15 @@ class RepurposeModel(pl.LightningModule):
 
         # Compute losses - simplified to only multi-modal loss for stability
         loss_mul = self.bce_loss(logit_f_valid, labels_valid)
-        
+
         # For debugging, still compute individual losses but don't use them
         loss_a = self.bce_loss(logit_a_valid, labels_valid)
         loss_v = self.bce_loss(logit_v_valid, labels_valid)
         loss_uni = loss_a + loss_v
-        
+
         # Skip KL divergence for now - causes instability
         loss_kl = torch.tensor(0.0, device=logit_f_valid.device)
-        
+
         # Simplified total loss - only multi-modal
         total_loss = loss_mul
 
@@ -358,7 +358,7 @@ class RepurposeModel(pl.LightningModule):
                 'frequency': 1
             }
         }
-    
+
     def on_before_backward(self, loss):
         """Apply gradient clipping before backward pass."""
         # This is called automatically by PyTorch Lightning when gradient_clip_val is set
@@ -465,7 +465,6 @@ class EndOfEpochVisualizationCallback(Callback):
 
             # Create and log visualizations to wandb
             if hasattr(trainer.logger, 'experiment'):
-                wandb_images = {}
 
                 for i, data in enumerate(viz_data):
                     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
@@ -503,23 +502,21 @@ class EndOfEpochVisualizationCallback(Callback):
                     plt.tight_layout()
 
                     # Save to file
+                    video_id = data['video_id']
+                    wandb_key = f'visualizations/{video_id}'
                     viz_path = os.path.join(
-                        self.save_dir, f'epoch_{epoch}_sample_{i}.png')
+                        self.save_dir, f'epoch_{epoch}_video_{video_id}.png')
                     plt.savefig(viz_path, dpi=120, bbox_inches='tight')
 
+                    wandb_image = {}
                     # Add to wandb using video_id for consistent grouping across epochs
-                    video_id = data['video_id']
-                    wandb_images[f'debug/{video_id}'] = wandb.Image(
+                    wandb_image[wandb_key] = wandb.Image(
                         viz_path, caption=f'Epoch {epoch}, Video {video_id}'
                     )
 
                     plt.close(fig)
-
-                # Log all visualizations to wandb
-                global_step = (epoch + 1) * len(self.dataloader)
-                wandb.log(wandb_images, step=global_step)
-                self.logger.info(
-                    f"Logged {len(wandb_images)} visualizations to wandb for epoch {epoch}")
+                    global_step = (epoch + 1) * len(self.dataloader)
+                    wandb.log(wandb_image, step=global_step)
 
         # Switch back to training mode
         pl_module.train()
