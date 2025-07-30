@@ -284,7 +284,8 @@ class RepurposeModel(pl.LightningModule):
                 }
                 self.logger.experiment.log(unique_metrics)
             except Exception as e:
-                self.logger_instance.warning(f"Failed to log unique metrics to wandb: {e}")
+                self.logger_instance.warning(
+                    f"Failed to log unique metrics to wandb: {e}")
 
         # Detailed logging at intervals
         self.step_count += 1
@@ -433,29 +434,29 @@ class EndOfEpochVisualizationCallback(Callback):
                 for seq_idx in range(batch_size):
                     if sample_count >= self.num_samples:
                         break
-                    
+
                     # Get sequence mask for this specific sequence
                     seq_mask_single = seq_mask[seq_idx]
                     valid_length = int(seq_mask_single.sum().item())
-                    
+
                     # Extract predictions and labels for this sequence only
                     logit_f_seq = logit_f[seq_idx, :valid_length]
                     labels_seq = labels[seq_idx, :valid_length]
-                    
+
                     # Convert to numpy for visualization
                     pred_probs = torch.sigmoid(logit_f_seq).cpu().numpy()
                     labels_np = labels_seq.cpu().numpy()
-                    
+
                     # Extract video ID for this sequence
                     video_id = batch['video_ids'][seq_idx]
-                    
+
                     viz_data.append({
                         'predictions': pred_probs,
                         'labels': labels_np,
                         'sample_id': sample_count,
                         'video_id': video_id
                     })
-                    
+
                     sample_count += 1
 
             # Create and log visualizations to wandb
@@ -504,15 +505,15 @@ class EndOfEpochVisualizationCallback(Callback):
 
                     # Add to wandb using video_id for consistent grouping across epochs
                     video_id = data['video_id']
-                    wandb_images[f'debug/train/{video_id}'] = wandb.Image(
-                        viz_path, caption=f'Epoch {epoch}, Train Video {video_id}'
+                    wandb_images[f'debug/{video_id}'] = wandb.Image(
+                        viz_path, caption=f'Epoch {epoch}, Video {video_id}'
                     )
 
                     plt.close(fig)
 
                 # Log all visualizations to wandb
                 global_step = (epoch + 1) * len(self.dataloader)
-                trainer.logger.experiment.log(wandb_images, step=global_step)
+                wandb.log(wandb_images, step=global_step)
                 self.logger.info(
                     f"Logged {len(wandb_images)} visualizations to wandb for epoch {epoch}")
 
@@ -563,14 +564,15 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
             for seq_idx in range(batch_size):
                 if sample_count >= num_samples:
                     break
-                
+
                 # Get valid length for this sequence
                 valid_length = int(seq_mask[seq_idx].sum().item())
-                
+
                 # Extract predictions and labels for this sequence only
-                pred_probs = torch.sigmoid(logit_f[seq_idx, :valid_length]).cpu().numpy()
+                pred_probs = torch.sigmoid(
+                    logit_f[seq_idx, :valid_length]).cpu().numpy()
                 labels_np = labels[seq_idx, :valid_length].cpu().numpy()
-                
+
                 # Create visualization
                 fig, axes = plt.subplots(3, 1, figsize=(15, 10))
                 seq_len = len(pred_probs)
@@ -586,7 +588,8 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                                 np.ones(np.sum(positive_idx)),
                                 color='red', s=50, label='GT Positive', zorder=5)
                 ax1.set_ylabel('Classification Score')
-                ax1.set_title(f'Sample {sample_count} - Classification Predictions')
+                ax1.set_title(
+                    f'Sample {sample_count} - Classification Predictions')
                 ax1.legend()
                 ax1.grid(True, alpha=0.3)
                 ax1.set_ylim(-0.1, 1.1)
@@ -663,13 +666,14 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 plt.tight_layout()
 
                 # Save figure
-                path = os.path.join(save_dir, f'visualization_sample_{sample_count}.png')
+                path = os.path.join(
+                    save_dir, f'visualization_sample_{sample_count}.png')
                 plt.savefig(path, dpi=150, bbox_inches='tight')
                 saved_paths.append(path)
                 logger.info(f"Saved visualization to {path}")
 
                 plt.close()
-                
+
                 sample_count += 1
 
     return saved_paths
@@ -790,7 +794,8 @@ def main(args):
             save_last=True
         )
         callbacks.append(checkpoint_callback)
-        logger.info("Checkpointing enabled - models will be saved to: " + args.checkpoint_dir)
+        logger.info(
+            "Checkpointing enabled - models will be saved to: " + args.checkpoint_dir)
     else:
         logger.info("Checkpointing disabled - models will NOT be saved")
 
