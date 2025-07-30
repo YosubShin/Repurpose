@@ -295,12 +295,13 @@ class RepurposeModel(pl.LightningModule):
         # Detailed logging at intervals
         self.step_count += 1
         if self.step_count % self.log_interval == 0:
+            step_time = time.time() - start_time
             self.logger_instance.info(
                 f"Step {self.step_count} | "
                 f"Loss: {total_loss:.4f} | "
                 f"Acc: {accuracy:.4f} | "
                 f"Pos preds: {n_positive_preds}/{n_total} | "
-                f"Time: {metrics['step_time']:.3f}s"
+                f"Time: {step_time:.3f}s"
             )
         
         return total_loss
@@ -405,13 +406,24 @@ class MemoryClearCallback(Callback):
 
 
 # ==================== Visualization Functions ====================
-def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5, device: str = 'cpu'):
+def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5, device = 'cpu'):
     """Visualize model predictions vs ground truth."""
     logger = logging.getLogger("Visualizer")
     logger.info(f"Creating visualizations for {num_samples} samples")
     
     model.eval()
-    model = model.to(device)
+    
+    # Handle device conversion properly
+    if isinstance(device, str):
+        if device == 'auto':
+            # Get device from model parameters
+            device = next(model.parameters()).device
+        else:
+            device = torch.device(device)
+    
+    # Only move model if it's not already on the target device
+    if next(model.parameters()).device != device:
+        model = model.to(device)
     
     os.makedirs(save_dir, exist_ok=True)
     saved_paths = []
@@ -691,12 +703,17 @@ def main(args):
     if args.create_visualizations:
         logger.info("Creating visualizations...")
         viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
+        
+        # Determine actual device from model
+        actual_device = next(model.parameters()).device
+        logger.info(f"Using device for visualization: {actual_device}")
+        
         visualize_predictions(
             model,
             val_dataloader or train_dataloader,
             viz_dir,
             num_samples=args.num_viz_samples,
-            device=args.accelerator
+            device=actual_device
         )
     
     # Final cleanup
