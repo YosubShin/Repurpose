@@ -752,9 +752,10 @@ def main(args):
     # Memory management
     callbacks.append(MemoryClearCallback(clear_every_n_epochs=1))
 
-    # End-of-epoch visualization (like main.py)
+    # End-of-epoch visualization (like main.py) - use validation for consistent samples
+    viz_dataloader = val_dataloader if val_dataloader else train_dataloader
     viz_callback = EndOfEpochVisualizationCallback(
-        dataloader=train_dataloader,
+        dataloader=viz_dataloader,
         num_samples=5,
         save_dir=os.path.join(args.checkpoint_dir, "epoch_visualizations")
     )
