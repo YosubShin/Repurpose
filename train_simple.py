@@ -58,7 +58,7 @@ def main():
         # Training settings
         'num_workers': 0,  # Memory-friendly
         'log_interval': 5,  # Log every 5 steps
-        'max_seq_len': 512,
+        'max_seq_len': None,  # Use full video sequences for higher memory usage
         
         # Wandb settings
         'use_wandb': True,

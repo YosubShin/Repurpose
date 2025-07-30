@@ -24,7 +24,6 @@ python train_repurpose.py \
     --d_model 128 \
     --n_head 4 \
     --n_layers 2 \
-    --max_seq_len 512 \
     --lambda1 0.1 \
     --lambda2 0.3 \
     --lambda3 0.1 \

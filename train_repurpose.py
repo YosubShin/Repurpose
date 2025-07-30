@@ -587,7 +587,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         min_modalities=3,
-        max_seq_length=args.max_seq_len
+        max_seq_length=args.max_seq_len if args.max_seq_len and args.max_seq_len > 0 else None
     )
     
     val_dataloader = None
@@ -603,7 +603,7 @@ def main(args):
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             min_modalities=3,
-            max_seq_length=args.max_seq_len
+            max_seq_length=args.max_seq_len if args.max_seq_len and args.max_seq_len > 0 else None
         )
     
     # Get dimensions from a sample batch
@@ -721,7 +721,7 @@ if __name__ == "__main__":
     parser.add_argument("--d_model", type=int, default=128, help="Model dimension")
     parser.add_argument("--n_head", type=int, default=4, help="Number of attention heads")
     parser.add_argument("--n_layers", type=int, default=2, help="Number of transformer layers")
-    parser.add_argument("--max_seq_len", type=int, default=512, help="Maximum sequence length")
+    parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length (None for full videos)")
     
     # Training arguments
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
