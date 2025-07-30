@@ -20,7 +20,7 @@ python train_repurpose.py \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
     --val_annotation "$VAL_ANNOTATION" \
-    --batch_size 8 \
+    --batch_size 16 \
     --epochs 10 \
     --learning_rate 1e-3 \
     --d_model 128 \
@@ -39,6 +39,7 @@ python train_repurpose.py \
     --wandb_project "repurpose-experiments" \
     --early_stopping_patience 5 \
     --gradient_clip 1.0 \
+    --enable_checkpointing \
     2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
 
 echo "Training completed. Check logs/ directory for detailed output."

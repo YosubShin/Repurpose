@@ -811,16 +811,20 @@ def main(args):
     )
     callbacks.append(viz_callback)
 
-    # Model checkpointing
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=args.checkpoint_dir,
-        filename='repurpose-{epoch:02d}-{train/loss_total:.4f}',
-        monitor='train/loss_total',
-        mode='min',
-        save_top_k=3,
-        save_last=True
-    )
-    callbacks.append(checkpoint_callback)
+    # Model checkpointing (only if enabled)
+    if args.enable_checkpointing:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=args.checkpoint_dir,
+            filename='repurpose-{epoch:02d}-{train/loss_total:.4f}',
+            monitor='train/loss_total',
+            mode='min',
+            save_top_k=3,
+            save_last=True
+        )
+        callbacks.append(checkpoint_callback)
+        logger.info("Checkpointing enabled - models will be saved to: " + args.checkpoint_dir)
+    else:
+        logger.info("Checkpointing disabled - models will NOT be saved")
 
     # Early stopping
     if val_dataloader and args.early_stopping_patience > 0:
@@ -842,23 +846,30 @@ def main(args):
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=callbacks,
         logger=wandb_logger,
-        enable_checkpointing=True,
+        enable_checkpointing=args.enable_checkpointing,
         log_every_n_steps=args.log_interval,
         val_check_interval=args.val_check_interval,
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
         enable_progress_bar=True,
-        deterministic=args.deterministic
+        deterministic=args.deterministic,
+        num_sanity_val_steps=0  # Disable sanity checking to avoid early exit
     )
 
     # Start training
     logger.info("Starting training...")
     start_time = time.time()
 
-    trainer.fit(model, train_dataloader, val_dataloader)
-
-    training_time = time.time() - start_time
-    logger.info(f"Training completed in {training_time/60:.2f} minutes")
+    try:
+        trainer.fit(model, train_dataloader, val_dataloader)
+        training_time = time.time() - start_time
+        logger.info(f"Training completed in {training_time/60:.2f} minutes")
+    except Exception as e:
+        logger.error(f"Training failed with error: {e}")
+        logger.error("Full traceback:", exc_info=True)
+        # Still try to run post-training steps if requested
+        training_time = time.time() - start_time
+        logger.info(f"Training stopped after {training_time/60:.2f} minutes")
 
     # Create visualizations
     if args.create_visualizations:
@@ -953,6 +964,8 @@ if __name__ == "__main__":
     # Checkpointing
     parser.add_argument("--checkpoint_dir", type=str,
                         default="checkpoints", help="Checkpoint directory")
+    parser.add_argument("--enable_checkpointing", action="store_true",
+                        help="Enable model checkpointing (default: disabled)")
     parser.add_argument("--early_stopping_patience", type=int,
                         default=5, help="Early stopping patience")
 
