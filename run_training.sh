@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# Script to run RepurposeModel training with proper logging and monitoring
+
+# Set paths based on the notebook configuration
+AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
+VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
+CAPTION_DIR="/home/yosubs/koa_scratch/repurpose/data/caption_features"
+TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test.json"
+
+# Create necessary directories
+mkdir -p checkpoints
+mkdir -p logs
+
+# Run training with comprehensive logging
+python train_repurpose.py \
+    --audio_dir "$AUDIO_DIR" \
+    --visual_dir "$VISUAL_DIR" \
+    --caption_dir "$CAPTION_DIR" \
+    --train_annotation "$TRAIN_ANNOTATION" \
+    --batch_size 1 \
+    --epochs 10 \
+    --learning_rate 1e-3 \
+    --d_model 128 \
+    --n_head 4 \
+    --n_layers 2 \
+    --max_seq_len 512 \
+    --lambda1 0.1 \
+    --lambda2 0.3 \
+    --lambda3 0.1 \
+    --log_interval 5 \
+    --checkpoint_dir checkpoints \
+    --num_workers 0 \
+    --create_visualizations \
+    --num_viz_samples 5 \
+    --log_level INFO \
+    --use_wandb \
+    --wandb_project "repurpose-experiments" \
+    --early_stopping_patience 5 \
+    --gradient_clip 1.0 \
+    2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
+
+echo "Training completed. Check logs/ directory for detailed output."

@@ -1,0 +1,737 @@
+#!/usr/bin/env python3
+"""
+Standalone training script for RepurposeModel with comprehensive logging and wandb integration.
+Incorporates memory optimizations and visualization capabilities.
+"""
+
+import os
+import gc
+import sys
+import time
+import argparse
+import logging
+from datetime import datetime
+from typing import Dict, Any, Optional, List, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
+from pytorch_lightning.loggers import WandbLogger
+import wandb
+
+# For visualization
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+# Import the compatible dataset
+from compatible_dataset import create_compatible_dataloader
+
+# Configure logging
+def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
+    """Setup comprehensive logging configuration."""
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file))
+    
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format=log_format,
+        handlers=handlers
+    )
+    
+    # Set specific logger levels
+    logging.getLogger('pytorch_lightning').setLevel(logging.INFO)
+    logging.getLogger('wandb').setLevel(logging.INFO)
+    
+    return logging.getLogger(__name__)
+
+
+# ==================== Loss Functions ====================
+class FocalLoss(nn.Module):
+    """Focal Loss for addressing class imbalance."""
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean', eps: float = 1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.eps = eps
+        
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor):
+        probs = torch.sigmoid(logits)
+        ce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        p_t = probs * targets + (1 - probs) * (1 - targets)
+        focal_term = (1 - p_t) ** self.gamma
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        loss = alpha_t * focal_term * ce_loss
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
+
+@torch.no_grad()
+def _kl_div_bernoulli(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-6):
+    """Element-wise KL divergence for Bernoulli distributions."""
+    p = p.clamp(eps, 1 - eps)
+    q = q.clamp(eps, 1 - eps)
+    return p * torch.log(p / q) + (1 - p) * torch.log((1 - p) / (1 - q))
+
+
+def kl_div_bernoulli(p: torch.Tensor, q: torch.Tensor):
+    """KL divergence between Bernoulli distributions."""
+    return _kl_div_bernoulli(p, q).mean()
+
+
+# ==================== Model Definition ====================
+class RepurposeModel(pl.LightningModule):
+    """
+    Repurpose model with multi-modal fusion and alignment losses.
+    Includes memory optimizations and comprehensive logging.
+    """
+    def __init__(
+        self,
+        dim_audio: int,
+        dim_visual: int,
+        dim_caption: int,
+        d_model: int = 128,
+        n_head: int = 4,
+        n_layers: int = 2,
+        lr: float = 1e-3,
+        lambda1: float = 0.1,
+        lambda2: float = 0.3,
+        lambda3: float = 0.1,
+        log_interval: int = 10
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        
+        # Logging
+        self.logger_instance = logging.getLogger(self.__class__.__name__)
+        self.log_interval = log_interval
+        self.step_count = 0
+        
+        # Projections to shared dimension
+        self.proj_a = nn.Linear(dim_audio, d_model)
+        self.proj_v = nn.Linear(dim_visual, d_model)
+        self.proj_c = nn.Linear(dim_caption, d_model)
+        
+        # Self-attention encoders (per modality)
+        def _encoder():
+            layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_head,
+                dim_feedforward=d_model * 4,
+                batch_first=True
+            )
+            return nn.TransformerEncoder(layer, num_layers=n_layers)
+        
+        self.enc_a = _encoder()
+        self.enc_v = _encoder()
+        self.enc_c = _encoder()
+        
+        # Fusion encoder
+        layer_f = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_head,
+            dim_feedforward=d_model * 4,
+            batch_first=True
+        )
+        self.enc_fusion = nn.TransformerEncoder(layer_f, num_layers=1)
+        
+        # Classification heads
+        def _head():
+            return nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.ReLU(),
+                nn.Linear(d_model // 2, 1)
+            )
+        
+        self.head_a = _head()
+        self.head_v = _head()
+        self.head_f = _head()  # Multi-modal fused head
+        
+        self.focal_loss = FocalLoss()
+        self.lr = lr
+        
+        # Loss weights
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
+        self.lambda3 = lambda3
+        
+        # Metrics tracking
+        self.training_metrics = []
+        self.validation_metrics = []
+        
+    def _caption_enhance(self, src: torch.Tensor, cap: torch.Tensor) -> torch.Tensor:
+        """Simple caption guidance by adding caption context."""
+        return src + cap
+    
+    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass returning logits for each modality and fused predictions."""
+        # Project to shared dimension
+        a = self.proj_a(audio)
+        v = self.proj_v(visual)
+        c = self.proj_c(caption)
+        
+        # Self-attention encoding
+        a = self.enc_a(a)
+        v = self.enc_v(v)
+        c = self.enc_c(c)
+        
+        # Caption enhancement
+        a = self._caption_enhance(a, c)
+        v = self._caption_enhance(v, c)
+        
+        # Fusion
+        f = (a + v) / 2.0
+        f = self.enc_fusion(f)
+        
+        # Per-frame logits
+        logit_a = self.head_a(a).squeeze(-1)
+        logit_v = self.head_v(v).squeeze(-1)
+        logit_f = self.head_f(f).squeeze(-1)
+        
+        return logit_a, logit_v, logit_f
+    
+    def training_step(self, batch, batch_idx):
+        """Training step with comprehensive logging."""
+        start_time = time.time()
+        
+        # Handle both tuple and dict formats
+        if isinstance(batch, dict):
+            audio = batch['features']['audio']
+            visual = batch['features']['visual']
+            caption = batch['features']['caption']
+            labels = batch['labels']
+            seq_mask = batch['sequence_masks']
+            
+            # Forward pass
+            logit_a, logit_v, logit_f = self(audio, visual, caption)
+            
+            # Apply sequence mask
+            valid_positions = seq_mask.bool()
+            
+            # Select valid positions
+            logit_a_valid = logit_a[valid_positions]
+            logit_v_valid = logit_v[valid_positions]
+            logit_f_valid = logit_f[valid_positions]
+            labels_valid = labels[valid_positions]
+            
+        else:
+            audio, visual, caption, labels = batch
+            logit_a, logit_v, logit_f = self(audio, visual, caption)
+            logit_a_valid = logit_a
+            logit_v_valid = logit_v
+            logit_f_valid = logit_f
+            labels_valid = labels
+        
+        # Compute losses
+        loss_a = self.focal_loss(logit_a_valid, labels_valid)
+        loss_v = self.focal_loss(logit_v_valid, labels_valid)
+        loss_uni = loss_a + loss_v
+        loss_mul = self.focal_loss(logit_f_valid, labels_valid)
+        
+        # Alignment losses (KL divergence)
+        prob_a = torch.sigmoid(logit_a_valid).detach()
+        prob_v = torch.sigmoid(logit_v_valid).detach()
+        prob_f = torch.sigmoid(logit_f_valid)
+        loss_kl = kl_div_bernoulli(prob_v, prob_f) + kl_div_bernoulli(prob_a, prob_f)
+        
+        # Total loss
+        total_loss = self.lambda1 * loss_uni + self.lambda2 * loss_mul + self.lambda3 * loss_kl
+        
+        # Compute metrics
+        with torch.no_grad():
+            pred_binary = (prob_f > 0.5).float()
+            accuracy = (pred_binary == labels_valid).float().mean()
+            
+            # Positive predictions
+            n_positive_preds = pred_binary.sum().item()
+            n_positive_labels = labels_valid.sum().item()
+            n_total = len(labels_valid)
+        
+        # Log metrics
+        metrics = {
+            'loss_total': total_loss,
+            'loss_uni': loss_uni,
+            'loss_mul': loss_mul,
+            'loss_kl': loss_kl,
+            'loss_audio': loss_a,
+            'loss_visual': loss_v,
+            'accuracy': accuracy,
+            'positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
+            'positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
+            'step_time': time.time() - start_time
+        }
+        
+        self.log_dict(metrics, prog_bar=True)
+        
+        # Detailed logging at intervals
+        self.step_count += 1
+        if self.step_count % self.log_interval == 0:
+            self.logger_instance.info(
+                f"Step {self.step_count} | "
+                f"Loss: {total_loss:.4f} | "
+                f"Acc: {accuracy:.4f} | "
+                f"Pos preds: {n_positive_preds}/{n_total} | "
+                f"Time: {metrics['step_time']:.3f}s"
+            )
+        
+        return total_loss
+    
+    def validation_step(self, batch, batch_idx):
+        """Validation step."""
+        # Similar to training step but without gradient computation
+        if isinstance(batch, dict):
+            audio = batch['features']['audio']
+            visual = batch['features']['visual']
+            caption = batch['features']['caption']
+            labels = batch['labels']
+            seq_mask = batch['sequence_masks']
+            
+            logit_a, logit_v, logit_f = self(audio, visual, caption)
+            
+            valid_positions = seq_mask.bool()
+            logit_f_valid = logit_f[valid_positions]
+            labels_valid = labels[valid_positions]
+        else:
+            audio, visual, caption, labels = batch
+            _, _, logit_f = self(audio, visual, caption)
+            logit_f_valid = logit_f
+            labels_valid = labels
+        
+        val_loss = self.focal_loss(logit_f_valid, labels_valid)
+        
+        # Metrics
+        prob_f = torch.sigmoid(logit_f_valid)
+        pred_binary = (prob_f > 0.5).float()
+        accuracy = (pred_binary == labels_valid).float().mean()
+        
+        self.log_dict({
+            'val_loss': val_loss,
+            'val_accuracy': accuracy
+        }, prog_bar=True)
+        
+        return val_loss
+    
+    def configure_optimizers(self):
+        """Configure optimizer with optional scheduling."""
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        
+        # Optional: Add learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            verbose=True
+        )
+        
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val_loss',
+                'frequency': 1
+            }
+        }
+
+
+# ==================== Memory Management Callback ====================
+class MemoryClearCallback(Callback):
+    """Callback to clear memory at regular intervals."""
+    def __init__(self, clear_every_n_epochs: int = 1):
+        self.clear_every_n_epochs = clear_every_n_epochs
+        self.logger = logging.getLogger(self.__class__.__name__)
+        
+    def on_train_epoch_end(self, trainer, pl_module):
+        """Clear memory at end of epoch."""
+        if trainer.current_epoch % self.clear_every_n_epochs == 0:
+            self.logger.info(f"Clearing memory at epoch {trainer.current_epoch}")
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Log memory usage if available
+            try:
+                import psutil
+                process = psutil.Process()
+                mem_info = process.memory_info()
+                self.logger.info(f"Memory usage: {mem_info.rss / 1024**3:.2f} GB")
+            except ImportError:
+                pass
+
+
+# ==================== Visualization Functions ====================
+def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5, device: str = 'cpu'):
+    """Visualize model predictions vs ground truth."""
+    logger = logging.getLogger("Visualizer")
+    logger.info(f"Creating visualizations for {num_samples} samples")
+    
+    model.eval()
+    model = model.to(device)
+    
+    os.makedirs(save_dir, exist_ok=True)
+    saved_paths = []
+    
+    with torch.no_grad():
+        for idx, batch in enumerate(dataloader):
+            if idx >= num_samples:
+                break
+            
+            # Get predictions
+            if isinstance(batch, dict):
+                audio = batch['features']['audio'].to(device)
+                visual = batch['features']['visual'].to(device)
+                caption = batch['features']['caption'].to(device)
+                labels = batch['labels'].to(device)
+                
+                _, _, logit_f = model(audio, visual, caption)
+                labels_np = labels.cpu().numpy()
+            else:
+                audio, visual, caption, labels = batch
+                audio = audio.to(device)
+                visual = visual.to(device)
+                caption = caption.to(device)
+                
+                _, _, logit_f = model(audio, visual, caption)
+                labels_np = labels.cpu().numpy()
+            
+            pred_probs = torch.sigmoid(logit_f).cpu().numpy()
+            
+            # Handle batch dimension
+            if pred_probs.ndim == 2:
+                pred_probs = pred_probs[0]
+                labels_np = labels_np[0]
+            
+            # Create visualization
+            fig, axes = plt.subplots(3, 1, figsize=(15, 10))
+            seq_len = len(pred_probs)
+            time_points = np.arange(seq_len)
+            
+            # Plot 1: Classification scores
+            ax1 = axes[0]
+            ax1.plot(time_points, pred_probs, 'b-', label='Predicted Prob', alpha=0.7)
+            positive_idx = labels_np > 0.5
+            if np.any(positive_idx):
+                ax1.scatter(time_points[positive_idx], 
+                           np.ones(np.sum(positive_idx)), 
+                           color='red', s=50, label='GT Positive', zorder=5)
+            ax1.set_ylabel('Classification Score')
+            ax1.set_title(f'Sample {idx} - Classification Predictions')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax1.set_ylim(-0.1, 1.1)
+            
+            # Plot 2: Confidence over time
+            ax2 = axes[1]
+            confidence = np.abs(pred_probs - 0.5) * 2
+            ax2.plot(time_points, confidence, 'g-', label='Confidence', alpha=0.7)
+            ax2.set_ylabel('Confidence')
+            ax2.set_title('Prediction Confidence')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            ax2.set_ylim(0, 1)
+            
+            # Plot 3: Segments visualization
+            ax3 = axes[2]
+            
+            # Draw predicted segments
+            threshold = 0.5
+            in_segment = False
+            segment_start = 0
+            
+            for t in range(seq_len):
+                if pred_probs[t] > threshold and not in_segment:
+                    in_segment = True
+                    segment_start = t
+                elif pred_probs[t] <= threshold and in_segment:
+                    in_segment = False
+                    ax3.add_patch(patches.Rectangle(
+                        (segment_start, 0.6), t - segment_start, 0.3,
+                        facecolor='blue', alpha=0.5
+                    ))
+            
+            if in_segment:
+                ax3.add_patch(patches.Rectangle(
+                    (segment_start, 0.6), seq_len - segment_start, 0.3,
+                    facecolor='blue', alpha=0.5
+                ))
+            
+            # Draw GT segments
+            in_gt_segment = False
+            gt_segment_start = 0
+            
+            for t in range(seq_len):
+                if labels_np[t] > 0.5 and not in_gt_segment:
+                    in_gt_segment = True
+                    gt_segment_start = t
+                elif labels_np[t] <= 0.5 and in_gt_segment:
+                    in_gt_segment = False
+                    ax3.add_patch(patches.Rectangle(
+                        (gt_segment_start, 0.1), t - gt_segment_start, 0.3,
+                        facecolor='red', alpha=0.5
+                    ))
+            
+            if in_gt_segment:
+                ax3.add_patch(patches.Rectangle(
+                    (gt_segment_start, 0.1), seq_len - gt_segment_start, 0.3,
+                    facecolor='red', alpha=0.5
+                ))
+            
+            ax3.set_xlim(0, seq_len)
+            ax3.set_ylim(0, 1)
+            ax3.set_xlabel('Time Steps')
+            ax3.set_title('Segments (Blue: Predicted, Red: Ground Truth)')
+            ax3.grid(True, alpha=0.3, axis='x')
+            
+            blue_patch = patches.Patch(color='blue', alpha=0.5, label='Predicted')
+            red_patch = patches.Patch(color='red', alpha=0.5, label='Ground Truth')
+            ax3.legend(handles=[blue_patch, red_patch])
+            
+            plt.tight_layout()
+            
+            # Save figure
+            path = os.path.join(save_dir, f'visualization_sample_{idx}.png')
+            plt.savefig(path, dpi=150, bbox_inches='tight')
+            saved_paths.append(path)
+            logger.info(f"Saved visualization to {path}")
+            
+            plt.close()
+    
+    return saved_paths
+
+
+# ==================== Main Training Function ====================
+def main(args):
+    """Main training function with comprehensive setup."""
+    # Setup logging
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = f"train_repurpose_{timestamp}.log"
+    logger = setup_logging(args.log_level, log_file)
+    
+    logger.info("Starting RepurposeModel training")
+    logger.info(f"Arguments: {vars(args)}")
+    
+    # Initialize wandb if requested
+    wandb_logger = None
+    if args.use_wandb:
+        wandb_logger = WandbLogger(
+            project=args.wandb_project,
+            name=f"repurpose_{timestamp}",
+            config=vars(args)
+        )
+        logger.info(f"Initialized wandb project: {args.wandb_project}")
+    
+    # Create data loaders
+    logger.info("Creating data loaders...")
+    train_dataloader = create_compatible_dataloader(
+        feature_dirs={
+            'audio': args.audio_dir,
+            'visual': args.visual_dir,
+            'caption': args.caption_dir
+        },
+        annotation_file=args.train_annotation,
+        mode='sequence',
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        min_modalities=3,
+        max_seq_len=args.max_seq_len
+    )
+    
+    val_dataloader = None
+    if args.val_annotation:
+        val_dataloader = create_compatible_dataloader(
+            feature_dirs={
+                'audio': args.audio_dir,
+                'visual': args.visual_dir,
+                'caption': args.caption_dir
+            },
+            annotation_file=args.val_annotation,
+            mode='sequence',
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            min_modalities=3,
+            max_seq_len=args.max_seq_len
+        )
+    
+    # Get dimensions from a sample batch
+    logger.info("Determining feature dimensions...")
+    sample_batch = next(iter(train_dataloader))
+    dim_audio = sample_batch['features']['audio'].shape[-1]
+    dim_visual = sample_batch['features']['visual'].shape[-1]
+    dim_caption = sample_batch['features']['caption'].shape[-1]
+    
+    logger.info(f"Feature dimensions - Audio: {dim_audio}, Visual: {dim_visual}, Caption: {dim_caption}")
+    
+    # Create model
+    model = RepurposeModel(
+        dim_audio=dim_audio,
+        dim_visual=dim_visual,
+        dim_caption=dim_caption,
+        d_model=args.d_model,
+        n_head=args.n_head,
+        n_layers=args.n_layers,
+        lr=args.learning_rate,
+        lambda1=args.lambda1,
+        lambda2=args.lambda2,
+        lambda3=args.lambda3,
+        log_interval=args.log_interval
+    )
+    
+    logger.info(f"Created model with {sum(p.numel() for p in model.parameters())} parameters")
+    
+    # Setup callbacks
+    callbacks = []
+    
+    # Memory management
+    callbacks.append(MemoryClearCallback(clear_every_n_epochs=1))
+    
+    # Model checkpointing
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=args.checkpoint_dir,
+        filename='repurpose-{epoch:02d}-{val_loss:.4f}',
+        monitor='val_loss' if val_dataloader else 'loss_total',
+        mode='min',
+        save_top_k=3,
+        save_last=True
+    )
+    callbacks.append(checkpoint_callback)
+    
+    # Early stopping
+    if val_dataloader and args.early_stopping_patience > 0:
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=args.early_stopping_patience,
+            mode='min',
+            verbose=True
+        )
+        callbacks.append(early_stopping)
+    
+    # Create trainer
+    trainer = Trainer(
+        max_epochs=args.epochs,
+        accelerator=args.accelerator,
+        devices=args.devices,
+        precision=args.precision,
+        gradient_clip_val=args.gradient_clip,
+        accumulate_grad_batches=args.accumulate_grad_batches,
+        callbacks=callbacks,
+        logger=wandb_logger,
+        enable_checkpointing=True,
+        log_every_n_steps=args.log_interval,
+        val_check_interval=args.val_check_interval,
+        limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
+        enable_progress_bar=True,
+        deterministic=args.deterministic
+    )
+    
+    # Start training
+    logger.info("Starting training...")
+    start_time = time.time()
+    
+    trainer.fit(model, train_dataloader, val_dataloader)
+    
+    training_time = time.time() - start_time
+    logger.info(f"Training completed in {training_time/60:.2f} minutes")
+    
+    # Create visualizations
+    if args.create_visualizations:
+        logger.info("Creating visualizations...")
+        viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
+        visualize_predictions(
+            model,
+            val_dataloader or train_dataloader,
+            viz_dir,
+            num_samples=args.num_viz_samples,
+            device=args.accelerator
+        )
+    
+    # Final cleanup
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    logger.info("Training script completed successfully")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train RepurposeModel with logging and wandb")
+    
+    # Data arguments
+    parser.add_argument("--audio_dir", type=str, required=True, help="Path to audio features directory")
+    parser.add_argument("--visual_dir", type=str, required=True, help="Path to visual features directory")
+    parser.add_argument("--caption_dir", type=str, required=True, help="Path to caption features directory")
+    parser.add_argument("--train_annotation", type=str, required=True, help="Path to training annotation JSON")
+    parser.add_argument("--val_annotation", type=str, help="Path to validation annotation JSON")
+    
+    # Model arguments
+    parser.add_argument("--d_model", type=int, default=128, help="Model dimension")
+    parser.add_argument("--n_head", type=int, default=4, help="Number of attention heads")
+    parser.add_argument("--n_layers", type=int, default=2, help="Number of transformer layers")
+    parser.add_argument("--max_seq_len", type=int, default=512, help="Maximum sequence length")
+    
+    # Training arguments
+    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--gradient_clip", type=float, default=1.0, help="Gradient clipping value")
+    parser.add_argument("--accumulate_grad_batches", type=int, default=1, help="Gradient accumulation steps")
+    
+    # Loss weights
+    parser.add_argument("--lambda1", type=float, default=0.1, help="Weight for uni-modal loss")
+    parser.add_argument("--lambda2", type=float, default=0.3, help="Weight for multi-modal loss")
+    parser.add_argument("--lambda3", type=float, default=0.1, help="Weight for KL divergence loss")
+    
+    # Hardware arguments
+    parser.add_argument("--accelerator", type=str, default="auto", help="Accelerator type (cpu, gpu, auto)")
+    parser.add_argument("--devices", type=int, default=1, help="Number of devices")
+    parser.add_argument("--precision", type=str, default="32", help="Training precision (16, 32, bf16)")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of data loader workers")
+    
+    # Logging arguments
+    parser.add_argument("--log_level", type=str, default="INFO", help="Logging level")
+    parser.add_argument("--log_interval", type=int, default=10, help="Log every N steps")
+    parser.add_argument("--use_wandb", action="store_true", help="Use Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="repurpose", help="W&B project name")
+    
+    # Checkpointing
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Checkpoint directory")
+    parser.add_argument("--early_stopping_patience", type=int, default=5, help="Early stopping patience")
+    
+    # Validation
+    parser.add_argument("--val_check_interval", type=float, default=1.0, help="Validation check interval")
+    parser.add_argument("--limit_train_batches", type=float, default=1.0, help="Limit training batches")
+    parser.add_argument("--limit_val_batches", type=float, default=1.0, help="Limit validation batches")
+    
+    # Visualization
+    parser.add_argument("--create_visualizations", action="store_true", help="Create prediction visualizations")
+    parser.add_argument("--num_viz_samples", type=int, default=5, help="Number of samples to visualize")
+    
+    # Misc
+    parser.add_argument("--deterministic", action="store_true", help="Use deterministic training")
+    
+    args = parser.parse_args()
+    
+    # Example command line usage:
+    # python train_repurpose.py \
+    #   --audio_dir /path/to/audio \
+    #   --visual_dir /path/to/visual \
+    #   --caption_dir /path/to/caption \
+    #   --train_annotation /path/to/train.json \
+    #   --val_annotation /path/to/val.json \
+    #   --use_wandb \
+    #   --create_visualizations \
+    #   --epochs 20
+    
+    main(args)
