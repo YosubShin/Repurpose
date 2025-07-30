@@ -23,9 +23,9 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
 from pytorch_lightning.loggers import WandbLogger
 import wandb
+import matplotlib.pyplot as plt
 
 # For visualization
-import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # Import the compatible dataset
@@ -278,7 +278,7 @@ class RepurposeModel(pl.LightningModule):
         # Log to PyTorch Lightning (which should sync to wandb)
         self.log_dict(metrics, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         
-        # Also log directly to wandb if available
+        # Also log directly to wandb if available (batch-level like main.py)
         if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
             try:
                 # Convert tensors to scalars for wandb
@@ -288,6 +288,18 @@ class RepurposeModel(pl.LightningModule):
                         wandb_metrics[key] = value.item()
                     else:
                         wandb_metrics[key] = value
+                
+                # Add batch-level metrics like main.py
+                batch_metrics = {
+                    'batch/loss_total': total_loss.item() if torch.is_tensor(total_loss) else total_loss,
+                    'batch/loss_uni': loss_uni.item() if torch.is_tensor(loss_uni) else loss_uni,
+                    'batch/loss_mul': loss_mul.item() if torch.is_tensor(loss_mul) else loss_mul,
+                    'batch/loss_kl': loss_kl.item() if torch.is_tensor(loss_kl) else loss_kl,
+                    'batch/accuracy': accuracy.item() if torch.is_tensor(accuracy) else accuracy,
+                    'batch/learning_rate': self.trainer.optimizers[0].param_groups[0]['lr'] if self.trainer else 1e-3
+                }
+                wandb_metrics.update(batch_metrics)
+                
                 self.logger.experiment.log(wandb_metrics, step=self.global_step)
             except Exception as e:
                 self.logger_instance.warning(f"Failed to log to wandb: {e}")
@@ -403,6 +415,118 @@ class MemoryClearCallback(Callback):
                 self.logger.info(f"Memory usage: {mem_info.rss / 1024**3:.2f} GB")
             except ImportError:
                 pass
+
+
+# ==================== End-of-Epoch Visualization Callback ====================
+class EndOfEpochVisualizationCallback(Callback):
+    """Callback to create visualizations at end of each epoch like main.py."""
+    
+    def __init__(self, dataloader, num_samples: int = 5, save_dir: str = "visualizations"):
+        self.dataloader = dataloader
+        self.num_samples = num_samples
+        self.save_dir = save_dir
+        self.logger = logging.getLogger(self.__class__.__name__)
+        os.makedirs(save_dir, exist_ok=True)
+        
+    def on_train_epoch_end(self, trainer, pl_module):
+        """Create visualizations at end of epoch."""
+        epoch = trainer.current_epoch
+        self.logger.info(f"Creating end-of-epoch visualizations for epoch {epoch}")
+        
+        # Set model to eval mode
+        pl_module.eval()
+        device = next(pl_module.parameters()).device
+        
+        with torch.no_grad():
+            sample_count = 0
+            viz_data = []
+            
+            for batch in self.dataloader:
+                if sample_count >= self.num_samples:
+                    break
+                    
+                # Handle batch format
+                if isinstance(batch, dict):
+                    audio = batch['features']['audio'].to(device)
+                    visual = batch['features']['visual'].to(device)
+                    caption = batch['features']['caption'].to(device)
+                    labels = batch['labels'].to(device)
+                    seq_mask = batch['sequence_masks']
+                    
+                    # Get predictions
+                    logit_a, logit_v, logit_f = pl_module(audio, visual, caption)
+                    
+                    # Apply sequence mask
+                    valid_positions = seq_mask.bool()
+                    logit_f_valid = logit_f[valid_positions]
+                    labels_valid = labels[valid_positions]
+                    
+                    # Convert to numpy for visualization
+                    pred_probs = torch.sigmoid(logit_f_valid).cpu().numpy()
+                    labels_np = labels_valid.cpu().numpy()
+                    
+                    viz_data.append({
+                        'predictions': pred_probs,
+                        'labels': labels_np,
+                        'sample_id': sample_count
+                    })
+                    
+                sample_count += 1
+            
+            # Create and log visualizations to wandb
+            if hasattr(trainer.logger, 'experiment'):
+                wandb_images = {}
+                
+                for i, data in enumerate(viz_data):
+                    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+                    
+                    pred_probs = data['predictions']
+                    labels_np = data['labels']
+                    time_points = np.arange(len(pred_probs))
+                    
+                    # Plot 1: Predictions vs Ground Truth
+                    axes[0].plot(time_points, pred_probs, 'b-', label='Predicted Probability', alpha=0.7)
+                    positive_idx = labels_np > 0.5
+                    if np.any(positive_idx):
+                        axes[0].scatter(time_points[positive_idx], 
+                                       np.ones(np.sum(positive_idx)), 
+                                       color='red', s=30, label='Ground Truth', zorder=5)
+                    axes[0].set_ylabel('Probability')
+                    axes[0].set_title(f'Epoch {epoch} - Sample {i} - Predictions vs Ground Truth')
+                    axes[0].legend()
+                    axes[0].grid(True, alpha=0.3)
+                    axes[0].set_ylim(-0.1, 1.1)
+                    
+                    # Plot 2: Prediction confidence
+                    confidence = np.abs(pred_probs - 0.5) * 2
+                    axes[1].plot(time_points, confidence, 'g-', label='Confidence', alpha=0.7)
+                    axes[1].set_ylabel('Confidence')
+                    axes[1].set_xlabel('Time Steps')
+                    axes[1].set_title('Prediction Confidence')
+                    axes[1].legend()
+                    axes[1].grid(True, alpha=0.3)
+                    axes[1].set_ylim(0, 1)
+                    
+                    plt.tight_layout()
+                    
+                    # Save to file
+                    viz_path = os.path.join(self.save_dir, f'epoch_{epoch}_sample_{i}.png')
+                    plt.savefig(viz_path, dpi=120, bbox_inches='tight')
+                    
+                    # Add to wandb
+                    wandb_images[f'epoch_viz/sample_{i}'] = wandb.Image(
+                        viz_path, caption=f'Epoch {epoch}, Sample {i}'
+                    )
+                    
+                    plt.close(fig)
+                
+                # Log all visualizations to wandb
+                global_step = (epoch + 1) * len(self.dataloader)
+                trainer.logger.experiment.log(wandb_images, step=global_step)
+                self.logger.info(f"Logged {len(wandb_images)} visualizations to wandb for epoch {epoch}")
+        
+        # Switch back to training mode
+        pl_module.train()
 
 
 # ==================== Visualization Functions ====================
@@ -650,11 +774,19 @@ def main(args):
     # Memory management
     callbacks.append(MemoryClearCallback(clear_every_n_epochs=1))
     
+    # End-of-epoch visualization (like main.py)
+    viz_callback = EndOfEpochVisualizationCallback(
+        dataloader=train_dataloader,
+        num_samples=5,
+        save_dir=os.path.join(args.checkpoint_dir, "epoch_visualizations")
+    )
+    callbacks.append(viz_callback)
+    
     # Model checkpointing
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.checkpoint_dir,
-        filename='repurpose-{epoch:02d}-{val_loss:.4f}',
-        monitor='val_loss' if val_dataloader else 'loss_total',
+        filename='repurpose-{epoch:02d}-{train/loss_total:.4f}',
+        monitor='train/loss_total',
         mode='min',
         save_top_k=3,
         save_last=True
