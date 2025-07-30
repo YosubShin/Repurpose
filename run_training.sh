@@ -7,6 +7,7 @@ AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
 VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
 CAPTION_DIR="/home/yosubs/koa_scratch/repurpose/data/caption_features"
 TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test.json"
+VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
 
 # Create necessary directories
 mkdir -p checkpoints
@@ -18,6 +19,7 @@ python train_repurpose.py \
     --visual_dir "$VISUAL_DIR" \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
+    --val_annotation "$VAL_ANNOTATION" \
     --batch_size 8 \
     --epochs 10 \
     --learning_rate 1e-3 \
