@@ -545,7 +545,7 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         min_modalities=3,
-        max_seq_len=args.max_seq_len
+        max_seq_length=args.max_seq_len
     )
     
     val_dataloader = None
@@ -561,7 +561,7 @@ def main(args):
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             min_modalities=3,
-            max_seq_len=args.max_seq_len
+            max_seq_length=args.max_seq_len
         )
     
     # Get dimensions from a sample batch

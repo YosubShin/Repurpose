@@ -106,7 +106,7 @@ def main():
             batch_size=CONFIG['batch_size'],
             num_workers=CONFIG['num_workers'],
             min_modalities=3,
-            max_seq_len=CONFIG['max_seq_len']
+            max_seq_length=CONFIG['max_seq_len']
         )
         
         logger.info(f"✓ Data loader created in {time.time() - start_time:.2f}s")

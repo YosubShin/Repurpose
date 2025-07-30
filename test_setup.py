@@ -73,7 +73,7 @@ try:
         batch_size=1,
         num_workers=0,
         min_modalities=3,
-        max_seq_len=512
+        max_seq_length=512
     )
     print("✓ Data loader created successfully")
     
