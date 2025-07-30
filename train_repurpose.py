@@ -515,10 +515,17 @@ class EndOfEpochVisualizationCallback(Callback):
                     )
 
                     plt.close(fig)
+
+                    # Log to wandb through PyTorch Lightning logger
                     global_step = (epoch + 1) * len(self.dataloader)
-                    wandb.log(
-                        wandb_image, step=global_step)
-                    wandb.log({"test": 1}, step=global_step)
+                    try:
+                        trainer.logger.experiment.log(
+                            wandb_image, step=global_step)
+                        trainer.logger.experiment.log(
+                            {"debug/test_metric": 1}, step=global_step)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to log visualization to wandb: {e}")
 
         # Switch back to training mode
         pl_module.train()
