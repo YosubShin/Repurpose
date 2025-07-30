@@ -339,7 +339,7 @@ class RepurposeModel(pl.LightningModule):
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'monitor': 'val_loss',
+                'monitor': 'loss_total',
                 'frequency': 1
             }
         }

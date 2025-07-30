@@ -18,7 +18,7 @@ python train_repurpose.py \
     --visual_dir "$VISUAL_DIR" \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
-    --batch_size 1 \
+    --batch_size 8 \
     --epochs 10 \
     --learning_rate 1e-3 \
     --d_model 128 \
