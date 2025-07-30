@@ -261,19 +261,36 @@ class RepurposeModel(pl.LightningModule):
         
         # Log metrics
         metrics = {
-            'loss_total': total_loss,
-            'loss_uni': loss_uni,
-            'loss_mul': loss_mul,
-            'loss_kl': loss_kl,
-            'loss_audio': loss_a,
-            'loss_visual': loss_v,
-            'accuracy': accuracy,
-            'positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
-            'positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
-            'step_time': time.time() - start_time
+            'train/loss_total': total_loss,
+            'train/loss_uni': loss_uni,
+            'train/loss_mul': loss_mul,
+            'train/loss_kl': loss_kl,
+            'train/loss_audio': loss_a,
+            'train/loss_visual': loss_v,
+            'train/accuracy': accuracy,
+            'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
+            'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
+            'train/step_time': time.time() - start_time,
+            'epoch': self.current_epoch,
+            'global_step': self.global_step
         }
         
-        self.log_dict(metrics, prog_bar=True)
+        # Log to PyTorch Lightning (which should sync to wandb)
+        self.log_dict(metrics, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        
+        # Also log directly to wandb if available
+        if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
+            try:
+                # Convert tensors to scalars for wandb
+                wandb_metrics = {}
+                for key, value in metrics.items():
+                    if torch.is_tensor(value):
+                        wandb_metrics[key] = value.item()
+                    else:
+                        wandb_metrics[key] = value
+                self.logger.experiment.log(wandb_metrics, step=self.global_step)
+            except Exception as e:
+                self.logger_instance.warning(f"Failed to log to wandb: {e}")
         
         # Detailed logging at intervals
         self.step_count += 1
@@ -316,10 +333,27 @@ class RepurposeModel(pl.LightningModule):
         pred_binary = (prob_f > 0.5).float()
         accuracy = (pred_binary == labels_valid).float().mean()
         
-        self.log_dict({
-            'val_loss': val_loss,
-            'val_accuracy': accuracy
-        }, prog_bar=True)
+        val_metrics = {
+            'val/loss': val_loss,
+            'val/accuracy': accuracy,
+            'epoch': self.current_epoch,
+            'global_step': self.global_step
+        }
+        
+        self.log_dict(val_metrics, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        
+        # Also log directly to wandb if available
+        if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
+            try:
+                wandb_val_metrics = {}
+                for key, value in val_metrics.items():
+                    if torch.is_tensor(value):
+                        wandb_val_metrics[key] = value.item()
+                    else:
+                        wandb_val_metrics[key] = value
+                self.logger.experiment.log(wandb_val_metrics, step=self.global_step)
+            except Exception as e:
+                self.logger_instance.warning(f"Failed to log validation metrics to wandb: {e}")
         
         return val_loss
     
@@ -339,7 +373,7 @@ class RepurposeModel(pl.LightningModule):
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'monitor': 'loss_total',
+                'monitor': 'train/loss_total',
                 'frequency': 1
             }
         }
@@ -524,12 +558,21 @@ def main(args):
     # Initialize wandb if requested
     wandb_logger = None
     if args.use_wandb:
-        wandb_logger = WandbLogger(
-            project=args.wandb_project,
-            name=f"repurpose_{timestamp}",
-            config=vars(args)
-        )
-        logger.info(f"Initialized wandb project: {args.wandb_project}")
+        try:
+            wandb_logger = WandbLogger(
+                project=args.wandb_project,
+                name=f"repurpose_{timestamp}",
+                config=vars(args),
+                log_model=False,  # Don't auto-log model checkpoints to save space
+                save_dir="./wandb_logs"
+            )
+            logger.info(f"✓ Initialized wandb project: {args.wandb_project}")
+            logger.info(f"✓ Wandb run name: repurpose_{timestamp}")
+            logger.info(f"✓ Wandb will log metrics automatically")
+        except Exception as e:
+            logger.error(f"Failed to initialize wandb: {e}")
+            logger.info("Training will continue without wandb logging")
+            wandb_logger = None
     
     # Create data loaders
     logger.info("Creating data loaders...")
