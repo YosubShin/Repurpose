@@ -263,6 +263,9 @@ def create_compatible_dataloader(
     annotation_file: str,
     mode: str = 'frame',
     batch_size: int = 32,
+    num_workers: int = 4,
+    shuffle: bool = True,
+    pin_memory: Optional[bool] = None,
     **kwargs
 ) -> DataLoader:
     """
@@ -273,6 +276,9 @@ def create_compatible_dataloader(
         annotation_file: Path to annotations JSON
         mode: 'frame' for frame-level, 'sequence' for video-level
         batch_size: Batch size
+        num_workers: Number of data loading workers (default: 4)
+        shuffle: Whether to shuffle data (default: True)
+        pin_memory: Whether to pin memory for GPU transfer (default: auto-detect)
         **kwargs: Additional dataset arguments
     
     Returns:
@@ -342,13 +348,17 @@ def create_compatible_dataloader(
     else:
         collate_fn = None
     
+    # Set default pin_memory if not provided
+    if pin_memory is None:
+        pin_memory = torch.cuda.is_available()
+    
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
+        shuffle=shuffle,
+        num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=torch.cuda.is_available()
+        pin_memory=pin_memory
     )
 
 
