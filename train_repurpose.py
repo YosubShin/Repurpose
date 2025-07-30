@@ -764,6 +764,7 @@ def main(args):
             mode='sequence',
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            shuffle=False,  # No shuffling for validation
             min_modalities=3,
             max_seq_length=args.max_seq_len if args.max_seq_len and args.max_seq_len > 0 else None
         )
