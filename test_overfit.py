@@ -1,177 +1,183 @@
 #!/usr/bin/env python3
-"""
-Simple test script to verify if the model can overfit on 4 samples.
-This is a debugging tool to identify issues with the training pipeline.
-"""
+"""Test if model can overfit on 4 samples."""
 
 import torch
 import torch.nn as nn
+from compatible_dataset import create_sequence_dataloader
+from train_repurpose import RepurposeModel
+import matplotlib.pyplot as plt
 import numpy as np
-from torch.utils.data import DataLoader
-import sys
-import os
 
-# Add the project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from models.SimpleMCTransformer import SimpleMCTransformer
-from dataset.RepurposeClip import RepurposeClip
-from dataset.args import get_args_parser
-import argparse
-
-
-def test_overfit(args):
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Create a minimal dataset with just 4 samples
-    print("\n=== Loading Dataset ===")
-    train_dataset = RepurposeClip(
-        args.meta_dir,
-        args.data_dir, 
-        split='train',
-        max_snippet_length=args.max_snippet_length,
-        window_size=args.window_size,
-        sampling_rate=args.sampling_rate,
-        max_windows_per_video=args.max_windows_per_video
-    )
-    
-    # Use only first 4 samples
-    train_dataset.data_list = train_dataset.data_list[:4]
-    print(f"Using {len(train_dataset)} samples for overfitting test")
-    
-    # Create dataloader with batch size 4 (all samples in one batch)
-    train_loader = DataLoader(
-        train_dataset,
+def test_overfit():
+    # Create dataloader with same 4 samples
+    dataloader = create_sequence_dataloader(
+        feature_dirs={
+            'audio': 'audio_pann_features',
+            'visual': 'video_clip_features',
+            'caption': 'caption_features'
+        },
+        annotation_file='debug_4samples.json',
         batch_size=4,
-        shuffle=False,  # No shuffle to see consistent results
-        num_workers=0,  # Single thread for debugging
-        pin_memory=False,
-        collate_fn=train_dataset.collate_fn
+        num_workers=0,
+        shuffle=False,
+        min_modalities=3
     )
     
-    # Initialize model
-    print("\n=== Initializing Model ===")
-    model = SimpleMCTransformer(
-        vis_dim=args.vis_dim,
-        aud_dim=args.aud_dim,
-        text_dim=args.text_dim,
-        d_model=args.d_model,
-        self_num_layers=args.self_num_layers,
-        text_num_layers=args.text_num_layers,
-        cross_num_layers=args.cross_num_layers,
-        num_heads=args.num_heads,
-        d_ff=args.d_ff
-    ).to(device)
+    # Get feature dimensions
+    batch = next(iter(dataloader))
+    dim_audio = batch['features']['audio'].shape[-1]
+    dim_visual = batch['features']['visual'].shape[-1]
+    dim_caption = batch['features']['caption'].shape[-1]
     
-    # Simple optimizer with high learning rate for faster overfitting
+    print(f"Feature dims: audio={dim_audio}, visual={dim_visual}, caption={dim_caption}")
+    
+    # Create model with small dimensions for faster training
+    model = RepurposeModel(
+        dim_audio=dim_audio,
+        dim_visual=dim_visual,
+        dim_caption=dim_caption,
+        d_model=64,  # Smaller for faster training
+        n_head=4,
+        n_layers=1,  # Fewer layers
+        lr=1e-2,     # Higher learning rate for overfitting
+        lambda1=0.1,
+        lambda2=0.3,
+        lambda3=0.1
+    )
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+    
+    # Manual training loop for better control
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     
-    print("\n=== Starting Overfitting Test ===")
-    print("If the model can learn, loss should decrease significantly over iterations.\n")
+    losses = []
+    accuracies = []
     
-    model.train()
+    print("\nStarting overfitting test...")
+    print("="*60)
     
-    # Track losses
-    iteration_losses = []
-    
-    # Train for many iterations on the same 4 samples
     for epoch in range(100):
-        epoch_loss = 0
-        for batch_idx, batch in enumerate(train_loader):
-            # Move batch to device
-            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                    for k, v in batch.items()}
+        epoch_losses = []
+        epoch_accs = []
+        
+        for batch in dataloader:
+            # Move to device
+            audio = batch['features']['audio'].to(device)
+            visual = batch['features']['visual'].to(device)
+            caption = batch['features']['caption'].to(device)
+            labels = batch['labels'].to(device)
+            seq_mask = batch['sequence_masks'].to(device)
             
             # Forward pass
-            outputs = model(batch)
-            masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = outputs
+            optimizer.zero_grad()
+            logit_a, logit_v, logit_f = model(audio, visual, caption)
             
-            # Compute loss
-            losses = model.losses(masks, out_cls_logits, out_offsets, 
-                                gt_cls_labels, gt_offsets, feats)
-            loss = losses['cls_loss']
+            # Apply mask and compute loss
+            valid_positions = seq_mask.bool()
+            logit_f_valid = logit_f[valid_positions]
+            labels_valid = labels[valid_positions]
+            
+            loss = model.focal_loss(logit_f_valid, labels_valid)
             
             # Backward pass
-            optimizer.zero_grad()
             loss.backward()
-            
-            # Check gradients
-            if epoch == 0 and batch_idx == 0:
-                print("=== Gradient Check ===")
-                total_norm = 0
-                for name, p in model.named_parameters():
-                    if p.grad is not None:
-                        param_norm = p.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
-                total_norm = total_norm ** 0.5
-                print(f"Total gradient norm: {total_norm:.6f}")
-                
-                # Check a few specific gradients
-                if model.cls_head.weight.grad is not None:
-                    print(f"cls_head gradient norm: {model.cls_head.weight.grad.norm():.6f}")
-            
             optimizer.step()
             
-            epoch_loss += loss.item()
-            iteration_losses.append(loss.item())
-        
-        # Print progress every 10 epochs
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch:3d}: Loss = {epoch_loss:.6f}")
-            
-            # Check predictions
+            # Calculate accuracy
             with torch.no_grad():
-                pred_probs = torch.sigmoid(out_cls_logits)
-                print(f"  Prediction stats - min: {pred_probs.min():.4f}, "
-                      f"max: {pred_probs.max():.4f}, mean: {pred_probs.mean():.4f}")
+                pred_probs = torch.sigmoid(logit_f_valid)
+                pred_binary = (pred_probs > 0.5).float()
+                accuracy = (pred_binary == labels_valid).float().mean()
+            
+            epoch_losses.append(loss.item())
+            epoch_accs.append(accuracy.item())
+        
+        avg_loss = np.mean(epoch_losses)
+        avg_acc = np.mean(epoch_accs)
+        losses.append(avg_loss)
+        accuracies.append(avg_acc)
+        
+        if epoch % 10 == 0 or epoch == 99:
+            print(f"Epoch {epoch:3d}: Loss = {avg_loss:.4f}, Accuracy = {avg_acc:.4f}")
     
-    print("\n=== Overfitting Test Results ===")
-    print(f"Initial loss: {iteration_losses[0]:.6f}")
-    print(f"Final loss: {iteration_losses[-1]:.6f}")
-    print(f"Loss reduction: {(iteration_losses[0] - iteration_losses[-1]) / iteration_losses[0] * 100:.2f}%")
+    # Plot results
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
-    if iteration_losses[-1] < iteration_losses[0] * 0.1:
-        print("\n✅ SUCCESS: Model can overfit! Loss decreased by more than 90%.")
-    elif iteration_losses[-1] < iteration_losses[0] * 0.5:
-        print("\n⚠️  PARTIAL SUCCESS: Model shows some learning but not strong overfitting.")
-    else:
-        print("\n❌ FAILURE: Model cannot overfit. There's likely a bug in the training pipeline.")
+    ax1.plot(losses)
+    ax1.set_title('Training Loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.grid(True)
     
-    # Save model predictions for inspection
-    print("\n=== Final Predictions on Training Data ===")
+    ax2.plot(accuracies)
+    ax2.set_title('Training Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy')
+    ax2.grid(True)
+    ax2.set_ylim(0, 1)
+    
+    plt.tight_layout()
+    plt.savefig('overfit_test.png', dpi=150)
+    print(f"\nSaved training curves to overfit_test.png")
+    
+    # Final evaluation
+    print("\n" + "="*60)
+    print("Final evaluation on training data:")
+    print("="*60)
+    
     model.eval()
     with torch.no_grad():
-        for batch_idx, batch in enumerate(train_loader):
-            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                    for k, v in batch.items()}
-            outputs = model(batch)
-            masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = outputs
+        all_preds = []
+        all_labels = []
+        
+        for i, batch in enumerate(dataloader):
+            audio = batch['features']['audio'].to(device)
+            visual = batch['features']['visual'].to(device)
+            caption = batch['features']['caption'].to(device)
+            labels = batch['labels'].to(device)
+            seq_mask = batch['sequence_masks'].to(device)
             
-            pred_probs = torch.sigmoid(out_cls_logits)
+            _, _, logit_f = model(audio, visual, caption)
             
-            print(f"\nBatch {batch_idx}:")
-            print(f"Ground truth positive labels: {(gt_cls_labels > 0.5).sum().item()}")
-            print(f"Predicted positive (>0.5): {(pred_probs > 0.5).sum().item()}")
-            print(f"Max prediction: {pred_probs.max().item():.4f}")
-            print(f"Min prediction: {pred_probs.min().item():.4f}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        'Test overfitting capability',
-        parents=[get_args_parser()],
-        add_help=False
-    )
-    args = parser.parse_args()
+            # Process each sequence individually
+            batch_size = logit_f.shape[0]
+            for seq_idx in range(batch_size):
+                valid_length = int(seq_mask[seq_idx].sum().item())
+                
+                pred_probs = torch.sigmoid(logit_f[seq_idx, :valid_length]).cpu().numpy()
+                labels_np = labels[seq_idx, :valid_length].cpu().numpy()
+                
+                all_preds.extend(pred_probs.tolist())
+                all_labels.extend(labels_np.tolist())
+                
+                # Per-video accuracy
+                pred_binary = (pred_probs > 0.5).astype(float)
+                acc = (pred_binary == labels_np).mean()
+                pos_ratio = labels_np.mean()
+                pred_pos_ratio = pred_binary.mean()
+                
+                print(f"\nVideo {seq_idx} ({batch['video_ids'][seq_idx]}):")
+                print(f"  Accuracy: {acc:.4f}")
+                print(f"  True positive ratio: {pos_ratio:.4f}")
+                print(f"  Predicted positive ratio: {pred_pos_ratio:.4f}")
     
-    # Override some args for testing
-    args.batch_size = 4
-    args.num_workers = 0
+    # Overall metrics
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    all_pred_binary = (all_preds > 0.5).astype(float)
     
-    test_overfit(args)
-
+    overall_acc = (all_pred_binary == all_labels).mean()
+    print(f"\nOverall accuracy: {overall_acc:.4f}")
+    print(f"Overall true positive ratio: {all_labels.mean():.4f}")
+    print(f"Overall predicted positive ratio: {all_pred_binary.mean():.4f}")
+    
+    # Check if model learned anything
+    unique_preds = np.unique(all_pred_binary)
+    if len(unique_preds) == 1:
+        print(f"\nWARNING: Model predicts only {unique_preds[0]} for all frames!")
+    else:
+        print(f"\nModel predicts both 0 and 1 (good)")
 
 if __name__ == '__main__':
-    main()
+    test_overfit()
