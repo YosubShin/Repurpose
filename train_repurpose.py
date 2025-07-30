@@ -829,7 +829,7 @@ def main(args):
     # Early stopping
     if val_dataloader and args.early_stopping_patience > 0:
         early_stopping = EarlyStopping(
-            monitor='val_loss',
+            monitor='val/loss',
             patience=args.early_stopping_patience,
             mode='min',
             verbose=True
