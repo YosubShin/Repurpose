@@ -437,10 +437,14 @@ class EndOfEpochVisualizationCallback(Callback):
                 pred_probs = torch.sigmoid(logit_f_valid).cpu().numpy()
                 labels_np = labels_valid.cpu().numpy()
 
+                # Extract video ID from batch
+                video_id = batch['video_ids'][0] if sample_count == 0 else batch['video_ids'][0]
+                
                 viz_data.append({
                     'predictions': pred_probs,
                     'labels': labels_np,
-                    'sample_id': sample_count
+                    'sample_id': sample_count,
+                    'video_id': video_id
                 })
 
                 sample_count += 1
@@ -489,9 +493,10 @@ class EndOfEpochVisualizationCallback(Callback):
                         self.save_dir, f'epoch_{epoch}_sample_{i}.png')
                     plt.savefig(viz_path, dpi=120, bbox_inches='tight')
 
-                    # Add to wandb
-                    wandb_images[f'epoch_viz/sample_{i}'] = wandb.Image(
-                        viz_path, caption=f'Epoch {epoch}, Sample {i}'
+                    # Add to wandb using video_id for consistent grouping across epochs
+                    video_id = data['video_id']
+                    wandb_images[f'debug/train/{video_id}'] = wandb.Image(
+                        viz_path, caption=f'Epoch {epoch}, Train Video {video_id}'
                     )
 
                     plt.close(fig)
