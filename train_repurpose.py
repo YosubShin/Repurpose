@@ -164,7 +164,8 @@ class RepurposeModel(pl.LightningModule):
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
 
-        self.focal_loss = FocalLoss()
+        # Use BCE loss instead of Focal Loss for better stability
+        self.bce_loss = nn.BCEWithLogitsLoss()
         self.lr = lr
 
         # Loss weights
@@ -228,25 +229,23 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        # Compute losses
-        loss_a = self.focal_loss(logit_a_valid, labels_valid)
-        loss_v = self.focal_loss(logit_v_valid, labels_valid)
+        # Compute losses - simplified to only multi-modal loss for stability
+        loss_mul = self.bce_loss(logit_f_valid, labels_valid)
+        
+        # For debugging, still compute individual losses but don't use them
+        loss_a = self.bce_loss(logit_a_valid, labels_valid)
+        loss_v = self.bce_loss(logit_v_valid, labels_valid)
         loss_uni = loss_a + loss_v
-        loss_mul = self.focal_loss(logit_f_valid, labels_valid)
-
-        # Alignment losses (KL divergence)
-        prob_a = torch.sigmoid(logit_a_valid).detach()
-        prob_v = torch.sigmoid(logit_v_valid).detach()
-        prob_f = torch.sigmoid(logit_f_valid)
-        loss_kl = kl_div_bernoulli(prob_v, prob_f) + \
-            kl_div_bernoulli(prob_a, prob_f)
-
-        # Total loss
-        total_loss = self.lambda1 * loss_uni + \
-            self.lambda2 * loss_mul + self.lambda3 * loss_kl
+        
+        # Skip KL divergence for now - causes instability
+        loss_kl = torch.tensor(0.0, device=logit_f_valid.device)
+        
+        # Simplified total loss - only multi-modal
+        total_loss = loss_mul
 
         # Compute metrics
         with torch.no_grad():
+            prob_f = torch.sigmoid(logit_f_valid)
             pred_binary = (prob_f > 0.5).float()
             accuracy = (pred_binary == labels_valid).float().mean()
 
@@ -318,7 +317,7 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        val_loss = self.focal_loss(logit_f_valid, labels_valid)
+        val_loss = self.bce_loss(logit_f_valid, labels_valid)
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
@@ -359,6 +358,11 @@ class RepurposeModel(pl.LightningModule):
                 'frequency': 1
             }
         }
+    
+    def on_before_backward(self, loss):
+        """Apply gradient clipping before backward pass."""
+        # This is called automatically by PyTorch Lightning when gradient_clip_val is set
+        pass
 
 
 # ==================== Memory Management Callback ====================

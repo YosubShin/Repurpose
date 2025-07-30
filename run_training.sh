@@ -26,9 +26,9 @@ python train_repurpose.py \
     --d_model 128 \
     --n_head 4 \
     --n_layers 2 \
-    --lambda1 0.1 \
-    --lambda2 0.3 \
-    --lambda3 0.1 \
+    --lambda1 0.0 \
+    --lambda2 1.0 \
+    --lambda3 0.0 \
     --log_interval 5 \
     --checkpoint_dir checkpoints \
     --num_workers 0 \
@@ -38,7 +38,7 @@ python train_repurpose.py \
     --use_wandb \
     --wandb_project "repurpose-experiments" \
     --early_stopping_patience 5 \
-    --gradient_clip 1.0 \
+    --gradient_clip 0.1 \
     --enable_checkpointing \
     2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
 
