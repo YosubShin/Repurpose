@@ -11,7 +11,7 @@ import time
 import argparse
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 import numpy as np
 import torch
@@ -28,8 +28,8 @@ import matplotlib.pyplot as plt
 # For visualization
 import matplotlib.patches as patches
 
-# Import the compatible dataset
-from compatible_dataset import create_compatible_dataloader
+# Import the sequence dataset
+from compatible_dataset import create_sequence_dataloader
 
 # Configure logging
 
@@ -180,7 +180,7 @@ class RepurposeModel(pl.LightningModule):
         """Simple caption guidance by adding caption context."""
         return src + cap
 
-    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor):
         """Forward pass returning logits for each modality and fused predictions."""
         # Project to shared dimension
         a = self.proj_a(audio)
@@ -211,33 +211,22 @@ class RepurposeModel(pl.LightningModule):
         """Training step with comprehensive logging."""
         start_time = time.time()
 
-        # Handle both tuple and dict formats
-        if isinstance(batch, dict):
-            audio = batch['features']['audio']
-            visual = batch['features']['visual']
-            caption = batch['features']['caption']
-            labels = batch['labels']
-            seq_mask = batch['sequence_masks']
+        # Extract features from dict batch format
+        audio = batch['features']['audio']
+        visual = batch['features']['visual']
+        caption = batch['features']['caption']
+        labels = batch['labels']
+        seq_mask = batch['sequence_masks']
 
-            # Forward pass
-            logit_a, logit_v, logit_f = self(audio, visual, caption)
+        # Forward pass
+        logit_a, logit_v, logit_f = self(audio, visual, caption)
 
-            # Apply sequence mask
-            valid_positions = seq_mask.bool()
-
-            # Select valid positions
-            logit_a_valid = logit_a[valid_positions]
-            logit_v_valid = logit_v[valid_positions]
-            logit_f_valid = logit_f[valid_positions]
-            labels_valid = labels[valid_positions]
-
-        else:
-            audio, visual, caption, labels = batch
-            logit_a, logit_v, logit_f = self(audio, visual, caption)
-            logit_a_valid = logit_a
-            logit_v_valid = logit_v
-            logit_f_valid = logit_f
-            labels_valid = labels
+        # Apply sequence mask to get valid positions
+        valid_positions = seq_mask.bool()
+        logit_a_valid = logit_a[valid_positions]
+        logit_v_valid = logit_v[valid_positions]
+        logit_f_valid = logit_f[valid_positions]
+        labels_valid = labels[valid_positions]
 
         # Compute losses
         loss_a = self.focal_loss(logit_a_valid, labels_valid)
@@ -329,24 +318,20 @@ class RepurposeModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Validation step."""
-        # Similar to training step but without gradient computation
-        if isinstance(batch, dict):
-            audio = batch['features']['audio']
-            visual = batch['features']['visual']
-            caption = batch['features']['caption']
-            labels = batch['labels']
-            seq_mask = batch['sequence_masks']
+        # Extract features from dict batch format
+        audio = batch['features']['audio']
+        visual = batch['features']['visual']
+        caption = batch['features']['caption']
+        labels = batch['labels']
+        seq_mask = batch['sequence_masks']
 
-            logit_a, logit_v, logit_f = self(audio, visual, caption)
+        # Forward pass
+        logit_a, logit_v, logit_f = self(audio, visual, caption)
 
-            valid_positions = seq_mask.bool()
-            logit_f_valid = logit_f[valid_positions]
-            labels_valid = labels[valid_positions]
-        else:
-            audio, visual, caption, labels = batch
-            _, _, logit_f = self(audio, visual, caption)
-            logit_f_valid = logit_f
-            labels_valid = labels
+        # Apply sequence mask
+        valid_positions = seq_mask.bool()
+        logit_f_valid = logit_f[valid_positions]
+        labels_valid = labels[valid_positions]
 
         val_loss = self.focal_loss(logit_f_valid, labels_valid)
 
@@ -461,32 +446,31 @@ class EndOfEpochVisualizationCallback(Callback):
                 if sample_count >= self.num_samples:
                     break
 
-                # Handle batch format
-                if isinstance(batch, dict):
-                    audio = batch['features']['audio'].to(device)
-                    visual = batch['features']['visual'].to(device)
-                    caption = batch['features']['caption'].to(device)
-                    labels = batch['labels'].to(device)
-                    seq_mask = batch['sequence_masks']
+                # Extract from dict batch format
+                audio = batch['features']['audio'].to(device)
+                visual = batch['features']['visual'].to(device)
+                caption = batch['features']['caption'].to(device)
+                labels = batch['labels'].to(device)
+                seq_mask = batch['sequence_masks']
 
-                    # Get predictions
-                    logit_a, logit_v, logit_f = pl_module(
-                        audio, visual, caption)
+                # Get predictions
+                logit_a, logit_v, logit_f = pl_module(
+                    audio, visual, caption)
 
-                    # Apply sequence mask
-                    valid_positions = seq_mask.bool()
-                    logit_f_valid = logit_f[valid_positions]
-                    labels_valid = labels[valid_positions]
+                # Apply sequence mask
+                valid_positions = seq_mask.bool()
+                logit_f_valid = logit_f[valid_positions]
+                labels_valid = labels[valid_positions]
 
-                    # Convert to numpy for visualization
-                    pred_probs = torch.sigmoid(logit_f_valid).cpu().numpy()
-                    labels_np = labels_valid.cpu().numpy()
+                # Convert to numpy for visualization
+                pred_probs = torch.sigmoid(logit_f_valid).cpu().numpy()
+                labels_np = labels_valid.cpu().numpy()
 
-                    viz_data.append({
-                        'predictions': pred_probs,
-                        'labels': labels_np,
-                        'sample_id': sample_count
-                    })
+                viz_data.append({
+                    'predictions': pred_probs,
+                    'labels': labels_np,
+                    'sample_id': sample_count
+                })
 
                 sample_count += 1
 
@@ -579,23 +563,14 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
             if idx >= num_samples:
                 break
 
-            # Get predictions
-            if isinstance(batch, dict):
-                audio = batch['features']['audio'].to(device)
-                visual = batch['features']['visual'].to(device)
-                caption = batch['features']['caption'].to(device)
-                labels = batch['labels'].to(device)
+            # Get predictions from dict batch format
+            audio = batch['features']['audio'].to(device)
+            visual = batch['features']['visual'].to(device)
+            caption = batch['features']['caption'].to(device)
+            labels = batch['labels'].to(device)
 
-                _, _, logit_f = model(audio, visual, caption)
-                labels_np = labels.cpu().numpy()
-            else:
-                audio, visual, caption, labels = batch
-                audio = audio.to(device)
-                visual = visual.to(device)
-                caption = caption.to(device)
-
-                _, _, logit_f = model(audio, visual, caption)
-                labels_np = labels.cpu().numpy()
+            _, _, logit_f = model(audio, visual, caption)
+            labels_np = labels.cpu().numpy()
 
             pred_probs = torch.sigmoid(logit_f).cpu().numpy()
 
@@ -738,14 +713,13 @@ def main(args):
 
     # Create data loaders
     logger.info("Creating data loaders...")
-    train_dataloader = create_compatible_dataloader(
+    train_dataloader = create_sequence_dataloader(
         feature_dirs={
             'audio': args.audio_dir,
             'visual': args.visual_dir,
             'caption': args.caption_dir
         },
         annotation_file=args.train_annotation,
-        mode='sequence',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         min_modalities=3,
@@ -754,14 +728,13 @@ def main(args):
 
     val_dataloader = None
     if args.val_annotation:
-        val_dataloader = create_compatible_dataloader(
+        val_dataloader = create_sequence_dataloader(
             feature_dirs={
                 'audio': args.audio_dir,
                 'visual': args.visual_dir,
                 'caption': args.caption_dir
             },
             annotation_file=args.val_annotation,
-            mode='sequence',
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             shuffle=False,  # No shuffling for validation

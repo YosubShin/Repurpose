@@ -1,30 +1,27 @@
 """
-DataLoader-compatible wrapper for RobustVideoDataset.
-Handles the "too many values to unpack" error by providing proper tuple/dict returns.
+Sequence-level video dataset for RepurposeModel training.
+Only supports sequence mode with dict batch format.
 """
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Optional
 import numpy as np
 import os
 import json
 from functools import lru_cache
 
 
-class CompatibleVideoDataset(Dataset):
+class SequenceVideoDataset(Dataset):
     """
-    DataLoader-compatible video dataset that handles missing features.
-
-    For frame mode: Returns (x, y) tuples
-    For sequence mode: Use with custom collate_fn
+    Sequence-level video dataset that handles missing features.
+    Returns dict format with sequence padding and masking.
     """
 
     def __init__(
         self,
         feature_dirs: Dict[str, str],
         annotation_file: str,
-        mode: str = 'frame',  # 'frame' or 'sequence'
         cache_size: int = 32,
         use_mmap: bool = True,
         max_seq_length: Optional[int] = None,
@@ -32,7 +29,6 @@ class CompatibleVideoDataset(Dataset):
         min_modalities: int = 1,
     ):
         self.feature_dirs = feature_dirs
-        self.mode = mode
         self.use_mmap = use_mmap
         self.max_seq_length = max_seq_length
         self.stride = stride
@@ -47,10 +43,6 @@ class CompatibleVideoDataset(Dataset):
                 maxsize=cache_size)(self._load_video_impl)
         else:
             self._load_video = self._load_video_impl
-
-        # Build indices for frame mode
-        if mode == 'frame':
-            self._build_frame_index()
 
     def _load_annotations(self, annotation_file: str):
         """Load and filter annotations based on feature availability."""
@@ -95,37 +87,6 @@ class CompatibleVideoDataset(Dataset):
                         if status[modality])
             print(f"  {modality}: {count}/{len(self.video_list)} videos")
 
-    def _build_frame_index(self):
-        """Build frame-level index for efficient access."""
-        self.frame_to_video = []
-
-        for video_id in self.video_list:
-            # Find first available modality
-            available_modality = None
-            for modality, available in self.video_feature_status[video_id].items():
-                if available:
-                    available_modality = modality
-                    break
-
-            if available_modality is None:
-                continue
-
-            # Get sequence length
-            feat_path = os.path.join(
-                self.feature_dirs[available_modality], f"{video_id}.npy")
-            if self.use_mmap:
-                arr = np.load(feat_path, mmap_mode='r')
-            else:
-                arr = np.load(feat_path)
-
-            num_frames = len(arr)
-
-            # Add frame indices
-            for frame_idx in range(0, num_frames, self.stride):
-                if self.max_seq_length is None or frame_idx < self.max_seq_length:
-                    self.frame_to_video.append((video_id, frame_idx))
-
-        print(f"Built frame index: {len(self.frame_to_video)} frames")
 
     def _load_video_impl(self, video_id: str) -> Dict[str, Optional[np.ndarray]]:
         """Load video features, handling missing modalities."""
@@ -182,41 +143,11 @@ class CompatibleVideoDataset(Dataset):
         return labels
 
     def __len__(self):
-        if self.mode == 'frame':
-            return len(self.frame_to_video)
-        else:
-            return len(self.video_list)
+        return len(self.video_list)
 
     def __getitem__(self, idx):
-        if self.mode == 'frame':
-            return self._get_frame(idx)
-        else:
-            return self._get_sequence(idx)
+        return self._get_sequence(idx)
 
-    def _get_frame(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get single frame - returns (x, y) tuple compatible with DataLoader."""
-        video_id, frame_idx = self.frame_to_video[idx]
-        features = self._load_video(video_id)
-
-        # Concatenate available features, pad missing ones
-        frame_features = []
-        for modality in sorted(self.feature_dirs.keys()):
-            if features[modality] is not None:
-                frame_features.append(features[modality][frame_idx])
-            else:
-                # Zero padding for missing features
-                feat_dim = self._get_feature_dim(modality)
-                frame_features.append(np.zeros(feat_dim, dtype=np.float32))
-
-        x = np.concatenate(frame_features, axis=-1)
-
-        # Get label
-        available_features = [f for f in features.values() if f is not None]
-        min_length = min(f.shape[0] for f in available_features)
-        labels = self._get_labels(video_id, min_length)
-        y = labels[frame_idx]
-
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
     def _get_sequence(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get full sequence - returns dict for custom collate_fn."""
@@ -266,10 +197,9 @@ class CompatibleVideoDataset(Dataset):
         }
 
 
-def create_compatible_dataloader(
+def create_sequence_dataloader(
     feature_dirs: Dict[str, str],
     annotation_file: str,
-    mode: str = 'frame',
     batch_size: int = 32,
     num_workers: int = 4,
     shuffle: bool = True,
@@ -277,12 +207,11 @@ def create_compatible_dataloader(
     **kwargs
 ) -> DataLoader:
     """
-    Create a DataLoader-compatible dataset.
+    Create a sequence-level DataLoader.
 
     Args:
         feature_dirs: Dict mapping modality names to directories
         annotation_file: Path to annotations JSON
-        mode: 'frame' for frame-level, 'sequence' for video-level
         batch_size: Batch size
         num_workers: Number of data loading workers (default: 4)
         shuffle: Whether to shuffle data (default: True)
@@ -290,18 +219,16 @@ def create_compatible_dataloader(
         **kwargs: Additional dataset arguments
 
     Returns:
-        DataLoader that works with standard PyTorch training loops
+        DataLoader with sequence batches in dict format
     """
-    dataset = CompatibleVideoDataset(
+    dataset = SequenceVideoDataset(
         feature_dirs=feature_dirs,
         annotation_file=annotation_file,
-        mode=mode,
         **kwargs
     )
 
-    if mode == 'sequence':
-        # Need custom collation for sequences
-        def sequence_collate_fn(batch):
+    # Custom collation for sequences
+    def sequence_collate_fn(batch):
             max_len = max(sample['labels'].shape[0] for sample in batch)
 
             output = {
@@ -354,9 +281,7 @@ def create_compatible_dataloader(
 
             return output
 
-        collate_fn = sequence_collate_fn
-    else:
-        collate_fn = None
+    collate_fn = sequence_collate_fn
 
     # Set default pin_memory if not provided
     if pin_memory is None:
@@ -373,35 +298,17 @@ def create_compatible_dataloader(
 
 
 if __name__ == '__main__':
-    # Test compatibility
+    # Test sequence dataset
     feature_dirs = {
         'audio': 'audio_pann_features',
         'visual': 'video_clip_features',
         'caption': 'caption_features'
     }
 
-    # Test frame-level loading (standard DataLoader compatibility)
-    print("Testing frame-level dataset...")
-    frame_loader = create_compatible_dataloader(
+    print("Testing sequence dataset...")
+    seq_loader = create_sequence_dataloader(
         feature_dirs=feature_dirs,
         annotation_file='test.json',
-        mode='frame',
-        batch_size=64,
-        stride=10
-    )
-
-    # This should work without "too many values to unpack" error
-    for i, (x, y) in enumerate(frame_loader):
-        print(f"Batch {i}: x.shape={x.shape}, y.shape={y.shape}")
-        if i >= 2:
-            break
-
-    # Test sequence-level loading
-    print("\nTesting sequence-level dataset...")
-    seq_loader = create_compatible_dataloader(
-        feature_dirs=feature_dirs,
-        annotation_file='test.json',
-        mode='sequence',
         batch_size=4,
         max_seq_length=500
     )
