@@ -275,32 +275,16 @@ class RepurposeModel(pl.LightningModule):
         self.log_dict(metrics, prog_bar=True, logger=True,
                       on_step=True, on_epoch=True)
 
-        # Also log directly to wandb if available (batch-level like main.py)
+        # Log unique metrics not covered by PyTorch Lightning
         if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
             try:
-                # Convert tensors to scalars for wandb
-                wandb_metrics = {}
-                for key, value in metrics.items():
-                    if torch.is_tensor(value):
-                        wandb_metrics[key] = value.item()
-                    else:
-                        wandb_metrics[key] = value
-
-                # Add batch-level metrics like main.py
-                batch_metrics = {
-                    'batch/loss_total': total_loss.item() if torch.is_tensor(total_loss) else total_loss,
-                    'batch/loss_uni': loss_uni.item() if torch.is_tensor(loss_uni) else loss_uni,
-                    'batch/loss_mul': loss_mul.item() if torch.is_tensor(loss_mul) else loss_mul,
-                    'batch/loss_kl': loss_kl.item() if torch.is_tensor(loss_kl) else loss_kl,
-                    'batch/accuracy': accuracy.item() if torch.is_tensor(accuracy) else accuracy,
+                # Only log learning rate - other metrics are handled by PyTorch Lightning
+                unique_metrics = {
                     'batch/learning_rate': self.trainer.optimizers[0].param_groups[0]['lr'] if self.trainer else 1e-3
                 }
-                wandb_metrics.update(batch_metrics)
-
-                self.logger.experiment.log(
-                    wandb_metrics, step=self.global_step)
+                self.logger.experiment.log(unique_metrics)
             except Exception as e:
-                self.logger_instance.warning(f"Failed to log to wandb: {e}")
+                self.logger_instance.warning(f"Failed to log unique metrics to wandb: {e}")
 
         # Detailed logging at intervals
         self.step_count += 1
@@ -350,20 +334,7 @@ class RepurposeModel(pl.LightningModule):
         self.log_dict(val_metrics, prog_bar=True, logger=True,
                       on_step=False, on_epoch=True)
 
-        # Also log directly to wandb if available
-        if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
-            try:
-                wandb_val_metrics = {}
-                for key, value in val_metrics.items():
-                    if torch.is_tensor(value):
-                        wandb_val_metrics[key] = value.item()
-                    else:
-                        wandb_val_metrics[key] = value
-                self.logger.experiment.log(
-                    wandb_val_metrics, step=self.global_step)
-            except Exception as e:
-                self.logger_instance.warning(
-                    f"Failed to log validation metrics to wandb: {e}")
+        # Validation metrics are automatically logged by PyTorch Lightning
 
         return val_loss
 
