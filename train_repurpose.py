@@ -516,7 +516,7 @@ class EndOfEpochVisualizationCallback(Callback):
 
                     plt.close(fig)
                     global_step = (epoch + 1) * len(self.dataloader)
-                    self.trainer.logger.experiment.log(
+                    trainer.logger.experiment.log(
                         wandb_image, step=global_step)
 
         # Switch back to training mode
