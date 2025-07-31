@@ -39,6 +39,7 @@ python train_repurpose.py \
     --wandb_project "repurpose-experiments" \
     --early_stopping_patience 5 \
     --gradient_clip 0.1 \
+    --precision "16-mixed" \
     --enable_checkpointing \
     2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
 

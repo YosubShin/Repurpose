@@ -796,6 +796,9 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
 # ==================== Main Training Function ====================
 def main(args):
     """Main training function with comprehensive setup."""
+    # Enable Tensor Cores for faster training on compatible GPUs
+    torch.set_float32_matmul_precision('medium')
+    
     # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"train_repurpose_{timestamp}.log"
