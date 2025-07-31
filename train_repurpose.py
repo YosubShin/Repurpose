@@ -24,6 +24,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
 from pytorch_lightning.loggers import WandbLogger
 import wandb
 import matplotlib.pyplot as plt
+import psutil
 
 # For visualization
 import matplotlib.patches as patches
@@ -53,6 +54,28 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
     logging.getLogger('wandb').setLevel(logging.INFO)
 
     return logging.getLogger(__name__)
+
+
+def log_memory_usage(logger, stage: str):
+    """Log detailed CPU and GPU memory usage."""
+    try:
+        # CPU memory
+        cpu_mem = psutil.virtual_memory()
+        cpu_used_gb = cpu_mem.used / (1024**3)
+        cpu_total_gb = cpu_mem.total / (1024**3)
+        cpu_percent = cpu_mem.percent
+
+        # GPU memory
+        if torch.cuda.is_available():
+            gpu_allocated = torch.cuda.memory_allocated() / (1024**3)
+            gpu_reserved = torch.cuda.memory_reserved() / (1024**3)
+            gpu_max_allocated = torch.cuda.max_memory_allocated() / (1024**3)
+            logger.info(f"{stage} | CPU: {cpu_used_gb:.1f}/{cpu_total_gb:.1f}GB ({cpu_percent:.1f}%) | GPU: {gpu_allocated:.1f}GB alloc, {gpu_reserved:.1f}GB reserved, {gpu_max_allocated:.1f}GB max")
+        else:
+            logger.info(
+                f"{stage} | CPU: {cpu_used_gb:.1f}/{cpu_total_gb:.1f}GB ({cpu_percent:.1f}%) | GPU: N/A")
+    except Exception as e:
+        logger.warning(f"Failed to log memory usage at {stage}: {e}")
 
 
 # ==================== Loss Functions ====================
@@ -410,12 +433,13 @@ class EndOfEpochVisualizationCallback(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         """Create visualizations at end of epoch."""
         epoch = trainer.current_epoch
-        
+
         # For debugging, only visualize every 2 epochs to reduce load
         if epoch % 2 != 0:
-            self.logger.info(f"Skipping visualization for epoch {epoch} (debugging mode - every 2 epochs)")
+            self.logger.info(
+                f"Skipping visualization for epoch {epoch} (debugging mode - every 2 epochs)")
             return
-            
+
         self.logger.info(
             f"Creating end-of-epoch visualizations for epoch {epoch}")
 
@@ -431,24 +455,33 @@ class EndOfEpochVisualizationCallback(Callback):
             if self.val_dataloader:
                 datasets_to_viz.append(('val', self.val_dataloader))
 
-            self.logger.info(f"Will process {len(datasets_to_viz)} datasets for visualization")
-            
+            self.logger.info(
+                f"Will process {len(datasets_to_viz)} datasets for visualization")
+
             for dataset_idx, (dataset_name, dataloader) in enumerate(datasets_to_viz):
-                self.logger.info(f"Starting visualization for dataset {dataset_idx+1}/{len(datasets_to_viz)}: {dataset_name}")
-                
+                self.logger.info(
+                    f"Starting visualization for dataset {dataset_idx+1}/{len(datasets_to_viz)}: {dataset_name}")
+                log_memory_usage(
+                    self.logger, f"Before {dataset_name} visualization")
+
                 try:
                     sample_count = 0
-                    viz_data = []
-                    
-                    self.logger.info(f"Collecting samples from {dataset_name} dataloader...")
+
+                    self.logger.info(
+                        f"Processing samples from {dataset_name} dataloader with immediate visualization...")
 
                     for batch_idx, batch in enumerate(dataloader):
                         if sample_count >= self.num_samples:
-                            self.logger.info(f"Reached target of {self.num_samples} samples, stopping batch processing")
+                            self.logger.info(
+                                f"Reached target of {self.num_samples} samples, stopping batch processing")
                             break
 
-                        self.logger.debug(f"Processing batch {batch_idx} for {dataset_name} set")
-                        
+                        self.logger.debug(
+                            f"Processing batch {batch_idx} for {dataset_name} set")
+
+                        log_memory_usage(
+                            self.logger, f"{dataset_name} batch {batch_idx} start")
+
                         try:
                             # Extract from dict batch format
                             audio = batch['features']['audio'].to(device)
@@ -456,19 +489,29 @@ class EndOfEpochVisualizationCallback(Callback):
                             caption = batch['features']['caption'].to(device)
                             labels = batch['labels'].to(device)
                             seq_mask = batch['sequence_masks']
-                            
+
+                            log_memory_usage(
+                                self.logger, f"{dataset_name} batch {batch_idx} after data load")
+
                             # Get predictions
                             logit_a, logit_v, logit_f = pl_module(
                                 audio, visual, caption)
-                            
+
+                            log_memory_usage(
+                                self.logger, f"{dataset_name} batch {batch_idx} after inference")
+
                         except Exception as e:
-                            self.logger.error(f"Error during model inference for {dataset_name} batch {batch_idx}: {e}")
+                            self.logger.error(
+                                f"Error during model inference for {dataset_name} batch {batch_idx}: {e}")
+                            log_memory_usage(
+                                self.logger, f"{dataset_name} batch {batch_idx} error state")
                             continue
 
                         # Process each sequence in the batch individually
                         batch_size = logit_f.shape[0]
-                        self.logger.debug(f"Processing {batch_size} sequences in batch {batch_idx}")
-                        
+                        self.logger.debug(
+                            f"Processing {batch_size} sequences in batch {batch_idx}")
+
                         for seq_idx in range(batch_size):
                             if sample_count >= self.num_samples:
                                 break
@@ -476,10 +519,12 @@ class EndOfEpochVisualizationCallback(Callback):
                             try:
                                 # Get sequence mask for this specific sequence
                                 seq_mask_single = seq_mask[seq_idx]
-                                valid_length = int(seq_mask_single.sum().item())
-                                
+                                valid_length = int(
+                                    seq_mask_single.sum().item())
+
                                 if valid_length == 0:
-                                    self.logger.warning(f"Sequence {seq_idx} has zero valid length, skipping")
+                                    self.logger.warning(
+                                        f"Sequence {seq_idx} has zero valid length, skipping")
                                     continue
 
                                 # Extract predictions and labels for this sequence only
@@ -487,139 +532,142 @@ class EndOfEpochVisualizationCallback(Callback):
                                 labels_seq = labels[seq_idx, :valid_length]
 
                                 # Convert to numpy for visualization
-                                pred_probs = torch.sigmoid(logit_f_seq).cpu().numpy()
+                                pred_probs = torch.sigmoid(
+                                    logit_f_seq).cpu().numpy()
                                 labels_np = labels_seq.cpu().numpy()
 
                                 # Extract video ID for this sequence
                                 video_id = batch['video_ids'][seq_idx]
-                                
-                                self.logger.debug(f"Collected sample {sample_count}: {video_id} ({valid_length} frames)")
 
-                                viz_data.append({
-                                    'predictions': pred_probs,
-                                    'labels': labels_np,
-                                    'sample_id': sample_count,
-                                    'video_id': video_id,
-                                    'dataset': dataset_name
-                                })
+                                self.logger.debug(
+                                    f"Processing sample {sample_count}: {video_id} ({valid_length} frames)")
+
+                                # Create visualization immediately instead of accumulating data
+                                if hasattr(trainer.logger, 'experiment'):
+                                    try:
+                                        log_memory_usage(
+                                            self.logger, f"Before viz {sample_count} creation")
+
+                                        # Create plot
+                                        fig, axes = plt.subplots(
+                                            2, 1, figsize=(12, 8))
+                                        time_points = np.arange(
+                                            len(pred_probs))
+
+                                        # Plot 1: Predictions vs Ground Truth
+                                        axes[0].plot(time_points, pred_probs, 'b-',
+                                                     label='Predicted Probability', alpha=0.7)
+                                        positive_idx = labels_np > 0.5
+                                        if np.any(positive_idx):
+                                            axes[0].scatter(time_points[positive_idx],
+                                                            np.ones(
+                                                                np.sum(positive_idx)),
+                                                            color='red', s=30, label='Ground Truth', zorder=5)
+                                        axes[0].set_ylabel('Probability')
+                                        dataset_type = dataset_name.upper()
+                                        axes[0].set_title(
+                                            f'Epoch {epoch} - {dataset_type} Sample {sample_count} - Predictions vs Ground Truth')
+                                        axes[0].legend()
+                                        axes[0].grid(True, alpha=0.3)
+                                        axes[0].set_ylim(-0.1, 1.1)
+
+                                        # Plot 2: Prediction confidence
+                                        confidence = np.abs(
+                                            pred_probs - 0.5) * 2
+                                        axes[1].plot(time_points, confidence, 'g-',
+                                                     label='Confidence', alpha=0.7)
+                                        axes[1].set_ylabel('Confidence')
+                                        axes[1].set_xlabel('Time Steps')
+                                        axes[1].set_title(
+                                            'Prediction Confidence')
+                                        axes[1].legend()
+                                        axes[1].grid(True, alpha=0.3)
+                                        axes[1].set_ylim(0, 1)
+
+                                        plt.tight_layout()
+
+                                        # Save to file
+                                        viz_path = os.path.join(
+                                            self.save_dir, f'epoch_{epoch}_{dataset_name}_{video_id}.png')
+
+                                        self.logger.debug(
+                                            f"Saving visualization to {viz_path}")
+                                        plt.savefig(
+                                            viz_path, dpi=120, bbox_inches='tight')
+
+                                        # Create caption
+                                        caption = f'Epoch {epoch}, {dataset_type} set, Video {video_id}'
+
+                                        # Log to wandb
+                                        try:
+                                            trainer.logger.experiment.log({
+                                                f"visualizations/{dataset_name}/{video_id}": wandb.Image(viz_path, caption=caption),
+                                            })
+                                        except Exception as e:
+                                            self.logger.error(
+                                                f"Error logging wandb image for {video_id}: {e}")
+
+                                        # Close plot and cleanup
+                                        plt.close(fig)
+                                        del pred_probs, labels_np, fig, axes
+                                        log_memory_usage(
+                                            self.logger, f"After viz {sample_count} cleanup")
+
+                                        self.logger.debug(
+                                            f"Completed immediate visualization for {video_id}")
+
+                                    except Exception as e:
+                                        self.logger.error(
+                                            f"Error creating immediate visualization for {video_id}: {e}")
+                                        log_memory_usage(
+                                            self.logger, f"After viz {sample_count} error")
 
                                 sample_count += 1
-                                
+
+                                # Explicit cleanup of large tensors
+                                del logit_f_seq, labels_seq
+
                             except Exception as e:
-                                self.logger.error(f"Error processing sequence {seq_idx} in {dataset_name}: {e}")
+                                self.logger.error(
+                                    f"Error processing sequence {seq_idx} in {dataset_name}: {e}")
                                 continue
 
-                    self.logger.info(f"Collected {len(viz_data)} samples from {dataset_name} set")
-                    
-                    # Create and log visualizations to wandb for this dataset
-                    if hasattr(trainer.logger, 'experiment') and viz_data:
-                        self.logger.info(f"Starting visualization creation for {len(viz_data)} {dataset_name} samples")
-                        
+                        # Cleanup after each batch
                         try:
-                            for i, data in enumerate(viz_data):
-                                self.logger.debug(f"Creating visualization {i+1}/{len(viz_data)} for {dataset_name} set")
-                                
-                                try:
-                                    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+                            del audio, visual, caption, labels, seq_mask, logit_f
+                        except Exception as cleanup_e:
+                            self.logger.warning(
+                                f"Error during batch cleanup: {cleanup_e}")
+                        log_memory_usage(
+                            self.logger, f"{dataset_name} batch {batch_idx} cleanup")
 
-                                    pred_probs = data['predictions']
-                                    labels_np = data['labels']
-                                    time_points = np.arange(len(pred_probs))
-                                    video_id = data['video_id']
-                                    
-                                    self.logger.debug(f"Plotting {len(pred_probs)} time points for video {video_id}")
+                    self.logger.info(
+                        f"Completed immediate processing of {sample_count} samples from {dataset_name} set")
 
-                                    # Plot 1: Predictions vs Ground Truth
-                                    axes[0].plot(time_points, pred_probs, 'b-',
-                                                 label='Predicted Probability', alpha=0.7)
-                                    positive_idx = labels_np > 0.5
-                                    if np.any(positive_idx):
-                                        axes[0].scatter(time_points[positive_idx],
-                                                        np.ones(np.sum(positive_idx)),
-                                                        color='red', s=30, label='Ground Truth', zorder=5)
-                                    axes[0].set_ylabel('Probability')
-                                    dataset_type = data['dataset'].upper()
-                                    axes[0].set_title(
-                                        f'Epoch {epoch} - {dataset_type} Sample {i} - Predictions vs Ground Truth')
-                                    axes[0].legend()
-                                    axes[0].grid(True, alpha=0.3)
-                                    axes[0].set_ylim(-0.1, 1.1)
-
-                                    # Plot 2: Prediction confidence
-                                    confidence = np.abs(pred_probs - 0.5) * 2
-                                    axes[1].plot(time_points, confidence, 'g-',
-                                                 label='Confidence', alpha=0.7)
-                                    axes[1].set_ylabel('Confidence')
-                                    axes[1].set_xlabel('Time Steps')
-                                    axes[1].set_title('Prediction Confidence')
-                                    axes[1].legend()
-                                    axes[1].grid(True, alpha=0.3)
-                                    axes[1].set_ylim(0, 1)
-
-                                    plt.tight_layout()
-
-                                    # Save to file
-                                    dataset_type = data['dataset']
-                                    viz_path = os.path.join(
-                                        self.save_dir, f'epoch_{epoch}_{dataset_type}_{video_id}.png')
-                                    
-                                    self.logger.debug(f"Saving visualization to {viz_path}")
-                                    plt.savefig(viz_path, dpi=120, bbox_inches='tight')
-
-                                    # Create caption with dataset info
-                                    caption = f'Epoch {epoch}, {dataset_type.upper()} set, Video {video_id}'
-
-                                    self.logger.debug(f"Logging to wandb for video {video_id}")
-                                    
-                                    # Log without step to ensure images show up
-                                    try:
-                                        trainer.logger.experiment.log({
-                                            f"visualizations/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
-                                        })
-                                    except Exception as e:
-                                        self.logger.error(f"Error logging primary wandb image for {video_id}: {e}")
-
-                                    # Also log with epoch number for tracking
-                                    try:
-                                        trainer.logger.experiment.log({
-                                            f"visualizations_by_epoch/epoch_{epoch}/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
-                                        })
-                                    except Exception as e:
-                                        self.logger.error(f"Error logging epoch wandb image for {video_id}: {e}")
-
-                                    plt.close(fig)
-                                    self.logger.debug(f"Completed visualization {i+1}/{len(viz_data)} for {video_id}")
-                                    
-                                except Exception as e:
-                                    self.logger.error(f"Error creating visualization {i+1} for {dataset_name} set: {e}")
-                                    # Make sure to close figure even if there was an error
-                                    try:
-                                        plt.close(fig)
-                                    except:
-                                        pass
-                                    continue
-                                    
-                        except Exception as e:
-                            self.logger.error(f"Error during visualization creation for {dataset_name} set: {e}")
-                            
-                    else:
-                        self.logger.warning(f"Skipping visualization for {dataset_name} - no wandb logger or no data")
-                        
                 except Exception as e:
-                    self.logger.error(f"Error processing {dataset_name} dataset: {e}")
+                    self.logger.error(
+                        f"Error processing {dataset_name} dataset: {e}")
+                    log_memory_usage(
+                        self.logger, f"After {dataset_name} dataset error")
                     continue
-                    
+
                 finally:
-                    # Cleanup any remaining matplotlib figures
+                    # Cleanup between datasets
                     try:
                         plt.close('all')
-                        import gc
                         gc.collect()
-                        self.logger.debug(f"Cleaned up resources after {dataset_name} visualization")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        log_memory_usage(
+                            self.logger, f"After {dataset_name} dataset cleanup")
+                        self.logger.debug(
+                            f"Cleaned up resources after {dataset_name} visualization")
                     except Exception as cleanup_error:
-                        self.logger.warning(f"Error during cleanup after {dataset_name}: {cleanup_error}")
-                        
-                self.logger.info(f"Completed visualization for {dataset_name} set")
+                        self.logger.warning(
+                            f"Error during cleanup after {dataset_name}: {cleanup_error}")
+
+                self.logger.info(
+                    f"Completed visualization for {dataset_name} set")
 
         # Final cleanup and switch back to training mode
         try:
@@ -630,7 +678,7 @@ class EndOfEpochVisualizationCallback(Callback):
                 torch.cuda.empty_cache()
         except Exception as e:
             self.logger.warning(f"Error during final cleanup: {e}")
-            
+
         pl_module.train()
         self.logger.info(f"Visualization callback completed for epoch {epoch}")
 
@@ -798,7 +846,7 @@ def main(args):
     """Main training function with comprehensive setup."""
     # Enable Tensor Cores for faster training on compatible GPUs
     torch.set_float32_matmul_precision('medium')
-    
+
     # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"train_repurpose_{timestamp}.log"
@@ -895,7 +943,7 @@ def main(args):
     viz_callback = EndOfEpochVisualizationCallback(
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        num_samples=3,  # Temporarily reduced from 10 to 3 for debugging
+        num_samples=args.num_viz_samples,
         save_dir=os.path.join(args.checkpoint_dir, "epoch_visualizations")
     )
     callbacks.append(viz_callback)
