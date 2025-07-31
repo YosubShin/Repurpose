@@ -512,9 +512,16 @@ class EndOfEpochVisualizationCallback(Callback):
                     caption = f'Epoch {epoch}, Video {video_id}'
                     wandb_images.append((viz_path, caption))
 
+                    # Log without step to ensure images show up
+                    # Wandb will automatically use the current step
                     trainer.logger.experiment.log({
                         f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption),
-                    }, step=trainer.global_step)
+                    })
+                    
+                    # Also log with epoch number for tracking
+                    trainer.logger.experiment.log({
+                        f"visualizations_by_epoch/epoch_{epoch}/{video_id}": wandb.Image(viz_path, caption=caption),
+                    })
 
                     plt.close(fig)
 
