@@ -513,8 +513,8 @@ class EndOfEpochVisualizationCallback(Callback):
                     wandb_images.append((viz_path, caption))
 
                     trainer.logger.experiment.log({
-                        f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption)
-                    })
+                        f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption),
+                    }, step=trainer.global_step)
 
                     plt.close(fig)
 
