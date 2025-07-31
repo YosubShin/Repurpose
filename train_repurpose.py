@@ -426,7 +426,7 @@ class EndOfEpochVisualizationCallback(Callback):
                 datasets_to_viz.append(('train', self.train_dataloader))
             if self.val_dataloader:
                 datasets_to_viz.append(('val', self.val_dataloader))
-            
+
             for dataset_name, dataloader in datasets_to_viz:
                 sample_count = 0
                 viz_data = []
@@ -479,66 +479,67 @@ class EndOfEpochVisualizationCallback(Callback):
 
                 # Create and log visualizations to wandb for this dataset
                 if hasattr(trainer.logger, 'experiment') and viz_data:
-                    self.logger.info(f"Creating {len(viz_data)} visualizations for {dataset_name} set")
-                    
+                    self.logger.info(
+                        f"Creating {len(viz_data)} visualizations for {dataset_name} set")
+
                     for i, data in enumerate(viz_data):
-                    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+                        fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
-                    pred_probs = data['predictions']
-                    labels_np = data['labels']
-                    time_points = np.arange(len(pred_probs))
+                        pred_probs = data['predictions']
+                        labels_np = data['labels']
+                        time_points = np.arange(len(pred_probs))
 
-                    # Plot 1: Predictions vs Ground Truth
-                    axes[0].plot(time_points, pred_probs, 'b-',
-                                 label='Predicted Probability', alpha=0.7)
-                    positive_idx = labels_np > 0.5
-                    if np.any(positive_idx):
-                        axes[0].scatter(time_points[positive_idx],
-                                        np.ones(np.sum(positive_idx)),
-                                        color='red', s=30, label='Ground Truth', zorder=5)
-                    axes[0].set_ylabel('Probability')
-                    dataset_type = data['dataset'].upper()
-                    axes[0].set_title(
-                        f'Epoch {epoch} - {dataset_type} Sample {i} - Predictions vs Ground Truth')
-                    axes[0].legend()
-                    axes[0].grid(True, alpha=0.3)
-                    axes[0].set_ylim(-0.1, 1.1)
+                        # Plot 1: Predictions vs Ground Truth
+                        axes[0].plot(time_points, pred_probs, 'b-',
+                                     label='Predicted Probability', alpha=0.7)
+                        positive_idx = labels_np > 0.5
+                        if np.any(positive_idx):
+                            axes[0].scatter(time_points[positive_idx],
+                                            np.ones(np.sum(positive_idx)),
+                                            color='red', s=30, label='Ground Truth', zorder=5)
+                        axes[0].set_ylabel('Probability')
+                        dataset_type = data['dataset'].upper()
+                        axes[0].set_title(
+                            f'Epoch {epoch} - {dataset_type} Sample {i} - Predictions vs Ground Truth')
+                        axes[0].legend()
+                        axes[0].grid(True, alpha=0.3)
+                        axes[0].set_ylim(-0.1, 1.1)
 
-                    # Plot 2: Prediction confidence
-                    confidence = np.abs(pred_probs - 0.5) * 2
-                    axes[1].plot(time_points, confidence, 'g-',
-                                 label='Confidence', alpha=0.7)
-                    axes[1].set_ylabel('Confidence')
-                    axes[1].set_xlabel('Time Steps')
-                    axes[1].set_title('Prediction Confidence')
-                    axes[1].legend()
-                    axes[1].grid(True, alpha=0.3)
-                    axes[1].set_ylim(0, 1)
+                        # Plot 2: Prediction confidence
+                        confidence = np.abs(pred_probs - 0.5) * 2
+                        axes[1].plot(time_points, confidence, 'g-',
+                                     label='Confidence', alpha=0.7)
+                        axes[1].set_ylabel('Confidence')
+                        axes[1].set_xlabel('Time Steps')
+                        axes[1].set_title('Prediction Confidence')
+                        axes[1].legend()
+                        axes[1].grid(True, alpha=0.3)
+                        axes[1].set_ylim(0, 1)
 
-                    plt.tight_layout()
+                        plt.tight_layout()
 
-                    # Save to file
-                    video_id = data['video_id']
-                    dataset_type = data['dataset']
-                    viz_path = os.path.join(
-                        self.save_dir, f'epoch_{epoch}_{dataset_type}_{video_id}.png')
-                    plt.savefig(viz_path, dpi=120, bbox_inches='tight')
+                        # Save to file
+                        video_id = data['video_id']
+                        dataset_type = data['dataset']
+                        viz_path = os.path.join(
+                            self.save_dir, f'epoch_{epoch}_{dataset_type}_{video_id}.png')
+                        plt.savefig(viz_path, dpi=120, bbox_inches='tight')
 
-                    # Create caption with dataset info
-                    caption = f'Epoch {epoch}, {dataset_type.upper()} set, Video {video_id}'
+                        # Create caption with dataset info
+                        caption = f'Epoch {epoch}, {dataset_type.upper()} set, Video {video_id}'
 
-                    # Log without step to ensure images show up
-                    # Wandb will automatically use the current step
-                    trainer.logger.experiment.log({
-                        f"visualizations/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
-                    })
+                        # Log without step to ensure images show up
+                        # Wandb will automatically use the current step
+                        trainer.logger.experiment.log({
+                            f"visualizations/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
+                        })
 
-                    # Also log with epoch number for tracking
-                    trainer.logger.experiment.log({
-                        f"visualizations_by_epoch/epoch_{epoch}/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
-                    })
+                        # Also log with epoch number for tracking
+                        trainer.logger.experiment.log({
+                            f"visualizations_by_epoch/epoch_{epoch}/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
+                        })
 
-                    plt.close(fig)
+                        plt.close(fig)
 
         # Switch back to training mode
         pl_module.train()
