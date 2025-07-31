@@ -237,15 +237,19 @@ class RepurposeModel(pl.LightningModule):
         loss_v = self.bce_loss(logit_v_valid, labels_valid)
         loss_uni = loss_a + loss_v
 
-        # Skip KL divergence for now - causes instability
-        loss_kl = torch.tensor(0.0, device=logit_f_valid.device)
+        # Alignment losses (KL divergence)
+        prob_a = torch.sigmoid(logit_a_valid).detach()
+        prob_v = torch.sigmoid(logit_v_valid).detach()
+        prob_f = torch.sigmoid(logit_f_valid)
+        loss_kl = kl_div_bernoulli(prob_v, prob_f) + \
+            kl_div_bernoulli(prob_a, prob_f)
 
-        # Simplified total loss - only multi-modal
-        total_loss = loss_mul
+        # Total loss
+        total_loss = self.lambda1 * loss_uni + \
+            self.lambda2 * loss_mul + self.lambda3 * loss_kl
 
         # Compute metrics
         with torch.no_grad():
-            prob_f = torch.sigmoid(logit_f_valid)
             pred_binary = (prob_f > 0.5).float()
             accuracy = (pred_binary == labels_valid).float().mean()
 
@@ -517,7 +521,7 @@ class EndOfEpochVisualizationCallback(Callback):
                     trainer.logger.experiment.log({
                         f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption),
                     })
-                    
+
                     # Also log with epoch number for tracking
                     trainer.logger.experiment.log({
                         f"visualizations_by_epoch/epoch_{epoch}/{video_id}": wandb.Image(viz_path, caption=caption),
