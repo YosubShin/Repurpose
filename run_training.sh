@@ -20,9 +20,9 @@ python train_repurpose.py \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
     --val_annotation "$VAL_ANNOTATION" \
-    --batch_size 32 \
+    --batch_size 48 \
     --epochs 20 \
-    --learning_rate 1e-4 \
+    --learning_rate 5e-4 \
     --d_model 128 \
     --n_head 4 \
     --n_layers 2 \
