@@ -466,7 +466,7 @@ class EndOfEpochVisualizationCallback(Callback):
             # Create and log visualizations to wandb
             if hasattr(trainer.logger, 'experiment'):
                 wandb_images = []  # Collect all images for batch logging
-                
+
                 for i, data in enumerate(viz_data):
                     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
@@ -507,23 +507,16 @@ class EndOfEpochVisualizationCallback(Callback):
                     viz_path = os.path.join(
                         self.save_dir, f'epoch_{epoch}_video_{video_id}.png')
                     plt.savefig(viz_path, dpi=120, bbox_inches='tight')
-                    
+
                     # Collect image for batch logging
                     caption = f'Epoch {epoch}, Video {video_id}'
                     wandb_images.append((viz_path, caption))
-                    
+
+                    trainer.logger.experiment.log({
+                        f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption)
+                    })
+
                     plt.close(fig)
-                
-                # Log all images at once using the recommended pattern
-                if wandb_images:
-                    try:
-                        trainer.logger.experiment.log(
-                            {"visualizations": [wandb.Image(img, caption=caption) for (img, caption) in wandb_images]},
-                            step=trainer.global_step
-                        )
-                        self.logger.info(f"Logged {len(wandb_images)} visualizations to wandb at step {trainer.global_step}")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to log visualizations to wandb: {e}")
 
         # Switch back to training mode
         pl_module.train()
