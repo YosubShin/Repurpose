@@ -399,10 +399,11 @@ class MemoryClearCallback(Callback):
 
 # ==================== End-of-Epoch Visualization Callback ====================
 class EndOfEpochVisualizationCallback(Callback):
-    """Callback to create visualizations at end of each epoch like main.py."""
+    """Callback to create visualizations at end of each epoch for both train and val sets."""
 
-    def __init__(self, dataloader, num_samples: int = 5, save_dir: str = "visualizations"):
-        self.dataloader = dataloader
+    def __init__(self, train_dataloader, val_dataloader=None, num_samples: int = 10, save_dir: str = "visualizations"):
+        self.train_dataloader = train_dataloader
+        self.val_dataloader = val_dataloader
         self.num_samples = num_samples
         self.save_dir = save_dir
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -419,59 +420,68 @@ class EndOfEpochVisualizationCallback(Callback):
         device = next(pl_module.parameters()).device
 
         with torch.no_grad():
-            sample_count = 0
-            viz_data = []
+            # Process both train and validation datasets
+            datasets_to_viz = []
+            if self.train_dataloader:
+                datasets_to_viz.append(('train', self.train_dataloader))
+            if self.val_dataloader:
+                datasets_to_viz.append(('val', self.val_dataloader))
+            
+            for dataset_name, dataloader in datasets_to_viz:
+                sample_count = 0
+                viz_data = []
 
-            for batch in self.dataloader:
-                if sample_count >= self.num_samples:
-                    break
-
-                # Extract from dict batch format
-                audio = batch['features']['audio'].to(device)
-                visual = batch['features']['visual'].to(device)
-                caption = batch['features']['caption'].to(device)
-                labels = batch['labels'].to(device)
-                seq_mask = batch['sequence_masks']
-
-                # Get predictions
-                logit_a, logit_v, logit_f = pl_module(
-                    audio, visual, caption)
-
-                # Process each sequence in the batch individually
-                batch_size = logit_f.shape[0]
-                for seq_idx in range(batch_size):
+                for batch in dataloader:
                     if sample_count >= self.num_samples:
                         break
 
-                    # Get sequence mask for this specific sequence
-                    seq_mask_single = seq_mask[seq_idx]
-                    valid_length = int(seq_mask_single.sum().item())
+                    # Extract from dict batch format
+                    audio = batch['features']['audio'].to(device)
+                    visual = batch['features']['visual'].to(device)
+                    caption = batch['features']['caption'].to(device)
+                    labels = batch['labels'].to(device)
+                    seq_mask = batch['sequence_masks']
 
-                    # Extract predictions and labels for this sequence only
-                    logit_f_seq = logit_f[seq_idx, :valid_length]
-                    labels_seq = labels[seq_idx, :valid_length]
+                    # Get predictions
+                    logit_a, logit_v, logit_f = pl_module(
+                        audio, visual, caption)
 
-                    # Convert to numpy for visualization
-                    pred_probs = torch.sigmoid(logit_f_seq).cpu().numpy()
-                    labels_np = labels_seq.cpu().numpy()
+                    # Process each sequence in the batch individually
+                    batch_size = logit_f.shape[0]
+                    for seq_idx in range(batch_size):
+                        if sample_count >= self.num_samples:
+                            break
 
-                    # Extract video ID for this sequence
-                    video_id = batch['video_ids'][seq_idx]
+                        # Get sequence mask for this specific sequence
+                        seq_mask_single = seq_mask[seq_idx]
+                        valid_length = int(seq_mask_single.sum().item())
 
-                    viz_data.append({
-                        'predictions': pred_probs,
-                        'labels': labels_np,
-                        'sample_id': sample_count,
-                        'video_id': video_id
-                    })
+                        # Extract predictions and labels for this sequence only
+                        logit_f_seq = logit_f[seq_idx, :valid_length]
+                        labels_seq = labels[seq_idx, :valid_length]
 
-                    sample_count += 1
+                        # Convert to numpy for visualization
+                        pred_probs = torch.sigmoid(logit_f_seq).cpu().numpy()
+                        labels_np = labels_seq.cpu().numpy()
 
-            # Create and log visualizations to wandb
-            if hasattr(trainer.logger, 'experiment'):
-                wandb_images = []  # Collect all images for batch logging
+                        # Extract video ID for this sequence
+                        video_id = batch['video_ids'][seq_idx]
 
-                for i, data in enumerate(viz_data):
+                        viz_data.append({
+                            'predictions': pred_probs,
+                            'labels': labels_np,
+                            'sample_id': sample_count,
+                            'video_id': video_id,
+                            'dataset': dataset_name
+                        })
+
+                        sample_count += 1
+
+                # Create and log visualizations to wandb for this dataset
+                if hasattr(trainer.logger, 'experiment') and viz_data:
+                    self.logger.info(f"Creating {len(viz_data)} visualizations for {dataset_name} set")
+                    
+                    for i, data in enumerate(viz_data):
                     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
                     pred_probs = data['predictions']
@@ -487,8 +497,9 @@ class EndOfEpochVisualizationCallback(Callback):
                                         np.ones(np.sum(positive_idx)),
                                         color='red', s=30, label='Ground Truth', zorder=5)
                     axes[0].set_ylabel('Probability')
+                    dataset_type = data['dataset'].upper()
                     axes[0].set_title(
-                        f'Epoch {epoch} - Sample {i} - Predictions vs Ground Truth')
+                        f'Epoch {epoch} - {dataset_type} Sample {i} - Predictions vs Ground Truth')
                     axes[0].legend()
                     axes[0].grid(True, alpha=0.3)
                     axes[0].set_ylim(-0.1, 1.1)
@@ -508,23 +519,23 @@ class EndOfEpochVisualizationCallback(Callback):
 
                     # Save to file
                     video_id = data['video_id']
+                    dataset_type = data['dataset']
                     viz_path = os.path.join(
-                        self.save_dir, f'epoch_{epoch}_video_{video_id}.png')
+                        self.save_dir, f'epoch_{epoch}_{dataset_type}_{video_id}.png')
                     plt.savefig(viz_path, dpi=120, bbox_inches='tight')
 
-                    # Collect image for batch logging
-                    caption = f'Epoch {epoch}, Video {video_id}'
-                    wandb_images.append((viz_path, caption))
+                    # Create caption with dataset info
+                    caption = f'Epoch {epoch}, {dataset_type.upper()} set, Video {video_id}'
 
                     # Log without step to ensure images show up
                     # Wandb will automatically use the current step
                     trainer.logger.experiment.log({
-                        f"visualizations/{video_id}": wandb.Image(viz_path, caption=caption),
+                        f"visualizations/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
                     })
 
                     # Also log with epoch number for tracking
                     trainer.logger.experiment.log({
-                        f"visualizations_by_epoch/epoch_{epoch}/{video_id}": wandb.Image(viz_path, caption=caption),
+                        f"visualizations_by_epoch/epoch_{epoch}/{dataset_type}/{video_id}": wandb.Image(viz_path, caption=caption),
                     })
 
                     plt.close(fig)
@@ -786,11 +797,11 @@ def main(args):
     # Memory management
     callbacks.append(MemoryClearCallback(clear_every_n_epochs=1))
 
-    # End-of-epoch visualization (like main.py) - use validation for consistent samples
-    viz_dataloader = val_dataloader if val_dataloader else train_dataloader
+    # End-of-epoch visualization for both train and val sets
     viz_callback = EndOfEpochVisualizationCallback(
-        dataloader=viz_dataloader,
-        num_samples=5,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        num_samples=10,  # Increased from 5 to 10
         save_dir=os.path.join(args.checkpoint_dir, "epoch_visualizations")
     )
     callbacks.append(viz_callback)
