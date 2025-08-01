@@ -75,7 +75,7 @@ python train_repurpose.py \
     --log_level INFO \
     --use_wandb \
     --wandb_project "repurpose-experiments" \
-    --early_stopping_patience 20 \
+    --early_stopping_patience 0 \
     --gradient_clip 0.1 \
     --precision "16-mixed" \
     --enable_checkpointing \
