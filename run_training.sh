@@ -13,6 +13,17 @@ VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
 mkdir -p checkpoints
 mkdir -p logs
 
+# Check for existing checkpoint to resume from
+RESUME_ARG=""
+if ls checkpoints/last*.ckpt 1> /dev/null 2>&1; then
+    LATEST_CKPT=$(ls -t checkpoints/last*.ckpt | head -1)
+    echo "Found existing checkpoint: $LATEST_CKPT"
+    echo "Training will resume from this checkpoint"
+    RESUME_ARG="--resume_from_checkpoint $LATEST_CKPT"
+else
+    echo "No existing checkpoint found, starting fresh training"
+fi
+
 # Run training with comprehensive logging
 python train_repurpose.py \
     --audio_dir "$AUDIO_DIR" \
@@ -37,10 +48,11 @@ python train_repurpose.py \
     --log_level INFO \
     --use_wandb \
     --wandb_project "repurpose-experiments" \
-    --early_stopping_patience 5 \
+    --early_stopping_patience 10 \
     --gradient_clip 0.1 \
     --precision "16-mixed" \
     --enable_checkpointing \
+    $RESUME_ARG \
     2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
 
 echo "Training completed. Check logs/ directory for detailed output."

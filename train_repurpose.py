@@ -994,7 +994,13 @@ def main(args):
     start_time = time.time()
 
     try:
-        trainer.fit(model, train_dataloader, val_dataloader)
+        if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint):
+            logger.info(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
+            trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=args.resume_from_checkpoint)
+        else:
+            if args.resume_from_checkpoint:
+                logger.warning(f"Checkpoint file not found: {args.resume_from_checkpoint}, starting from scratch")
+            trainer.fit(model, train_dataloader, val_dataloader)
         training_time = time.time() - start_time
         logger.info(f"Training completed in {training_time/60:.2f} minutes")
     except Exception as e:
@@ -1099,6 +1105,8 @@ if __name__ == "__main__":
                         default="checkpoints", help="Checkpoint directory")
     parser.add_argument("--enable_checkpointing", action="store_true",
                         help="Enable model checkpointing (default: disabled)")
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None,
+                        help="Path to checkpoint file for resuming training")
     parser.add_argument("--early_stopping_patience", type=int,
                         default=5, help="Early stopping patience")
 
