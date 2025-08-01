@@ -33,7 +33,7 @@ python train_repurpose.py \
     --checkpoint_dir checkpoints \
     --num_workers 0 \
     --create_visualizations \
-    --num_viz_samples 10 \
+    --num_viz_samples 5 \
     --log_level INFO \
     --use_wandb \
     --wandb_project "repurpose-experiments" \
