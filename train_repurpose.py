@@ -545,9 +545,6 @@ class EndOfEpochVisualizationCallback(Callback):
                                 # Create visualization immediately instead of accumulating data
                                 if hasattr(trainer.logger, 'experiment'):
                                     try:
-                                        log_memory_usage(
-                                            self.logger, f"Before viz {sample_count} creation")
-
                                         # Create plot
                                         fig, axes = plt.subplots(
                                             2, 1, figsize=(12, 8))
@@ -610,8 +607,6 @@ class EndOfEpochVisualizationCallback(Callback):
                                         # Close plot and cleanup
                                         plt.close(fig)
                                         del pred_probs, labels_np, fig, axes
-                                        log_memory_usage(
-                                            self.logger, f"After viz {sample_count} cleanup")
 
                                         self.logger.debug(
                                             f"Completed immediate visualization for {video_id}")
