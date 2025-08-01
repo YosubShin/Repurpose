@@ -4,6 +4,7 @@ Standalone training script for RepurposeModel with comprehensive logging and wan
 Incorporates memory optimizations and visualization capabilities.
 """
 
+from models.losses import sigmoid_focal_loss
 import os
 import gc
 import sys
@@ -79,30 +80,7 @@ def log_memory_usage(logger, stage: str):
 
 
 # ==================== Loss Functions ====================
-class FocalLoss(nn.Module):
-    """Focal Loss for addressing class imbalance."""
-
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean', eps: float = 1e-6):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.eps = eps
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor):
-        probs = torch.sigmoid(logits)
-        ce_loss = F.binary_cross_entropy_with_logits(
-            logits, targets, reduction='none')
-        p_t = probs * targets + (1 - probs) * (1 - targets)
-        focal_term = (1 - p_t) ** self.gamma
-        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-        loss = alpha_t * focal_term * ce_loss
-
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        return loss
+# Import focal loss from existing models/losses.py
 
 
 @torch.no_grad()
@@ -170,14 +148,16 @@ class RepurposeModel(pl.LightningModule):
 
         # Multi-layer cross-attention for A-C and V-C modalities
         self.cross_attn_ac_layers = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            nn.MultiheadAttention(
+                embed_dim=d_model, num_heads=n_head, batch_first=True)
             for _ in range(n_cross_attn_layers)
         ])
         self.cross_attn_vc_layers = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            nn.MultiheadAttention(
+                embed_dim=d_model, num_heads=n_head, batch_first=True)
             for _ in range(n_cross_attn_layers)
         ])
-        
+
         # Layer norms for A-C and V-C cross-attention layers
         self.norm_ac_layers = nn.ModuleList([
             nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
@@ -185,16 +165,17 @@ class RepurposeModel(pl.LightningModule):
         self.norm_vc_layers = nn.ModuleList([
             nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
         ])
-        
+
         # Multi-layer Audio-Visual fusion cross-attention (separate parameter)
         self.cross_attn_av_layers = nn.ModuleList([
-            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            nn.MultiheadAttention(
+                embed_dim=d_model, num_heads=n_head, batch_first=True)
             for _ in range(n_fusion_layers)
         ])
         self.norm_av_layers = nn.ModuleList([
             nn.LayerNorm(d_model) for _ in range(n_fusion_layers)
         ])
-        
+
         # Final fusion encoder (operates on cross-attended features)
         layer_f = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -204,16 +185,19 @@ class RepurposeModel(pl.LightningModule):
         )
         self.enc_fusion = nn.TransformerEncoder(layer_f, num_layers=1)
 
-        # Classification heads
+        # Classification heads - 3-layer MLP as per paper
+        # Note: sigmoid will be applied in loss function, not here
         def _head():
             layers = nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
                 nn.ReLU(),
-                nn.Linear(d_model // 2, 1)
+                nn.Linear(d_model // 2, d_model // 4),
+                nn.ReLU(),
+                nn.Linear(d_model // 4, 1)
             )
             # Initialize final layer bias to predict ~35% positive rate
             # logit = log(p/(1-p)) = log(0.35/0.65) ≈ -0.62
-            nn.init.constant_(layers[-1].bias, -0.3)
+            nn.init.constant_(layers[-1].bias, -0.62)
             return layers
 
         self.head_a = _head()
@@ -223,7 +207,9 @@ class RepurposeModel(pl.LightningModule):
         # Use Focal Loss with alpha matching actual class distribution
         # Start with balanced alpha=0.5, then tune based on actual distribution
         # Lower gamma (1.0) for less aggressive down-weighting of easy examples
-        self.focal_loss = FocalLoss(alpha=0.5, gamma=1.0)
+        # Focal loss parameters - will use sigmoid_focal_loss function
+        self.focal_alpha = 0.5
+        self.focal_gamma = 1.0
         self.lr = lr
 
         # Loss weights
@@ -252,32 +238,34 @@ class RepurposeModel(pl.LightningModule):
         for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_ac_layers, self.norm_ac_layers)):
             # Query: audio, Key/Value: caption
             attn_out, _ = cross_attn(a_enhanced, c, c)
-            a_enhanced = norm(a_enhanced + attn_out)  # Residual connection + LayerNorm
-        
-        # Multi-layer Cross-attention: Visual-Caption  
+            # Residual connection + LayerNorm
+            a_enhanced = norm(a_enhanced + attn_out)
+
+        # Multi-layer Cross-attention: Visual-Caption
         v_enhanced = v
         for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_vc_layers, self.norm_vc_layers)):
             # Query: visual, Key/Value: caption
             attn_out, _ = cross_attn(v_enhanced, c, c)
-            v_enhanced = norm(v_enhanced + attn_out)  # Residual connection + LayerNorm
-        
+            # Residual connection + LayerNorm
+            v_enhanced = norm(v_enhanced + attn_out)
+
         # Multi-layer Audio-Visual fusion cross-attention
         # Start with enhanced features
         av_fused = a_enhanced
         va_fused = v_enhanced
-        
+
         for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_av_layers, self.norm_av_layers)):
             # Bidirectional cross-attention
             av_out, _ = cross_attn(av_fused, va_fused, va_fused)  # A queries V
             va_out, _ = cross_attn(va_fused, av_fused, av_fused)  # V queries A
-            
+
             # Apply residual connections and layer norm
             av_fused = norm(av_fused + av_out)
             va_fused = norm(va_fused + va_out)
-        
+
         # Combine bidirectional cross-attended features
         f = (av_fused + va_fused) / 2.0
-        
+
         # Final fusion with self-attention
         f = self.enc_fusion(f)
 
@@ -310,9 +298,12 @@ class RepurposeModel(pl.LightningModule):
         labels_valid = labels[valid_positions]
 
         # Compute losses using Focal Loss
-        loss_mul = self.focal_loss(logit_f_valid, labels_valid)
-        loss_a = self.focal_loss(logit_a_valid, labels_valid)
-        loss_v = self.focal_loss(logit_v_valid, labels_valid)
+        loss_mul = sigmoid_focal_loss(logit_f_valid, labels_valid,
+                                      alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        loss_a = sigmoid_focal_loss(logit_a_valid, labels_valid,
+                                    alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        loss_v = sigmoid_focal_loss(logit_v_valid, labels_valid,
+                                    alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_uni = loss_a + loss_v
 
         # Alignment losses (KL divergence)
@@ -399,7 +390,8 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        val_loss = self.focal_loss(logit_f_valid, labels_valid)
+        val_loss = sigmoid_focal_loss(logit_f_valid, labels_valid,
+                                      alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
@@ -753,7 +745,7 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
             device = torch.device(device)
 
     logger.info(f"Visualization will use device: {device}")
-    
+
     # Only move model if it's not already on the target device
     model_device = next(model.parameters()).device
     if model_device != device:
@@ -768,15 +760,16 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
     with torch.no_grad():
         sample_count = 0
         logger.info(f"Starting iteration over dataloader...")
-        
+
         for batch_idx, batch in enumerate(dataloader):
             if sample_count >= num_samples:
-                logger.info(f"Reached target of {num_samples} samples, stopping")
+                logger.info(
+                    f"Reached target of {num_samples} samples, stopping")
                 break
 
             try:
                 logger.info(f"Processing visualization batch {batch_idx}")
-                
+
                 # Get predictions from dict batch format
                 audio = batch['features']['audio'].to(device)
                 visual = batch['features']['visual'].to(device)
@@ -784,13 +777,16 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 labels = batch['labels'].to(device)
                 seq_mask = batch['sequence_masks']
 
-                logger.info(f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
-                
+                logger.info(
+                    f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
+
                 _, _, logit_f = model(audio, visual, caption)
-                logger.info(f"Model inference completed, logit_f shape: {logit_f.shape}")
-                
+                logger.info(
+                    f"Model inference completed, logit_f shape: {logit_f.shape}")
+
             except Exception as batch_error:
-                logger.error(f"Error processing batch {batch_idx} in post-training visualization: {batch_error}")
+                logger.error(
+                    f"Error processing batch {batch_idx} in post-training visualization: {batch_error}")
                 logger.error(f"Batch error traceback:", exc_info=True)
                 continue
 
@@ -1077,11 +1073,14 @@ def main(args):
 
     try:
         if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint):
-            logger.info(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
-            trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=args.resume_from_checkpoint)
+            logger.info(
+                f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
+            trainer.fit(model, train_dataloader, val_dataloader,
+                        ckpt_path=args.resume_from_checkpoint)
         else:
             if args.resume_from_checkpoint:
-                logger.warning(f"Checkpoint file not found: {args.resume_from_checkpoint}, starting from scratch")
+                logger.warning(
+                    f"Checkpoint file not found: {args.resume_from_checkpoint}, starting from scratch")
             trainer.fit(model, train_dataloader, val_dataloader)
         training_time = time.time() - start_time
         logger.info(f"Training completed in {training_time/60:.2f} minutes")
@@ -1095,7 +1094,8 @@ def main(args):
     # Create visualizations (skip if resumed from checkpoint to avoid dataloader issues)
     if args.create_visualizations:
         if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint or ""):
-            logger.info("Skipping post-training visualizations when resuming from checkpoint (known dataloader issue)")
+            logger.info(
+                "Skipping post-training visualizations when resuming from checkpoint (known dataloader issue)")
         else:
             logger.info("Creating visualizations...")
             viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
@@ -1104,13 +1104,14 @@ def main(args):
                 # Determine actual device from model
                 actual_device = next(model.parameters()).device
                 logger.info(f"Using device for visualization: {actual_device}")
-                
+
                 # Add memory logging before visualization
                 log_memory_usage(logger, "Before post-training visualization")
-                
+
                 # Use validation dataloader if available, otherwise training dataloader
                 viz_dataloader = val_dataloader or train_dataloader
-                logger.info(f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization")
+                logger.info(
+                    f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization")
 
                 visualize_predictions(
                     model,
@@ -1119,15 +1120,19 @@ def main(args):
                     num_samples=args.num_viz_samples,
                     device=actual_device
                 )
-                
+
                 log_memory_usage(logger, "After post-training visualization")
-                logger.info("Post-training visualizations completed successfully")
-                
+                logger.info(
+                    "Post-training visualizations completed successfully")
+
             except Exception as viz_error:
-                logger.error(f"Error during post-training visualization: {viz_error}")
+                logger.error(
+                    f"Error during post-training visualization: {viz_error}")
                 logger.error("Full visualization traceback:", exc_info=True)
-                log_memory_usage(logger, "After post-training visualization error")
-                logger.info("Training completed successfully despite visualization error")
+                log_memory_usage(
+                    logger, "After post-training visualization error")
+                logger.info(
+                    "Training completed successfully despite visualization error")
 
     # Final cleanup
     import gc
