@@ -132,7 +132,9 @@ class RepurposeModel(pl.LightningModule):
         dim_caption: int,
         d_model: int = 128,
         n_head: int = 4,
-        n_layers: int = 2,
+        n_self_attn_layers: int = 2,  # Self-attention layers per modality
+        n_cross_attn_layers: int = 2,  # Cross-attention layers for A-C and V-C
+        n_fusion_layers: int = 2,  # Audio-Visual fusion layers
         lr: float = 1e-3,
         lambda1: float = 0.1,
         lambda2: float = 0.3,
@@ -160,13 +162,40 @@ class RepurposeModel(pl.LightningModule):
                 dim_feedforward=d_model * 4,
                 batch_first=True
             )
-            return nn.TransformerEncoder(layer, num_layers=n_layers)
+            return nn.TransformerEncoder(layer, num_layers=n_self_attn_layers)
 
         self.enc_a = _encoder()
         self.enc_v = _encoder()
         self.enc_c = _encoder()
 
-        # Fusion encoder
+        # Multi-layer cross-attention for A-C and V-C modalities
+        self.cross_attn_ac_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            for _ in range(n_cross_attn_layers)
+        ])
+        self.cross_attn_vc_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            for _ in range(n_cross_attn_layers)
+        ])
+        
+        # Layer norms for A-C and V-C cross-attention layers
+        self.norm_ac_layers = nn.ModuleList([
+            nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
+        ])
+        self.norm_vc_layers = nn.ModuleList([
+            nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
+        ])
+        
+        # Multi-layer Audio-Visual fusion cross-attention (separate parameter)
+        self.cross_attn_av_layers = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim=d_model, num_heads=n_head, batch_first=True)
+            for _ in range(n_fusion_layers)
+        ])
+        self.norm_av_layers = nn.ModuleList([
+            nn.LayerNorm(d_model) for _ in range(n_fusion_layers)
+        ])
+        
+        # Final fusion encoder (operates on cross-attended features)
         layer_f = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_head,
@@ -206,33 +235,55 @@ class RepurposeModel(pl.LightningModule):
         self.training_metrics = []
         self.validation_metrics = []
 
-    def _caption_enhance(self, src: torch.Tensor, cap: torch.Tensor) -> torch.Tensor:
-        """Simple caption guidance by adding caption context."""
-        return src + cap
-
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor):
-        """Forward pass returning logits for each modality and fused predictions."""
+        """Forward pass with cross-attention between modalities."""
         # Project to shared dimension
         a = self.proj_a(audio)
         v = self.proj_v(visual)
         c = self.proj_c(caption)
 
-        # Self-attention encoding
+        # Self-attention encoding for each modality
         a = self.enc_a(a)
         v = self.enc_v(v)
         c = self.enc_c(c)
 
-        # Caption enhancement
-        a = self._caption_enhance(a, c)
-        v = self._caption_enhance(v, c)
-
-        # Fusion
-        f = (a + v) / 2.0
+        # Multi-layer Cross-attention: Audio-Caption
+        a_enhanced = a
+        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_ac_layers, self.norm_ac_layers)):
+            # Query: audio, Key/Value: caption
+            attn_out, _ = cross_attn(a_enhanced, c, c)
+            a_enhanced = norm(a_enhanced + attn_out)  # Residual connection + LayerNorm
+        
+        # Multi-layer Cross-attention: Visual-Caption  
+        v_enhanced = v
+        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_vc_layers, self.norm_vc_layers)):
+            # Query: visual, Key/Value: caption
+            attn_out, _ = cross_attn(v_enhanced, c, c)
+            v_enhanced = norm(v_enhanced + attn_out)  # Residual connection + LayerNorm
+        
+        # Multi-layer Audio-Visual fusion cross-attention
+        # Start with enhanced features
+        av_fused = a_enhanced
+        va_fused = v_enhanced
+        
+        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_av_layers, self.norm_av_layers)):
+            # Bidirectional cross-attention
+            av_out, _ = cross_attn(av_fused, va_fused, va_fused)  # A queries V
+            va_out, _ = cross_attn(va_fused, av_fused, av_fused)  # V queries A
+            
+            # Apply residual connections and layer norm
+            av_fused = norm(av_fused + av_out)
+            va_fused = norm(va_fused + va_out)
+        
+        # Combine bidirectional cross-attended features
+        f = (av_fused + va_fused) / 2.0
+        
+        # Final fusion with self-attention
         f = self.enc_fusion(f)
 
         # Per-frame logits
-        logit_a = self.head_a(a).squeeze(-1)
-        logit_v = self.head_v(v).squeeze(-1)
+        logit_a = self.head_a(a_enhanced).squeeze(-1)
+        logit_v = self.head_v(v_enhanced).squeeze(-1)
         logit_f = self.head_f(f).squeeze(-1)
 
         return logit_a, logit_v, logit_f
@@ -944,7 +995,9 @@ def main(args):
         dim_caption=dim_caption,
         d_model=args.d_model,
         n_head=args.n_head,
-        n_layers=args.n_layers,
+        n_self_attn_layers=args.n_self_attn_layers,
+        n_cross_attn_layers=args.n_cross_attn_layers,
+        n_fusion_layers=args.n_fusion_layers,
         lr=args.learning_rate,
         lambda1=args.lambda1,
         lambda2=args.lambda2,
@@ -954,6 +1007,8 @@ def main(args):
 
     logger.info(
         f"Created model with {sum(p.numel() for p in model.parameters())} parameters")
+    logger.info(
+        f"Architecture: Self-Attn={args.n_self_attn_layers}, Cross-Attn={args.n_cross_attn_layers}, Fusion={args.n_fusion_layers}")
 
     # Setup callbacks
     callbacks = []
@@ -1104,8 +1159,12 @@ if __name__ == "__main__":
                         help="Model dimension")
     parser.add_argument("--n_head", type=int, default=4,
                         help="Number of attention heads")
-    parser.add_argument("--n_layers", type=int, default=2,
-                        help="Number of transformer layers")
+    parser.add_argument("--n_self_attn_layers", type=int, default=2,
+                        help="Number of self-attention layers per modality")
+    parser.add_argument("--n_cross_attn_layers", type=int, default=2,
+                        help="Number of cross-attention layers for A-C and V-C")
+    parser.add_argument("--n_fusion_layers", type=int, default=2,
+                        help="Number of Audio-Visual fusion layers")
     parser.add_argument("--max_seq_len", type=int, default=None,
                         help="Maximum sequence length (None for full videos)")
 

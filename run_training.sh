@@ -63,7 +63,9 @@ python train_repurpose.py \
     --learning_rate 1e-4 \
     --d_model 128 \
     --n_head 4 \
-    --n_layers 2 \
+    --n_self_attn_layers 2 \
+    --n_cross_attn_layers 2 \
+    --n_fusion_layers 2 \
     --lambda1 0.1 \
     --lambda2 0.3 \
     --lambda3 0.1 \
