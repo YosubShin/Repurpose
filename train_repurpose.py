@@ -707,14 +707,25 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
             if sample_count >= num_samples:
                 break
 
-            # Get predictions from dict batch format
-            audio = batch['features']['audio'].to(device)
-            visual = batch['features']['visual'].to(device)
-            caption = batch['features']['caption'].to(device)
-            labels = batch['labels'].to(device)
-            seq_mask = batch['sequence_masks']
+            try:
+                logger.debug(f"Processing visualization batch {batch_idx}")
+                
+                # Get predictions from dict batch format
+                audio = batch['features']['audio'].to(device)
+                visual = batch['features']['visual'].to(device)
+                caption = batch['features']['caption'].to(device)
+                labels = batch['labels'].to(device)
+                seq_mask = batch['sequence_masks']
 
-            _, _, logit_f = model(audio, visual, caption)
+                logger.debug(f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
+                
+                _, _, logit_f = model(audio, visual, caption)
+                logger.debug(f"Model inference completed, logit_f shape: {logit_f.shape}")
+                
+            except Exception as batch_error:
+                logger.error(f"Error processing batch {batch_idx} in post-training visualization: {batch_error}")
+                logger.error(f"Batch error traceback:", exc_info=True)
+                continue
 
             # Process each sequence in the batch individually
             batch_size = logit_f.shape[0]
@@ -1015,17 +1026,34 @@ def main(args):
         logger.info("Creating visualizations...")
         viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
 
-        # Determine actual device from model
-        actual_device = next(model.parameters()).device
-        logger.info(f"Using device for visualization: {actual_device}")
+        try:
+            # Determine actual device from model
+            actual_device = next(model.parameters()).device
+            logger.info(f"Using device for visualization: {actual_device}")
+            
+            # Add memory logging before visualization
+            log_memory_usage(logger, "Before post-training visualization")
+            
+            # Use validation dataloader if available, otherwise training dataloader
+            viz_dataloader = val_dataloader or train_dataloader
+            logger.info(f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization")
 
-        visualize_predictions(
-            model,
-            val_dataloader or train_dataloader,
-            viz_dir,
-            num_samples=args.num_viz_samples,
-            device=actual_device
-        )
+            visualize_predictions(
+                model,
+                viz_dataloader,
+                viz_dir,
+                num_samples=args.num_viz_samples,
+                device=actual_device
+            )
+            
+            log_memory_usage(logger, "After post-training visualization")
+            logger.info("Post-training visualizations completed successfully")
+            
+        except Exception as viz_error:
+            logger.error(f"Error during post-training visualization: {viz_error}")
+            logger.error("Full visualization traceback:", exc_info=True)
+            log_memory_usage(logger, "After post-training visualization error")
+            logger.info("Training completed successfully despite visualization error")
 
     # Final cleanup
     gc.collect()
