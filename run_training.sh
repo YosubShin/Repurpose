@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # Script to run RepurposeModel training with proper logging and monitoring
+# Usage: ./run_training.sh [--resume]
+#   --resume: Resume from the latest checkpoint if available
 
 # Set paths based on the notebook configuration
 AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
@@ -13,15 +15,40 @@ VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
 mkdir -p checkpoints
 mkdir -p logs
 
-# Check for existing checkpoint to resume from
+# Parse command line arguments
+RESUME_TRAINING=false
+for arg in "$@"; do
+    case $arg in
+        --resume)
+            RESUME_TRAINING=true
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            echo "Usage: $0 [--resume]"
+            exit 1
+            ;;
+    esac
+done
+
+# Check for existing checkpoint to resume from (only if --resume flag is provided)
 RESUME_ARG=""
-if ls checkpoints/last*.ckpt 1> /dev/null 2>&1; then
-    LATEST_CKPT=$(ls -t checkpoints/last*.ckpt | head -1)
-    echo "Found existing checkpoint: $LATEST_CKPT"
-    echo "Training will resume from this checkpoint"
-    RESUME_ARG="--resume_from_checkpoint $LATEST_CKPT"
+if [ "$RESUME_TRAINING" = true ]; then
+    if ls checkpoints/last*.ckpt 1> /dev/null 2>&1; then
+        LATEST_CKPT=$(ls -t checkpoints/last*.ckpt | head -1)
+        echo "Found existing checkpoint: $LATEST_CKPT"
+        echo "Training will resume from this checkpoint"
+        RESUME_ARG="--resume_from_checkpoint $LATEST_CKPT"
+    else
+        echo "WARNING: --resume flag provided but no checkpoint found, starting fresh training"
+    fi
 else
-    echo "No existing checkpoint found, starting fresh training"
+    if ls checkpoints/last*.ckpt 1> /dev/null 2>&1; then
+        echo "NOTE: Existing checkpoints found but --resume flag not provided, starting fresh training"
+        echo "      Use './run_training.sh --resume' to resume from the latest checkpoint"
+    else
+        echo "Starting fresh training"
+    fi
 fi
 
 # Run training with comprehensive logging
