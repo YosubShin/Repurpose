@@ -162,12 +162,11 @@ class SequenceVideoDataset(Dataset):
         if not available_features:
             raise ValueError(f"No features available for {video_id}")
 
-        # Apply timeRange slicing first (like original paper)
-        if time_range[0] != 0:
-            for modality in available_features.keys():
-                start_idx = int(time_range[0])
-                end_idx = int(time_range[1])
-                available_features[modality] = available_features[modality][start_idx:end_idx]
+        # Always apply timeRange slicing to cap memory usage (like original paper)
+        for modality in available_features.keys():
+            start_idx = int(time_range[0])
+            end_idx = int(time_range[1])
+            available_features[modality] = available_features[modality][start_idx:end_idx]
 
         min_length = min(f.shape[0] for f in available_features.values())
         indices = slice(0, min_length, self.stride)
@@ -181,12 +180,11 @@ class SequenceVideoDataset(Dataset):
 
         for modality in self.feature_dirs.keys():
             if features[modality] is not None:
-                # Apply timeRange slicing if needed
+                # Always apply timeRange slicing to cap memory usage
                 feat_data = features[modality]
-                if time_range[0] != 0:
-                    start_idx = int(time_range[0])
-                    end_idx = int(time_range[1])
-                    feat_data = feat_data[start_idx:end_idx]
+                start_idx = int(time_range[0])
+                end_idx = int(time_range[1])
+                feat_data = feat_data[start_idx:end_idx]
                 
                 output_features[modality] = torch.from_numpy(
                     feat_data[indices].astype(np.float32)
