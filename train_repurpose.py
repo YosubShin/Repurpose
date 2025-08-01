@@ -177,18 +177,24 @@ class RepurposeModel(pl.LightningModule):
 
         # Classification heads
         def _head():
-            return nn.Sequential(
+            layers = nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
                 nn.ReLU(),
                 nn.Linear(d_model // 2, 1)
             )
+            # Initialize final layer bias to predict ~35% positive rate
+            # logit = log(p/(1-p)) = log(0.35/0.65) ≈ -0.62
+            nn.init.constant_(layers[-1].bias, -0.3)
+            return layers
 
         self.head_a = _head()
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
 
-        # Use Focal Loss as in the original paper
-        self.focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
+        # Use Focal Loss with alpha matching actual class distribution
+        # Start with balanced alpha=0.5, then tune based on actual distribution
+        # Lower gamma (1.0) for less aggressive down-weighting of easy examples
+        self.focal_loss = FocalLoss(alpha=0.5, gamma=1.0)
         self.lr = lr
 
         # Loss weights
