@@ -188,28 +188,22 @@ class RepurposeModel(pl.LightningModule):
         # Classification heads - 3-layer MLP as per paper
         # Note: sigmoid will be applied in loss function, not here
         def _head():
-            layers = nn.Sequential(
+            return nn.Sequential(
                 nn.Linear(d_model, d_model // 2),
                 nn.ReLU(),
                 nn.Linear(d_model // 2, d_model // 4),
                 nn.ReLU(),
                 nn.Linear(d_model // 4, 1)
+                # No manual bias initialization - let PyTorch handle defaults
             )
-            # Initialize final layer bias to predict ~35% positive rate
-            # logit = log(p/(1-p)) = log(0.35/0.65) ≈ -0.62
-            nn.init.constant_(layers[-1].bias, -0.62)
-            return layers
 
         self.head_a = _head()
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
 
-        # Use Focal Loss with alpha matching actual class distribution
-        # Start with balanced alpha=0.5, then tune based on actual distribution
-        # Lower gamma (1.0) for less aggressive down-weighting of easy examples
-        # Focal loss parameters - will use sigmoid_focal_loss function
-        self.focal_alpha = 0.5
-        self.focal_gamma = 1.0
+        # Use default focal loss parameters (well-tested values)
+        # alpha=0.25 (standard), gamma=2.0 (standard aggressive down-weighting)
+        # Let the model learn naturally with aligned data
         self.lr = lr
 
         # Loss weights
@@ -297,13 +291,10 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        # Compute losses using Focal Loss
-        loss_mul = sigmoid_focal_loss(logit_f_valid, labels_valid,
-                                      alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-        loss_a = sigmoid_focal_loss(logit_a_valid, labels_valid,
-                                    alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-        loss_v = sigmoid_focal_loss(logit_v_valid, labels_valid,
-                                    alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        # Compute losses using default Focal Loss parameters
+        loss_mul = sigmoid_focal_loss(logit_f_valid, labels_valid, reduction='mean')
+        loss_a = sigmoid_focal_loss(logit_a_valid, labels_valid, reduction='mean')
+        loss_v = sigmoid_focal_loss(logit_v_valid, labels_valid, reduction='mean')
         loss_uni = loss_a + loss_v
 
         # Alignment losses (KL divergence)
@@ -390,8 +381,7 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        val_loss = sigmoid_focal_loss(logit_f_valid, labels_valid,
-                                      alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        val_loss = sigmoid_focal_loss(logit_f_valid, labels_valid, reduction='mean')
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
