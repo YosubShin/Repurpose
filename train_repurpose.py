@@ -650,6 +650,7 @@ class EndOfEpochVisualizationCallback(Callback):
                     # Cleanup between datasets
                     try:
                         plt.close('all')
+                        import gc
                         gc.collect()
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
@@ -694,21 +695,30 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
         else:
             device = torch.device(device)
 
+    logger.info(f"Visualization will use device: {device}")
+    
     # Only move model if it's not already on the target device
-    if next(model.parameters()).device != device:
+    model_device = next(model.parameters()).device
+    if model_device != device:
+        logger.info(f"Moving model from {model_device} to {device}")
         model = model.to(device)
+    else:
+        logger.info(f"Model already on target device {device}")
 
     os.makedirs(save_dir, exist_ok=True)
     saved_paths = []
 
     with torch.no_grad():
         sample_count = 0
+        logger.info(f"Starting iteration over dataloader...")
+        
         for batch_idx, batch in enumerate(dataloader):
             if sample_count >= num_samples:
+                logger.info(f"Reached target of {num_samples} samples, stopping")
                 break
 
             try:
-                logger.debug(f"Processing visualization batch {batch_idx}")
+                logger.info(f"Processing visualization batch {batch_idx}")
                 
                 # Get predictions from dict batch format
                 audio = batch['features']['audio'].to(device)
@@ -717,10 +727,10 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 labels = batch['labels'].to(device)
                 seq_mask = batch['sequence_masks']
 
-                logger.debug(f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
+                logger.info(f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
                 
                 _, _, logit_f = model(audio, visual, caption)
-                logger.debug(f"Model inference completed, logit_f shape: {logit_f.shape}")
+                logger.info(f"Model inference completed, logit_f shape: {logit_f.shape}")
                 
             except Exception as batch_error:
                 logger.error(f"Error processing batch {batch_idx} in post-training visualization: {batch_error}")
@@ -1056,6 +1066,7 @@ def main(args):
             logger.info("Training completed successfully despite visualization error")
 
     # Final cleanup
+    import gc
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
