@@ -1031,39 +1031,42 @@ def main(args):
         training_time = time.time() - start_time
         logger.info(f"Training stopped after {training_time/60:.2f} minutes")
 
-    # Create visualizations
+    # Create visualizations (skip if resumed from checkpoint to avoid dataloader issues)
     if args.create_visualizations:
-        logger.info("Creating visualizations...")
-        viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
+        if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint or ""):
+            logger.info("Skipping post-training visualizations when resuming from checkpoint (known dataloader issue)")
+        else:
+            logger.info("Creating visualizations...")
+            viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
 
-        try:
-            # Determine actual device from model
-            actual_device = next(model.parameters()).device
-            logger.info(f"Using device for visualization: {actual_device}")
-            
-            # Add memory logging before visualization
-            log_memory_usage(logger, "Before post-training visualization")
-            
-            # Use validation dataloader if available, otherwise training dataloader
-            viz_dataloader = val_dataloader or train_dataloader
-            logger.info(f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization")
+            try:
+                # Determine actual device from model
+                actual_device = next(model.parameters()).device
+                logger.info(f"Using device for visualization: {actual_device}")
+                
+                # Add memory logging before visualization
+                log_memory_usage(logger, "Before post-training visualization")
+                
+                # Use validation dataloader if available, otherwise training dataloader
+                viz_dataloader = val_dataloader or train_dataloader
+                logger.info(f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization")
 
-            visualize_predictions(
-                model,
-                viz_dataloader,
-                viz_dir,
-                num_samples=args.num_viz_samples,
-                device=actual_device
-            )
-            
-            log_memory_usage(logger, "After post-training visualization")
-            logger.info("Post-training visualizations completed successfully")
-            
-        except Exception as viz_error:
-            logger.error(f"Error during post-training visualization: {viz_error}")
-            logger.error("Full visualization traceback:", exc_info=True)
-            log_memory_usage(logger, "After post-training visualization error")
-            logger.info("Training completed successfully despite visualization error")
+                visualize_predictions(
+                    model,
+                    viz_dataloader,
+                    viz_dir,
+                    num_samples=args.num_viz_samples,
+                    device=actual_device
+                )
+                
+                log_memory_usage(logger, "After post-training visualization")
+                logger.info("Post-training visualizations completed successfully")
+                
+            except Exception as viz_error:
+                logger.error(f"Error during post-training visualization: {viz_error}")
+                logger.error("Full visualization traceback:", exc_info=True)
+                log_memory_usage(logger, "After post-training visualization error")
+                logger.info("Training completed successfully despite visualization error")
 
     # Final cleanup
     import gc
