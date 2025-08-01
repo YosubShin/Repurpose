@@ -187,8 +187,8 @@ class RepurposeModel(pl.LightningModule):
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
 
-        # Use BCE loss instead of Focal Loss for better stability
-        self.bce_loss = nn.BCEWithLogitsLoss()
+        # Use Focal Loss as in the original paper
+        self.focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
         self.lr = lr
 
         # Loss weights
@@ -252,10 +252,10 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        # Compute losses
-        loss_mul = self.bce_loss(logit_f_valid, labels_valid)
-        loss_a = self.bce_loss(logit_a_valid, labels_valid)
-        loss_v = self.bce_loss(logit_v_valid, labels_valid)
+        # Compute losses using Focal Loss
+        loss_mul = self.focal_loss(logit_f_valid, labels_valid)
+        loss_a = self.focal_loss(logit_a_valid, labels_valid)
+        loss_v = self.focal_loss(logit_v_valid, labels_valid)
         loss_uni = loss_a + loss_v
 
         # Alignment losses (KL divergence)
@@ -342,7 +342,7 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        val_loss = self.bce_loss(logit_f_valid, labels_valid)
+        val_loss = self.focal_loss(logit_f_valid, labels_valid)
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
