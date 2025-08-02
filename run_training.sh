@@ -61,7 +61,7 @@ python train_repurpose.py \
     --batch_size 12 \
     --epochs 20 \
     --learning_rate 1e-4 \
-    --d_model 128 \
+    --d_model 512 \
     --n_head 4 \
     --n_self_attn_layers 3 \
     --n_cross_attn_layers 3 \
