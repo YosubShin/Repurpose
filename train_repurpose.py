@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
@@ -114,6 +115,7 @@ class RepurposeModel(pl.LightningModule):
         n_cross_attn_layers: int = 2,  # Cross-attention layers for A-C and V-C
         n_fusion_layers: int = 2,  # Audio-Visual fusion layers
         lr: float = 1e-3,
+        warmup_epochs: int = 1,
         lambda1: float = 0.1,
         lambda2: float = 0.3,
         lambda3: float = 0.1,
@@ -343,6 +345,7 @@ class RepurposeModel(pl.LightningModule):
             'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
             'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
             'train/step_time': time.time() - start_time,
+            'train/learning_rate': self.optimizers().param_groups[0]['lr'],  # Log current LR
             'epoch': self.current_epoch,
             'global_step': self.global_step
         }
@@ -417,26 +420,48 @@ class RepurposeModel(pl.LightningModule):
         return val_loss
 
     def configure_optimizers(self):
-        """Configure optimizer with optional scheduling."""
+        """Configure optimizer with warmup and cosine decay scheduling."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-
-        # Optional: Add learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=0.5,
-            patience=5
-        )
-
+        
+        # We need to create a custom scheduler that combines warmup and cosine decay
+        # The actual warmup_steps will be set in on_train_start when we know the dataloader size
+        self.warmup_steps = 100  # Default, will be updated
+        self.total_steps = 1000  # Default, will be updated
+        
+        # Create a combined scheduler
+        def lr_lambda(current_step):
+            # Warmup phase
+            if current_step < self.warmup_steps:
+                return float(current_step) / float(max(1, self.warmup_steps))
+            # Cosine decay phase
+            else:
+                progress = float(current_step - self.warmup_steps) / float(max(1, self.total_steps - self.warmup_steps))
+                return 0.5 * (1.0 + np.cos(np.pi * progress))
+        
+        scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+        
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'monitor': 'train/loss_total',
+                'interval': 'step',  # Step every batch, not epoch
                 'frequency': 1
             }
         }
 
+    def on_train_start(self):
+        """Set warmup and total steps based on actual training configuration."""
+        # Get the actual number of training steps
+        if self.trainer.max_epochs:
+            steps_per_epoch = len(self.trainer.train_dataloader)
+            self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
+            self.total_steps = self.trainer.max_epochs * steps_per_epoch
+            
+            self.logger_instance.info(
+                f"Learning rate schedule configured: warmup_steps={self.warmup_steps}, "
+                f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
+            )
+    
     def on_before_backward(self, loss):
         """Apply gradient clipping before backward pass."""
         # This is called automatically by PyTorch Lightning when gradient_clip_val is set
@@ -999,6 +1024,7 @@ def main(args):
         n_cross_attn_layers=args.n_cross_attn_layers,
         n_fusion_layers=args.n_fusion_layers,
         lr=args.learning_rate,
+        warmup_epochs=args.warmup_epochs,
         lambda1=args.lambda1,
         lambda2=args.lambda2,
         lambda3=args.lambda3,
@@ -1183,6 +1209,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument("--learning_rate", type=float,
                         default=1e-3, help="Learning rate")
+    parser.add_argument("--warmup_epochs", type=int,
+                        default=1, help="Number of warmup epochs for learning rate schedule")
     parser.add_argument("--gradient_clip", type=float,
                         default=1.0, help="Gradient clipping value")
     parser.add_argument("--accumulate_grad_batches", type=int,
