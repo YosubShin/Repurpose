@@ -209,9 +209,11 @@ class RepurposeModel(pl.LightningModule):
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
 
-        # Use default focal loss parameters (well-tested values)
-        # alpha=0.25 (standard), gamma=2.0 (standard aggressive down-weighting)
-        # Let the model learn naturally with aligned data
+        # Use less conservative focal loss parameters that worked well before
+        # alpha=0.5 (balanced), gamma=1.0 (moderate down-weighting)
+        # These should work even better now with aligned data
+        self.focal_alpha = 0.5
+        self.focal_gamma = 1.0
         self.lr = lr
 
         # Loss weights
@@ -299,13 +301,13 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        # Compute losses using default Focal Loss parameters
+        # Compute losses using less conservative Focal Loss parameters
         loss_mul = sigmoid_focal_loss(
-            logit_f_valid, labels_valid, reduction='mean')
+            logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_a = sigmoid_focal_loss(
-            logit_a_valid, labels_valid, reduction='mean')
+            logit_a_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_v = sigmoid_focal_loss(
-            logit_v_valid, labels_valid, reduction='mean')
+            logit_v_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_uni = loss_a + loss_v
 
         # Alignment losses (KL divergence)
@@ -393,7 +395,7 @@ class RepurposeModel(pl.LightningModule):
         labels_valid = labels[valid_positions]
 
         val_loss = sigmoid_focal_loss(
-            logit_f_valid, labels_valid, reduction='mean')
+            logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
