@@ -127,10 +127,18 @@ class RepurposeModel(pl.LightningModule):
         self.log_interval = log_interval
         self.step_count = 0
 
-        # Projections to shared dimension
-        self.proj_a = nn.Linear(dim_audio, d_model)
-        self.proj_v = nn.Linear(dim_visual, d_model)
-        self.proj_c = nn.Linear(dim_caption, d_model)
+        # Projections to shared dimension - MLPs as per paper
+        # "We then use three distinct MLP layers to map these features to a unified dimension d"
+        def _projection_mlp(input_dim):
+            return nn.Sequential(
+                nn.Linear(input_dim, d_model * 2),
+                nn.ReLU(),
+                nn.Linear(d_model * 2, d_model)
+            )
+
+        self.proj_a = _projection_mlp(dim_audio)
+        self.proj_v = _projection_mlp(dim_visual)
+        self.proj_c = _projection_mlp(dim_caption)
 
         # Self-attention encoders (per modality)
         def _encoder():
@@ -292,9 +300,12 @@ class RepurposeModel(pl.LightningModule):
         labels_valid = labels[valid_positions]
 
         # Compute losses using default Focal Loss parameters
-        loss_mul = sigmoid_focal_loss(logit_f_valid, labels_valid, reduction='mean')
-        loss_a = sigmoid_focal_loss(logit_a_valid, labels_valid, reduction='mean')
-        loss_v = sigmoid_focal_loss(logit_v_valid, labels_valid, reduction='mean')
+        loss_mul = sigmoid_focal_loss(
+            logit_f_valid, labels_valid, reduction='mean')
+        loss_a = sigmoid_focal_loss(
+            logit_a_valid, labels_valid, reduction='mean')
+        loss_v = sigmoid_focal_loss(
+            logit_v_valid, labels_valid, reduction='mean')
         loss_uni = loss_a + loss_v
 
         # Alignment losses (KL divergence)
@@ -381,7 +392,8 @@ class RepurposeModel(pl.LightningModule):
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
 
-        val_loss = sigmoid_focal_loss(logit_f_valid, labels_valid, reduction='mean')
+        val_loss = sigmoid_focal_loss(
+            logit_f_valid, labels_valid, reduction='mean')
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
