@@ -308,7 +308,9 @@ def create_sequence_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=pin_memory
+        pin_memory=pin_memory,
+        persistent_workers=True,
+        prefetch_factor=2
     )
 
 

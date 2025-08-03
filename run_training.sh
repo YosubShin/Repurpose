@@ -71,7 +71,7 @@ python train_repurpose.py \
     --lambda3 0.1 \
     --log_interval 5 \
     --checkpoint_dir checkpoints \
-    --num_workers 0 \
+    --num_workers 4 \
     --create_visualizations \
     --num_viz_samples 5 \
     --log_level INFO \
