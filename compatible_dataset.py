@@ -23,7 +23,7 @@ class SequenceVideoDataset(Dataset):
         feature_dirs: Dict[str, str],
         annotation_file: str,
         cache_size: int = 32,
-        use_mmap: bool = True,
+        use_mmap: bool = False,
         max_seq_length: Optional[int] = None,
         stride: int = 1,
         min_modalities: int = 1,
@@ -87,7 +87,6 @@ class SequenceVideoDataset(Dataset):
                         if status[modality])
             print(f"  {modality}: {count}/{len(self.video_list)} videos")
 
-
     def _load_video_impl(self, video_id: str) -> Dict[str, Optional[np.ndarray]]:
         """Load video features, handling missing modalities."""
         features = {}
@@ -148,7 +147,6 @@ class SequenceVideoDataset(Dataset):
     def __getitem__(self, idx):
         return self._get_sequence(idx)
 
-
     def _get_sequence(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get full sequence - returns dict for custom collate_fn."""
         video_id = self.video_list[idx]
@@ -185,7 +183,7 @@ class SequenceVideoDataset(Dataset):
                 start_idx = int(time_range[0])
                 end_idx = int(time_range[1])
                 feat_data = feat_data[start_idx:end_idx]
-                
+
                 output_features[modality] = torch.from_numpy(
                     feat_data[indices].astype(np.float32)
                 )
@@ -201,7 +199,8 @@ class SequenceVideoDataset(Dataset):
                 feature_masks[modality] = False
 
         # Generate labels for the correctly sliced sequence length
-        actual_seq_length = len(output_features[next(iter(output_features.keys()))])
+        actual_seq_length = len(
+            output_features[next(iter(output_features.keys()))])
         labels = self._get_labels(video_id, actual_seq_length)
 
         return {
@@ -245,57 +244,57 @@ def create_sequence_dataloader(
 
     # Custom collation for sequences
     def sequence_collate_fn(batch):
-            max_len = max(sample['labels'].shape[0] for sample in batch)
+        max_len = max(sample['labels'].shape[0] for sample in batch)
 
-            output = {
-                'video_ids': [s['video_id'] for s in batch],
-                'features': {},
-                'feature_masks': {},
-                'labels': [],
-                'sequence_masks': []
-            }
+        output = {
+            'video_ids': [s['video_id'] for s in batch],
+            'features': {},
+            'feature_masks': {},
+            'labels': [],
+            'sequence_masks': []
+        }
 
-            modalities = list(batch[0]['features'].keys())
+        modalities = list(batch[0]['features'].keys())
+        for modality in modalities:
+            output['features'][modality] = []
+            output['feature_masks'][modality] = []
+
+        for sample in batch:
+            seq_len = sample['labels'].shape[0]
+
+            # Pad features
             for modality in modalities:
-                output['features'][modality] = []
-                output['feature_masks'][modality] = []
-
-            for sample in batch:
-                seq_len = sample['labels'].shape[0]
-
-                # Pad features
-                for modality in modalities:
-                    feat = sample['features'][modality]
-                    if seq_len < max_len:
-                        pad_size = (max_len - seq_len, feat.shape[-1])
-                        feat = torch.cat([feat, torch.zeros(pad_size)], dim=0)
-                    output['features'][modality].append(feat)
-                    output['feature_masks'][modality].append(
-                        sample['feature_masks'][modality])
-
-                # Pad labels
-                labels = sample['labels']
+                feat = sample['features'][modality]
                 if seq_len < max_len:
-                    labels = torch.cat(
-                        [labels, torch.zeros(max_len - seq_len)], dim=0)
-                output['labels'].append(labels)
+                    pad_size = (max_len - seq_len, feat.shape[-1])
+                    feat = torch.cat([feat, torch.zeros(pad_size)], dim=0)
+                output['features'][modality].append(feat)
+                output['feature_masks'][modality].append(
+                    sample['feature_masks'][modality])
 
-                # Sequence mask
-                seq_mask = torch.ones(max_len)
-                if seq_len < max_len:
-                    seq_mask[seq_len:] = 0
-                output['sequence_masks'].append(seq_mask)
+            # Pad labels
+            labels = sample['labels']
+            if seq_len < max_len:
+                labels = torch.cat(
+                    [labels, torch.zeros(max_len - seq_len)], dim=0)
+            output['labels'].append(labels)
 
-            # Stack tensors
-            for modality in modalities:
-                output['features'][modality] = torch.stack(
-                    output['features'][modality])
-                output['feature_masks'][modality] = torch.tensor(
-                    output['feature_masks'][modality])
-            output['labels'] = torch.stack(output['labels'])
-            output['sequence_masks'] = torch.stack(output['sequence_masks'])
+            # Sequence mask
+            seq_mask = torch.ones(max_len)
+            if seq_len < max_len:
+                seq_mask[seq_len:] = 0
+            output['sequence_masks'].append(seq_mask)
 
-            return output
+        # Stack tensors
+        for modality in modalities:
+            output['features'][modality] = torch.stack(
+                output['features'][modality])
+            output['feature_masks'][modality] = torch.tensor(
+                output['feature_masks'][modality])
+        output['labels'] = torch.stack(output['labels'])
+        output['sequence_masks'] = torch.stack(output['sequence_masks'])
+
+        return output
 
     collate_fn = sequence_collate_fn
 
