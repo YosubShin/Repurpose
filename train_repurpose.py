@@ -109,17 +109,17 @@ class RepurposeModel(pl.LightningModule):
         dim_audio: int,
         dim_visual: int,
         dim_caption: int,
-        d_model: int = 128,
+        d_model: int = 512,
         n_head: int = 4,
-        n_self_attn_layers: int = 2,  # Self-attention layers per modality
-        n_cross_attn_layers: int = 2,  # Cross-attention layers for A-C and V-C
-        n_fusion_layers: int = 2,  # Audio-Visual fusion layers
-        lr: float = 1e-3,
+        n_self_attn_layers: int = 3,  # Self-attention layers per modality
+        n_cross_attn_layers: int = 3,  # Cross-attention layers for A-C and V-C
+        n_fusion_layers: int = 3,  # Audio-Visual fusion layers
+        lr: float = 1e-4,
         warmup_epochs: int = 1,
         lambda1: float = 0.1,
         lambda2: float = 0.3,
         lambda3: float = 0.1,
-        lambda4: float = 0.1,  # Weight for regression loss
+        lambda4: float = 0.7,  # Weight for regression loss
         log_interval: int = 10
     ):
         super().__init__()
@@ -211,7 +211,7 @@ class RepurposeModel(pl.LightningModule):
         self.head_a = _head()
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
-        
+
         # Regression heads - 3-layer MLP with ReLU at the end (as per paper)
         # "incorporating a ReLU activation layer at its final stage"
         def _regression_head():
@@ -220,10 +220,11 @@ class RepurposeModel(pl.LightningModule):
                 nn.ReLU(),
                 nn.Linear(d_model // 2, d_model // 4),
                 nn.ReLU(),
-                nn.Linear(d_model // 4, 2),  # 2 outputs: left and right offsets
+                # 2 outputs: left and right offsets
+                nn.Linear(d_model // 4, 2),
                 nn.ReLU()  # Final ReLU as specified in paper
             )
-        
+
         self.reg_head_f = _regression_head()  # Multi-modal fused regression head
 
         # Use less conservative focal loss parameters that worked well before
@@ -295,7 +296,7 @@ class RepurposeModel(pl.LightningModule):
         logit_a = self.head_a(a_enhanced).squeeze(-1)
         logit_v = self.head_v(v_enhanced).squeeze(-1)
         logit_f = self.head_f(f).squeeze(-1)
-        
+
         # Per-frame regression offsets (left_offset, right_offset) - only multimodal
         offset_f = self.reg_head_f(f)  # [B, T, 2]
 
@@ -322,7 +323,7 @@ class RepurposeModel(pl.LightningModule):
         logit_v_valid = logit_v[valid_positions]
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
-        
+
         # Extract valid regression targets and predictions
         offsets_valid = offsets[valid_positions]  # [N_valid, 2]
         offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
@@ -335,20 +336,16 @@ class RepurposeModel(pl.LightningModule):
         loss_v = sigmoid_focal_loss(
             logit_v_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_uni = loss_a + loss_v
+
+        # Regression loss (IoU-based) - following original implementation pattern
+        # Compute loss for all positions first (no reduction)
+        reg_loss_f_all = ctr_diou_loss_1d(offset_f_valid, offsets_valid, reduction='none')
         
-        # Regression loss (IoU-based) - only for multimodal output and positive samples
+        # Create positive mask for regression (only positive samples contribute)
         positive_mask = labels_valid > 0.5
-        if positive_mask.sum() > 0:
-            # Only compute regression loss for positive samples (where labels > 0.5)
-            pos_offsets_valid = offsets_valid[positive_mask]
-            pos_offset_f_valid = offset_f_valid[positive_mask]
-            
-            # Compute IoU-based regression loss for multimodal fusion
-            reg_loss_f = ctr_diou_loss_1d(
-                pos_offset_f_valid.unsqueeze(0), pos_offsets_valid.unsqueeze(0), reduction='mean')
-        else:
-            # No positive samples in this batch - set loss to zero
-            reg_loss_f = torch.tensor(0.0, device=labels.device)
+        
+        # Apply mask and sum (following original pattern)
+        reg_loss_f = (reg_loss_f_all * positive_mask).sum()
 
         # Alignment losses (KL divergence)
         prob_a = torch.sigmoid(logit_a_valid).detach()
@@ -385,7 +382,8 @@ class RepurposeModel(pl.LightningModule):
             'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
             'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
             'train/step_time': time.time() - start_time,
-            'train/learning_rate': self.optimizers().param_groups[0]['lr'],  # Log current LR
+            # Log current LR
+            'train/learning_rate': self.optimizers().param_groups[0]['lr'],
             'epoch': self.current_epoch,
             'global_step': self.global_step
         }
@@ -437,25 +435,20 @@ class RepurposeModel(pl.LightningModule):
         valid_positions = seq_mask.bool()
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
-        
-        # Extract valid regression targets and predictions  
+
+        # Extract valid regression targets and predictions
         offsets_valid = offsets[valid_positions]  # [N_valid, 2]
         offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
 
         # Classification loss
         val_loss_cls = sigmoid_focal_loss(
             logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-            
-        # Regression loss for positive samples
+
+        # Regression loss for positive samples - following original pattern
+        val_loss_reg_all = ctr_diou_loss_1d(offset_f_valid, offsets_valid, reduction='none')
         positive_mask = labels_valid > 0.5
-        if positive_mask.sum() > 0:
-            pos_offsets_valid = offsets_valid[positive_mask]
-            pos_offset_f_valid = offset_f_valid[positive_mask]
-            val_loss_reg = ctr_diou_loss_1d(
-                pos_offset_f_valid.unsqueeze(0), pos_offsets_valid.unsqueeze(0), reduction='mean')
-        else:
-            val_loss_reg = torch.tensor(0.0, device=labels.device)
-            
+        val_loss_reg = (val_loss_reg_all * positive_mask).sum()
+
         # Total validation loss
         val_loss = val_loss_cls + self.lambda4 * val_loss_reg
 
@@ -483,12 +476,12 @@ class RepurposeModel(pl.LightningModule):
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        
+
         # We need to create a custom scheduler that combines warmup and cosine decay
         # The actual warmup_steps will be set in on_train_start when we know the dataloader size
         self.warmup_steps = 100  # Default, will be updated
         self.total_steps = 1000  # Default, will be updated
-        
+
         # Create a combined scheduler
         def lr_lambda(current_step):
             # Warmup phase
@@ -496,11 +489,12 @@ class RepurposeModel(pl.LightningModule):
                 return float(current_step) / float(max(1, self.warmup_steps))
             # Cosine decay phase
             else:
-                progress = float(current_step - self.warmup_steps) / float(max(1, self.total_steps - self.warmup_steps))
+                progress = float(current_step - self.warmup_steps) / \
+                    float(max(1, self.total_steps - self.warmup_steps))
                 return 0.5 * (1.0 + np.cos(np.pi * progress))
-        
+
         scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-        
+
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -517,12 +511,12 @@ class RepurposeModel(pl.LightningModule):
             steps_per_epoch = len(self.trainer.train_dataloader)
             self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
             self.total_steps = self.trainer.max_epochs * steps_per_epoch
-            
+
             self.logger_instance.info(
                 f"Learning rate schedule configured: warmup_steps={self.warmup_steps}, "
                 f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
             )
-    
+
     def on_before_backward(self, loss):
         """Apply gradient clipping before backward pass."""
         # This is called automatically by PyTorch Lightning when gradient_clip_val is set
@@ -627,6 +621,7 @@ class EndOfEpochVisualizationCallback(Callback):
                             visual = batch['features']['visual'].to(device)
                             caption = batch['features']['caption'].to(device)
                             labels = batch['labels'].to(device)
+                            offsets = batch['offsets'].to(device)  # Get ground truth offsets
                             seq_mask = batch['sequence_masks']
 
                             log_memory_usage(
@@ -669,11 +664,15 @@ class EndOfEpochVisualizationCallback(Callback):
                                 # Extract predictions and labels for this sequence only
                                 logit_f_seq = logit_f[seq_idx, :valid_length]
                                 labels_seq = labels[seq_idx, :valid_length]
+                                offset_f_seq = offset_f[seq_idx, :valid_length]  # Extract offsets
+                                offsets_seq = offsets[seq_idx, :valid_length]  # Ground truth offsets
 
                                 # Convert to numpy for visualization
                                 pred_probs = torch.sigmoid(
                                     logit_f_seq).cpu().numpy()
                                 labels_np = labels_seq.cpu().numpy()
+                                pred_offsets_np = offset_f_seq.cpu().numpy()
+                                gt_offsets_np = offsets_seq.cpu().numpy()
 
                                 # Extract video ID for this sequence
                                 video_id = batch['video_ids'][seq_idx]
@@ -684,9 +683,9 @@ class EndOfEpochVisualizationCallback(Callback):
                                 # Create visualization immediately instead of accumulating data
                                 if hasattr(trainer.logger, 'experiment'):
                                     try:
-                                        # Create plot
+                                        # Create plot with 4 subplots (similar to debug_visualizer)
                                         fig, axes = plt.subplots(
-                                            2, 1, figsize=(12, 8))
+                                            4, 1, figsize=(15, 12))
                                         time_points = np.arange(
                                             len(pred_probs))
 
@@ -707,18 +706,62 @@ class EndOfEpochVisualizationCallback(Callback):
                                         axes[0].grid(True, alpha=0.3)
                                         axes[0].set_ylim(-0.1, 1.1)
 
-                                        # Plot 2: Prediction confidence
-                                        confidence = np.abs(
-                                            pred_probs - 0.5) * 2
-                                        axes[1].plot(time_points, confidence, 'g-',
-                                                     label='Confidence', alpha=0.7)
-                                        axes[1].set_ylabel('Confidence')
+                                        # Plot 2: Offset predictions
+                                        axes[1].plot(time_points, pred_offsets_np[:, 0], 'b-', 
+                                                     label='Pred Left Offset', alpha=0.7)
+                                        axes[1].plot(time_points, pred_offsets_np[:, 1], 'b--', 
+                                                     label='Pred Right Offset', alpha=0.7)
+                                        # Plot GT offsets only at positive positions
+                                        if np.any(positive_idx):
+                                            axes[1].scatter(time_points[positive_idx], 
+                                                            gt_offsets_np[positive_idx, 0],
+                                                            color='red', s=30, label='GT Left Offset', marker='o')
+                                            axes[1].scatter(time_points[positive_idx], 
+                                                            gt_offsets_np[positive_idx, 1],
+                                                            color='darkred', s=30, label='GT Right Offset', marker='s')
+                                        axes[1].set_ylabel('Offset Value')
                                         axes[1].set_xlabel('Time Steps')
-                                        axes[1].set_title(
-                                            'Prediction Confidence')
+                                        axes[1].set_title('Offset Predictions')
                                         axes[1].legend()
                                         axes[1].grid(True, alpha=0.3)
-                                        axes[1].set_ylim(0, 1)
+                                        
+                                        # Plot 3: Segments visualization from offsets
+                                        ax3 = axes[2]
+                                        # Draw predicted segments at high confidence points
+                                        high_conf_idx = pred_probs > 0.5
+                                        for t_idx in np.where(high_conf_idx)[0]:
+                                            left_offset = pred_offsets_np[t_idx, 0]
+                                            right_offset = pred_offsets_np[t_idx, 1]
+                                            start = max(0, t_idx - left_offset)
+                                            end = min(len(pred_probs), t_idx + right_offset)
+                                            ax3.add_patch(patches.Rectangle((start, 0.6), end - start, 0.3,
+                                                                          facecolor='blue', alpha=0.5))
+                                        
+                                        # Draw GT segments from offsets
+                                        for t_idx in np.where(positive_idx)[0]:
+                                            left_offset = gt_offsets_np[t_idx, 0]
+                                            right_offset = gt_offsets_np[t_idx, 1]
+                                            start = max(0, t_idx - left_offset)
+                                            end = min(len(pred_probs), t_idx + right_offset)
+                                            ax3.add_patch(patches.Rectangle((start, 0.1), end - start, 0.3,
+                                                                          facecolor='red', alpha=0.5))
+                                        
+                                        ax3.set_xlim(0, len(pred_probs))
+                                        ax3.set_ylim(0, 1)
+                                        ax3.set_xlabel('Time Steps')
+                                        ax3.set_title('Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
+                                        ax3.grid(True, alpha=0.3, axis='x')
+                                        
+                                        # Plot 4: Prediction confidence
+                                        confidence = np.abs(pred_probs - 0.5) * 2
+                                        axes[3].plot(time_points, confidence, 'g-',
+                                                     label='Confidence', alpha=0.7)
+                                        axes[3].set_ylabel('Confidence')
+                                        axes[3].set_xlabel('Time Steps')
+                                        axes[3].set_title('Prediction Confidence')
+                                        axes[3].legend()
+                                        axes[3].grid(True, alpha=0.3)
+                                        axes[3].set_ylim(0, 1)
 
                                         plt.tight_layout()
 
@@ -745,7 +788,7 @@ class EndOfEpochVisualizationCallback(Callback):
 
                                         # Close plot and cleanup
                                         plt.close(fig)
-                                        del pred_probs, labels_np, fig, axes
+                                        del pred_probs, labels_np, pred_offsets_np, gt_offsets_np, fig, axes
 
                                         self.logger.debug(
                                             f"Completed immediate visualization for {video_id}")
@@ -768,7 +811,7 @@ class EndOfEpochVisualizationCallback(Callback):
 
                         # Cleanup after each batch
                         try:
-                            del audio, visual, caption, labels, seq_mask, logit_f
+                            del audio, visual, caption, labels, offsets, seq_mask, logit_f, offset_f
                         except Exception as cleanup_e:
                             self.logger.warning(
                                 f"Error during batch cleanup: {cleanup_e}")
@@ -1285,7 +1328,7 @@ if __name__ == "__main__":
                         help="Weight for multi-modal loss")
     parser.add_argument("--lambda3", type=float, default=0.1,
                         help="Weight for KL divergence loss")
-    parser.add_argument("--lambda4", type=float, default=0.1,
+    parser.add_argument("--lambda4", type=float, default=0.7,
                         help="Weight for regression loss")
 
     # Hardware arguments
