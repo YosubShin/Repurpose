@@ -69,6 +69,7 @@ python train_repurpose.py \
     --lambda1 0.1 \
     --lambda2 0.3 \
     --lambda3 0.1 \
+    --lambda4 0.7 \
     --log_interval 5 \
     --checkpoint_dir checkpoints \
     --num_workers 4 \

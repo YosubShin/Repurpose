@@ -140,6 +140,29 @@ class SequenceVideoDataset(Dataset):
                 labels[idx] = 1.0
 
         return labels
+    
+    def _get_regression_offsets(self, video_id: str, num_frames: int) -> np.ndarray:
+        """Generate regression offsets for each frame."""
+        ann = self.video_to_annotation[video_id]
+        segments = ann.get('segmentsOffset', [])
+        time_range = ann.get('timeRangeOffset', [0, 0])
+        
+        timestamps = np.linspace(
+            time_range[0], time_range[1], num_frames, endpoint=False)
+        # Initialize with zeros - shape: (num_frames, 2) for [left_offset, right_offset]
+        offsets = np.zeros((num_frames, 2), dtype=np.float32)
+        
+        for idx, t in enumerate(timestamps):
+            # Find if this timestamp is inside any segment
+            for start, end in segments:
+                if start <= t < end:
+                    # Calculate offsets to segment boundaries
+                    left_offset = t - start
+                    right_offset = end - t
+                    offsets[idx] = [left_offset, right_offset]
+                    break  # Use first matching segment
+        
+        return offsets
 
     def __len__(self):
         return len(self.video_list)
@@ -198,16 +221,18 @@ class SequenceVideoDataset(Dataset):
                 )
                 feature_masks[modality] = False
 
-        # Generate labels for the correctly sliced sequence length
+        # Generate labels and regression offsets for the correctly sliced sequence length
         actual_seq_length = len(
             output_features[next(iter(output_features.keys()))])
         labels = self._get_labels(video_id, actual_seq_length)
+        offsets = self._get_regression_offsets(video_id, actual_seq_length)
 
         return {
             'video_id': video_id,
             'features': output_features,
             'feature_masks': feature_masks,
             'labels': torch.from_numpy(labels),
+            'offsets': torch.from_numpy(offsets),  # Shape: [seq_len, 2]
             'duration': self.video_to_annotation[video_id].get('duration', 0)
         }
 
@@ -251,6 +276,7 @@ def create_sequence_dataloader(
             'features': {},
             'feature_masks': {},
             'labels': [],
+            'offsets': [],  # Add regression offsets
             'sequence_masks': []
         }
 
@@ -278,6 +304,13 @@ def create_sequence_dataloader(
                 labels = torch.cat(
                     [labels, torch.zeros(max_len - seq_len)], dim=0)
             output['labels'].append(labels)
+            
+            # Pad offsets - shape: [seq_len, 2]
+            offsets = sample['offsets']
+            if seq_len < max_len:
+                pad_size = (max_len - seq_len, 2)
+                offsets = torch.cat([offsets, torch.zeros(pad_size)], dim=0)
+            output['offsets'].append(offsets)
 
             # Sequence mask
             seq_mask = torch.ones(max_len)
@@ -292,6 +325,7 @@ def create_sequence_dataloader(
             output['feature_masks'][modality] = torch.tensor(
                 output['feature_masks'][modality])
         output['labels'] = torch.stack(output['labels'])
+        output['offsets'] = torch.stack(output['offsets'])  # Shape: [batch_size, max_len, 2]
         output['sequence_masks'] = torch.stack(output['sequence_masks'])
 
         return output

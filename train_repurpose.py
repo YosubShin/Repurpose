@@ -4,7 +4,7 @@ Standalone training script for RepurposeModel with comprehensive logging and wan
 Incorporates memory optimizations and visualization capabilities.
 """
 
-from models.losses import sigmoid_focal_loss
+from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
 import os
 import gc
 import sys
@@ -119,6 +119,7 @@ class RepurposeModel(pl.LightningModule):
         lambda1: float = 0.1,
         lambda2: float = 0.3,
         lambda3: float = 0.1,
+        lambda4: float = 0.1,  # Weight for regression loss
         log_interval: int = 10
     ):
         super().__init__()
@@ -210,6 +211,20 @@ class RepurposeModel(pl.LightningModule):
         self.head_a = _head()
         self.head_v = _head()
         self.head_f = _head()  # Multi-modal fused head
+        
+        # Regression heads - 3-layer MLP with ReLU at the end (as per paper)
+        # "incorporating a ReLU activation layer at its final stage"
+        def _regression_head():
+            return nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.ReLU(),
+                nn.Linear(d_model // 2, d_model // 4),
+                nn.ReLU(),
+                nn.Linear(d_model // 4, 2),  # 2 outputs: left and right offsets
+                nn.ReLU()  # Final ReLU as specified in paper
+            )
+        
+        self.reg_head_f = _regression_head()  # Multi-modal fused regression head
 
         # Use less conservative focal loss parameters that worked well before
         # alpha=0.5 (balanced), gamma=1.0 (moderate down-weighting)
@@ -222,6 +237,7 @@ class RepurposeModel(pl.LightningModule):
         self.lambda1 = lambda1
         self.lambda2 = lambda2
         self.lambda3 = lambda3
+        self.lambda4 = lambda4  # Regression loss weight
 
         # Metrics tracking
         self.training_metrics = []
@@ -275,12 +291,15 @@ class RepurposeModel(pl.LightningModule):
         # Final fusion with self-attention
         f = self.enc_fusion(f)
 
-        # Per-frame logits
+        # Per-frame classification logits
         logit_a = self.head_a(a_enhanced).squeeze(-1)
         logit_v = self.head_v(v_enhanced).squeeze(-1)
         logit_f = self.head_f(f).squeeze(-1)
+        
+        # Per-frame regression offsets (left_offset, right_offset) - only multimodal
+        offset_f = self.reg_head_f(f)  # [B, T, 2]
 
-        return logit_a, logit_v, logit_f
+        return logit_a, logit_v, logit_f, offset_f
 
     def training_step(self, batch, batch_idx):
         """Training step with comprehensive logging."""
@@ -291,10 +310,11 @@ class RepurposeModel(pl.LightningModule):
         visual = batch['features']['visual']
         caption = batch['features']['caption']
         labels = batch['labels']
+        offsets = batch['offsets']  # Ground truth regression offsets [B, T, 2]
         seq_mask = batch['sequence_masks']
 
-        # Forward pass
-        logit_a, logit_v, logit_f = self(audio, visual, caption)
+        # Forward pass - now returns both classification and regression outputs
+        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
 
         # Apply sequence mask to get valid positions
         valid_positions = seq_mask.bool()
@@ -302,6 +322,10 @@ class RepurposeModel(pl.LightningModule):
         logit_v_valid = logit_v[valid_positions]
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
+        
+        # Extract valid regression targets and predictions
+        offsets_valid = offsets[valid_positions]  # [N_valid, 2]
+        offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
 
         # Compute losses using less conservative Focal Loss parameters
         loss_mul = sigmoid_focal_loss(
@@ -311,6 +335,20 @@ class RepurposeModel(pl.LightningModule):
         loss_v = sigmoid_focal_loss(
             logit_v_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
         loss_uni = loss_a + loss_v
+        
+        # Regression loss (IoU-based) - only for multimodal output and positive samples
+        positive_mask = labels_valid > 0.5
+        if positive_mask.sum() > 0:
+            # Only compute regression loss for positive samples (where labels > 0.5)
+            pos_offsets_valid = offsets_valid[positive_mask]
+            pos_offset_f_valid = offset_f_valid[positive_mask]
+            
+            # Compute IoU-based regression loss for multimodal fusion
+            reg_loss_f = ctr_diou_loss_1d(
+                pos_offset_f_valid.unsqueeze(0), pos_offsets_valid.unsqueeze(0), reduction='mean')
+        else:
+            # No positive samples in this batch - set loss to zero
+            reg_loss_f = torch.tensor(0.0, device=labels.device)
 
         # Alignment losses (KL divergence)
         prob_a = torch.sigmoid(logit_a_valid).detach()
@@ -319,9 +357,10 @@ class RepurposeModel(pl.LightningModule):
         loss_kl = kl_div_bernoulli(prob_v, prob_f) + \
             kl_div_bernoulli(prob_a, prob_f)
 
-        # Total loss
+        # Total loss - includes classification and regression components
         total_loss = self.lambda1 * loss_uni + \
-            self.lambda2 * loss_mul + self.lambda3 * loss_kl
+            self.lambda2 * loss_mul + self.lambda3 * loss_kl + \
+            self.lambda4 * reg_loss_f
 
         # Compute metrics
         with torch.no_grad():
@@ -341,6 +380,7 @@ class RepurposeModel(pl.LightningModule):
             'train/loss_kl': loss_kl,
             'train/loss_audio': loss_a,
             'train/loss_visual': loss_v,
+            'train/reg_loss_f': reg_loss_f,
             'train/accuracy': accuracy,
             'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
             'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
@@ -387,18 +427,37 @@ class RepurposeModel(pl.LightningModule):
         visual = batch['features']['visual']
         caption = batch['features']['caption']
         labels = batch['labels']
+        offsets = batch['offsets']  # Ground truth regression offsets [B, T, 2]
         seq_mask = batch['sequence_masks']
 
-        # Forward pass
-        logit_a, logit_v, logit_f = self(audio, visual, caption)
+        # Forward pass - now returns both classification and regression outputs
+        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
 
         # Apply sequence mask
         valid_positions = seq_mask.bool()
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
+        
+        # Extract valid regression targets and predictions  
+        offsets_valid = offsets[valid_positions]  # [N_valid, 2]
+        offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
 
-        val_loss = sigmoid_focal_loss(
+        # Classification loss
+        val_loss_cls = sigmoid_focal_loss(
             logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+            
+        # Regression loss for positive samples
+        positive_mask = labels_valid > 0.5
+        if positive_mask.sum() > 0:
+            pos_offsets_valid = offsets_valid[positive_mask]
+            pos_offset_f_valid = offset_f_valid[positive_mask]
+            val_loss_reg = ctr_diou_loss_1d(
+                pos_offset_f_valid.unsqueeze(0), pos_offsets_valid.unsqueeze(0), reduction='mean')
+        else:
+            val_loss_reg = torch.tensor(0.0, device=labels.device)
+            
+        # Total validation loss
+        val_loss = val_loss_cls + self.lambda4 * val_loss_reg
 
         # Metrics
         prob_f = torch.sigmoid(logit_f_valid)
@@ -407,6 +466,8 @@ class RepurposeModel(pl.LightningModule):
 
         val_metrics = {
             'val/loss': val_loss,
+            'val/loss_cls': val_loss_cls,
+            'val/loss_reg': val_loss_reg,
             'val/accuracy': accuracy,
             'epoch': self.current_epoch,
             'global_step': self.global_step
@@ -1028,6 +1089,7 @@ def main(args):
         lambda1=args.lambda1,
         lambda2=args.lambda2,
         lambda3=args.lambda3,
+        lambda4=args.lambda4,
         log_interval=args.log_interval
     )
 
@@ -1223,6 +1285,8 @@ if __name__ == "__main__":
                         help="Weight for multi-modal loss")
     parser.add_argument("--lambda3", type=float, default=0.1,
                         help="Weight for KL divergence loss")
+    parser.add_argument("--lambda4", type=float, default=0.1,
+                        help="Weight for regression loss")
 
     # Hardware arguments
     parser.add_argument("--accelerator", type=str, default="auto",
