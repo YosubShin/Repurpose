@@ -85,8 +85,8 @@ def ctr_diou_loss_1d(
     assert (input_offsets >= 0.0).all(), "predicted offsets must be non-negative"
     assert (target_offsets >= 0.0).all(), "GT offsets must be non-negative"
         
-    lp, rp = input_offsets[:,:,0], input_offsets[:,:,1]
-    lg, rg = target_offsets[:,:,0], target_offsets[:,:,1]
+    lp, rp = input_offsets[:,0], input_offsets[:,1]
+    lg, rg = target_offsets[:,0], target_offsets[:,1]
 
     # intersection key points
     lkis = torch.min(lp, lg)
