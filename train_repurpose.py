@@ -1205,8 +1205,13 @@ def main(args):
         if not (args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint)):
             if val_dataloader:
                 logger.info("Running initial validation before training to establish baseline...")
-                trainer.validate(model, val_dataloader)
-                logger.info("Initial validation completed")
+                try:
+                    trainer.validate(model, val_dataloader)
+                    logger.info("Initial validation completed")
+                except Exception as val_error:
+                    logger.warning(f"Initial validation failed: {val_error}")
+                    logger.warning("Proceeding with training anyway...")
+                    logger.warning("This might be due to visualization callbacks expecting training context")
         
         if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint):
             logger.info(
