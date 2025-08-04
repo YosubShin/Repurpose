@@ -339,7 +339,7 @@ class RepurposeModel(pl.LightningModule):
 
         # 2. Regression loss - following original paper implementation exactly
         # Compute regression loss for all positions 
-        reg_loss_f_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+        reg_loss_f_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
         
         # Create combined mask: sequence mask AND positive label mask
         cls_mask = (labels > 0.5).float()
@@ -441,7 +441,7 @@ class RepurposeModel(pl.LightningModule):
         val_loss_cls = (val_loss_cls_all * seq_mask).sum()
 
         # Regression loss - following original paper implementation exactly
-        val_loss_reg_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+        val_loss_reg_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
         val_loss_reg = (val_loss_reg_all * combined_mask).sum()

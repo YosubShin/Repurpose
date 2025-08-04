@@ -72,7 +72,7 @@ def ctr_diou_loss_1d(
     https://github.com/facebookresearch/fvcore/blob/master/fvcore/nn/giou_loss.py
 
     Args:
-        input/target_offsets (Tensor): 1D offsets of size (N, 2)
+        input/target_offsets (Tensor): 1D offsets of size (B, T, 2) where B is batch size, T is sequence length
         reduction: 'none' | 'mean' | 'sum'
                  'none': No reduction will be applied to the output.
                  'mean': The output will be averaged.
@@ -85,8 +85,8 @@ def ctr_diou_loss_1d(
     assert (input_offsets >= 0.0).all(), "predicted offsets must be non-negative"
     assert (target_offsets >= 0.0).all(), "GT offsets must be non-negative"
         
-    lp, rp = input_offsets[:,0], input_offsets[:,1]
-    lg, rg = target_offsets[:,0], target_offsets[:,1]
+    lp, rp = input_offsets[:,:,0], input_offsets[:,:,1]
+    lg, rg = target_offsets[:,:,0], target_offsets[:,:,1]
 
     # intersection key points
     lkis = torch.min(lp, lg)
