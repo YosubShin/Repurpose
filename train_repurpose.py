@@ -245,6 +245,9 @@ class RepurposeModel(pl.LightningModule):
         # Metrics tracking
         self.training_metrics = []
         self.validation_metrics = []
+        
+        # Storage for validation outputs (PyTorch Lightning v2.0+ compatibility)
+        self.validation_outputs = []
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor):
         """Forward pass with cross-attention between modalities."""
@@ -499,17 +502,24 @@ class RepurposeModel(pl.LightningModule):
                         sample_gt_segments, predicted_segments, thresholds)
                     batch_tiou_data.append(precision_per_threshold)
 
-        # Return validation outputs for epoch-end aggregation
-        return {
+        # Store validation outputs for epoch-end aggregation (PyTorch Lightning v2.0+ style)
+        validation_output = {
             'val_loss': val_loss,
             'tiou_data': batch_tiou_data
         }
+        self.validation_outputs.append(validation_output)
+        
+        return val_loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_start(self):
+        """Clear validation outputs at start of epoch."""
+        self.validation_outputs = []
+    
+    def on_validation_epoch_end(self):
         """Aggregate validation metrics across all batches."""
         # Collect all tIoU data from validation steps
         all_tiou_data = []
-        for output in outputs:
+        for output in self.validation_outputs:
             if 'tiou_data' in output:
                 all_tiou_data.extend(output['tiou_data'])
         
@@ -535,6 +545,9 @@ class RepurposeModel(pl.LightningModule):
                 
                 # Log to console
                 self.logger_instance.info(f"Validation tIoU metrics: {tiou_metrics}")
+        
+        # Clear outputs after processing
+        self.validation_outputs = []
 
     @torch.no_grad()
     def inference_single_video(self, logit_f, offset_f, seq_mask, inference_settings):
