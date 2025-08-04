@@ -319,40 +319,37 @@ class RepurposeModel(pl.LightningModule):
         # Forward pass - now returns both classification and regression outputs
         logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
 
-        # Apply sequence mask to get valid positions
-        valid_positions = seq_mask.bool()
-        logit_a_valid = logit_a[valid_positions]
-        logit_v_valid = logit_v[valid_positions]
-        logit_f_valid = logit_f[valid_positions]
-        labels_valid = labels[valid_positions]
-
-        # Extract valid regression targets and predictions
-        offsets_valid = offsets[valid_positions]  # [N_valid, 2]
-        offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
-
-        # Compute losses using less conservative Focal Loss parameters
-        loss_mul = sigmoid_focal_loss(
-            logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-        loss_a = sigmoid_focal_loss(
-            logit_a_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-        loss_v = sigmoid_focal_loss(
-            logit_v_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
+        # Compute losses following original paper implementation exactly
+        # 1. Classification losses - compute for all positions first, then mask
+        loss_mul_all = sigmoid_focal_loss(
+            logit_f, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
+        loss_a_all = sigmoid_focal_loss(
+            logit_a, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
+        loss_v_all = sigmoid_focal_loss(
+            logit_v, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
+        
+        # Apply sequence mask and sum (following original paper pattern)
+        loss_mul = (loss_mul_all * seq_mask).sum()
+        loss_a = (loss_a_all * seq_mask).sum()  
+        loss_v = (loss_v_all * seq_mask).sum()
         loss_uni = loss_a + loss_v
 
-        # Regression loss (IoU-based) - following original implementation pattern
-        # Compute loss for all positions first (no reduction)
-        reg_loss_f_all = ctr_diou_loss_1d(offset_f_valid, offsets_valid, reduction='none')
+        # 2. Regression loss - following original paper implementation exactly
+        # Compute regression loss for all positions 
+        reg_loss_f_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
         
-        # Create positive mask for regression (only positive samples contribute)
-        positive_mask = labels_valid > 0.5
+        # Create combined mask: sequence mask AND positive label mask
+        cls_mask = (labels > 0.5).float()
+        combined_mask = seq_mask * cls_mask
         
-        # Apply mask and sum (following original pattern)
-        reg_loss_f = (reg_loss_f_all * positive_mask).sum()
+        # Apply combined mask and sum (following original pattern)
+        reg_loss_f = (reg_loss_f_all * combined_mask).sum()
 
-        # Alignment losses (KL divergence)
-        prob_a = torch.sigmoid(logit_a_valid).detach()
-        prob_v = torch.sigmoid(logit_v_valid).detach()
-        prob_f = torch.sigmoid(logit_f_valid)
+        # Alignment losses (KL divergence) - apply to valid positions only
+        valid_positions = seq_mask.bool()
+        prob_a = torch.sigmoid(logit_a[valid_positions]).detach()
+        prob_v = torch.sigmoid(logit_v[valid_positions]).detach()
+        prob_f = torch.sigmoid(logit_f[valid_positions])
         loss_kl = kl_div_bernoulli(prob_v, prob_f) + \
             kl_div_bernoulli(prob_a, prob_f)
 
@@ -363,6 +360,7 @@ class RepurposeModel(pl.LightningModule):
 
         # Compute metrics
         with torch.no_grad():
+            labels_valid = labels[valid_positions]
             pred_binary = (prob_f > 0.5).float()
             accuracy = (pred_binary == labels_valid).float().mean()
 
@@ -434,28 +432,24 @@ class RepurposeModel(pl.LightningModule):
         # Forward pass - now returns both classification and regression outputs
         logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
 
-        # Apply sequence mask
-        valid_positions = seq_mask.bool()
-        logit_f_valid = logit_f[valid_positions]
-        labels_valid = labels[valid_positions]
+        # Classification loss - following original paper implementation exactly
+        val_loss_cls_all = sigmoid_focal_loss(
+            logit_f, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
+        val_loss_cls = (val_loss_cls_all * seq_mask).sum()
 
-        # Extract valid regression targets and predictions
-        offsets_valid = offsets[valid_positions]  # [N_valid, 2]
-        offset_f_valid = offset_f[valid_positions]  # [N_valid, 2]
-
-        # Classification loss
-        val_loss_cls = sigmoid_focal_loss(
-            logit_f_valid, labels_valid, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='mean')
-
-        # Regression loss for positive samples - following original pattern
-        val_loss_reg_all = ctr_diou_loss_1d(offset_f_valid, offsets_valid, reduction='none')
-        positive_mask = labels_valid > 0.5
-        val_loss_reg = (val_loss_reg_all * positive_mask).sum()
+        # Regression loss - following original paper implementation exactly
+        val_loss_reg_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+        cls_mask = (labels > 0.5).float()
+        combined_mask = seq_mask * cls_mask
+        val_loss_reg = (val_loss_reg_all * combined_mask).sum()
 
         # Total validation loss
         val_loss = val_loss_cls + self.lambda4 * val_loss_reg
 
-        # Metrics
+        # Metrics - compute for valid positions only
+        valid_positions = seq_mask.bool()
+        logit_f_valid = logit_f[valid_positions]
+        labels_valid = labels[valid_positions]
         prob_f = torch.sigmoid(logit_f_valid)
         pred_binary = (prob_f > 0.5).float()
         accuracy = (pred_binary == labels_valid).float().mean()
