@@ -1201,6 +1201,13 @@ def main(args):
     start_time = time.time()
 
     try:
+        # Run initial validation to establish baseline (only for fresh training)
+        if not (args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint)):
+            if val_dataloader:
+                logger.info("Running initial validation before training to establish baseline...")
+                trainer.validate(model, val_dataloader)
+                logger.info("Initial validation completed")
+        
         if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint):
             logger.info(
                 f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
