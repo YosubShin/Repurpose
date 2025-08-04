@@ -5,6 +5,8 @@ Incorporates memory optimizations and visualization capabilities.
 """
 
 from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
+from models.softnms import soft_nms_intervals_cpu
+from utils.metrics import calculate_tiou
 import os
 import gc
 import sys
@@ -426,6 +428,7 @@ class RepurposeModel(pl.LightningModule):
         caption = batch['features']['caption']
         labels = batch['labels']
         offsets = batch['offsets']  # Ground truth regression offsets [B, T, 2]
+        gt_segments = batch['gt_segments']  # Ground truth segments from annotations
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
@@ -469,9 +472,178 @@ class RepurposeModel(pl.LightningModule):
         self.log_dict(val_metrics, prog_bar=True, logger=True,
                       on_step=False, on_epoch=True)
 
-        # Validation metrics are automatically logged by PyTorch Lightning
+        # Calculate tIoU metrics using proper inference with soft NMS
+        batch_tiou_data = []
+        
+        # Define inference settings similar to main.py
+        inference_settings = {
+            'pre_nms_thresh': 0.001,
+            'pre_nms_topk': 2000,
+            'duration_thresh': 0.1,
+            'duration_thresh_max': 1000,
+            'nms_sigma': 0.75,
+            'min_score': 0.001
+        }
+        
+        # Get predictions using inference method
+        predictions = self.inference_(batch, inference_settings)
+        
+        # Calculate tIoU for each sample
+        batch_size = len(predictions)
+        for sample_idx in range(batch_size):
+            pred_data = predictions[sample_idx]
+            sample_gt_segments = gt_segments[sample_idx]
+            
+            # Extract predicted segments
+            if 'segments' in pred_data and len(pred_data['segments']) > 0:
+                predicted_segments = pred_data['segments'].cpu().numpy().tolist()
+                
+                # Calculate tIoU if we have both predictions and ground truth
+                if predicted_segments and sample_gt_segments:
+                    thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
+                    precision_per_threshold = calculate_tiou(
+                        sample_gt_segments, predicted_segments, thresholds)
+                    batch_tiou_data.append(precision_per_threshold)
 
-        return val_loss
+        # Return validation outputs for epoch-end aggregation
+        return {
+            'val_loss': val_loss,
+            'tiou_data': batch_tiou_data
+        }
+
+    def validation_epoch_end(self, outputs):
+        """Aggregate validation metrics across all batches."""
+        # Collect all tIoU data from validation steps
+        all_tiou_data = []
+        for output in outputs:
+            if 'tiou_data' in output:
+                all_tiou_data.extend(output['tiou_data'])
+        
+        # Calculate average tIoU metrics if we have data
+        if all_tiou_data:
+            thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
+            tiou_metrics = {}
+            
+            for threshold in thresholds:
+                # Average precision across all samples
+                threshold_precisions = [sample_data[threshold] for sample_data in all_tiou_data if threshold in sample_data]
+                if threshold_precisions:
+                    avg_precision = sum(threshold_precisions) / len(threshold_precisions)
+                    tiou_metrics[f'val/tIoU@{threshold}'] = avg_precision
+            
+            # Calculate Average tIoU (AtIoU)
+            if tiou_metrics:
+                atiou = sum(tiou_metrics.values()) / len(tiou_metrics)
+                tiou_metrics['val/AtIoU'] = atiou
+                
+                # Log tIoU metrics
+                self.log_dict(tiou_metrics, prog_bar=True, logger=True)
+                
+                # Log to console
+                self.logger_instance.info(f"Validation tIoU metrics: {tiou_metrics}")
+
+    @torch.no_grad()
+    def inference_single_video(self, logit_f, offset_f, seq_mask, inference_settings):
+        """Inference on a single video using soft NMS - adapted from MMCTransformer."""
+        segs_all = []
+        scores_all = []
+        cls_idxs_all = []
+
+        # Get valid length for this sequence
+        valid_length = int(seq_mask.sum().item())
+        
+        # Apply sigmoid normalization and mask
+        pred_prob = torch.sigmoid(logit_f[:valid_length]).flatten()
+
+        # Apply filtering to make NMS faster
+        # 1. Keep seg with confidence score > a threshold
+        keep_idxs = (pred_prob > inference_settings['pre_nms_thresh'])
+        pred_prob = pred_prob[keep_idxs]
+        topk_idxs = keep_idxs.nonzero(as_tuple=True)[0]
+
+        # 2. Keep top k top scoring boxes only
+        num_topk = min(inference_settings['pre_nms_topk'], topk_idxs.size(0))
+        pred_prob, idxs = pred_prob.sort(descending=True)
+        pred_prob = pred_prob[:num_topk].clone()
+        topk_idxs = topk_idxs[idxs[:num_topk]].clone()
+        offsets = offset_f[:valid_length][topk_idxs]
+
+        # 3. compute predicted segments
+        seg_left = topk_idxs - offsets[:, 0]
+        seg_right = topk_idxs + offsets[:, 1]
+        pred_segs = torch.stack((seg_left, seg_right), -1)
+
+        # 4. Keep seg with duration > a threshold
+        seg_durations = seg_right - seg_left
+        keep_idxs2 = seg_durations > inference_settings['duration_thresh']
+        keep_idxs3 = seg_durations < inference_settings.get('duration_thresh_max', 1000)
+        keep_idxs2 = keep_idxs2 & keep_idxs3
+
+        # *_all : N (filtered # of segments) x 2 / 1
+        segs_all.append(pred_segs[keep_idxs2])
+        scores_all.append(pred_prob[keep_idxs2])
+        cls_idxs_all.append(topk_idxs[keep_idxs2])
+
+        # cat along the seq_len
+        segs_all, scores_all, cls_idxs_all = [
+            torch.cat(x) for x in [segs_all, scores_all, cls_idxs_all]
+        ]
+        
+        results = {
+            'segments': segs_all,
+            'scores': scores_all,
+            'labels': cls_idxs_all
+        }
+        return results
+
+    @torch.no_grad()
+    def inference_(self, batch, inference_settings):
+        """Inference with soft NMS - adapted from MMCTransformer."""
+        # Forward pass
+        logit_a, logit_v, logit_f, offset_f = self(
+            batch['features']['audio'],
+            batch['features']['visual'], 
+            batch['features']['caption']
+        )
+        
+        results = []
+        seq_masks = batch['sequence_masks']
+        video_ids = batch.get('video_ids', [f'video_{i}' for i in range(logit_f.shape[0])])
+        
+        # Process each video in the batch
+        for idx in range(logit_f.shape[0]):
+            # Get per-video outputs
+            cls_logits_per_vid = logit_f[idx]
+            offsets_per_vid = offset_f[idx]
+            seq_mask_per_vid = seq_masks[idx]
+            
+            # Calculate max segments based on video length (simplified)
+            valid_length = int(seq_mask_per_vid.sum().item())
+            max_seg_num = max(1, valid_length // 10)  # Simplified heuristic
+            
+            # Inference on single video
+            results_per_vid = self.inference_single_video(
+                cls_logits_per_vid, offsets_per_vid, seq_mask_per_vid, inference_settings
+            )
+            
+            # Apply soft NMS if we have segments
+            if len(results_per_vid['segments']) > 0:
+                results_per_vid_nms_idx = soft_nms_intervals_cpu(
+                    results_per_vid['scores'], 
+                    results_per_vid['segments'], 
+                    sigma=inference_settings.get('nms_sigma', 0.5), 
+                    thresh=inference_settings.get('min_score', 0.001), 
+                    max_seg_num=max_seg_num
+                )
+                results_per_vid['segments'] = results_per_vid['segments'][results_per_vid_nms_idx]
+                results_per_vid['scores'] = results_per_vid['scores'][results_per_vid_nms_idx]
+                results_per_vid['labels'] = results_per_vid['labels'][results_per_vid_nms_idx]
+            
+            # Add video metadata
+            results_per_vid['video_id'] = video_ids[idx]
+            results.append(results_per_vid)
+        
+        return results
 
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""

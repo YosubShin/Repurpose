@@ -233,6 +233,7 @@ class SequenceVideoDataset(Dataset):
             'feature_masks': feature_masks,
             'labels': torch.from_numpy(labels),
             'offsets': torch.from_numpy(offsets),  # Shape: [seq_len, 2]
+            'gt_segments': ann.get('segmentsOffset', []),  # Ground truth segments
             'duration': self.video_to_annotation[video_id].get('duration', 0)
         }
 
@@ -277,6 +278,7 @@ def create_sequence_dataloader(
             'feature_masks': {},
             'labels': [],
             'offsets': [],  # Add regression offsets
+            'gt_segments': [s['gt_segments'] for s in batch],  # Ground truth segments
             'sequence_masks': []
         }
 
