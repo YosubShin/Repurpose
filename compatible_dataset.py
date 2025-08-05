@@ -224,10 +224,18 @@ class SequenceVideoDataset(Dataset):
         time_range = ann.get('timeRangeOffset', [0, 0])
         target_seq_length = int(time_range[1] - time_range[0])
         
-        # Trim features to match target sequence length
+        # Adjust features to match target sequence length (handle ±1 duration differences)
         for modality in output_features:
-            if output_features[modality].shape[0] > target_seq_length:
+            current_length = output_features[modality].shape[0]
+            if current_length > target_seq_length:
+                # Trim if longer
                 output_features[modality] = output_features[modality][:target_seq_length]
+            elif current_length < target_seq_length:
+                # Pad if shorter (handle off-by-1 cases)
+                feat_dim = output_features[modality].shape[1]
+                pad_length = target_seq_length - current_length
+                padding = torch.zeros((pad_length, feat_dim), dtype=output_features[modality].dtype)
+                output_features[modality] = torch.cat([output_features[modality], padding], dim=0)
         
         labels = self._get_labels(video_id, target_seq_length)
         offsets = self._get_regression_offsets(video_id, target_seq_length)
