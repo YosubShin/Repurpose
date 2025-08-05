@@ -95,8 +95,8 @@ def _kl_div_bernoulli(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-6):
 
 
 def kl_div_bernoulli(p: torch.Tensor, q: torch.Tensor):
-    """KL divergence between Bernoulli distributions."""
-    return _kl_div_bernoulli(p, q).mean()
+    """KL divergence between Bernoulli distributions - using sum to match other losses."""
+    return _kl_div_bernoulli(p, q).sum()
 
 
 # ==================== Model Definition ====================
