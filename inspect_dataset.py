@@ -37,8 +37,8 @@ def analyze_split(split_name, annotation_file, feature_dirs):
 
     # Handle both list and dict formats
     if isinstance(annotations, list):
-        # Convert list to dict format using video_id field
-        annotations_dict = {item['video_id']: item for item in annotations}
+        # Convert list to dict format using youtube_id field
+        annotations_dict = {item['youtube_id']: item for item in annotations}
     else:
         annotations_dict = annotations
 
