@@ -271,7 +271,7 @@ class SequenceVideoDataset(Dataset):
             'labels': torch.from_numpy(labels),
             'offsets': torch.from_numpy(offsets),  # Shape: [seq_len, 2]
             'gt_segments': ann.get('segmentsOffset', []),  # Ground truth segments
-            'duration': self.video_to_annotation[video_id].get('duration', 0)
+            'duration': ann.get('duration', 0)
         }
 
 
