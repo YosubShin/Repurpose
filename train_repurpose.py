@@ -232,8 +232,8 @@ class RepurposeModel(pl.LightningModule):
         # Use less conservative focal loss parameters that worked well before
         # alpha=0.5 (balanced), gamma=1.0 (moderate down-weighting)
         # These should work even better now with aligned data
-        self.focal_alpha = 0.5
-        self.focal_gamma = 1.0
+        self.focal_alpha = 0.7
+        self.focal_gamma = 2.0
         self.lr = lr
 
         # Loss weights
