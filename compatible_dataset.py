@@ -129,10 +129,9 @@ class SequenceVideoDataset(Dataset):
         """Generate frame-level labels."""
         ann = self.video_to_annotation[video_id]
         segments = ann.get('segmentsOffset', [])
-        time_range = ann.get('timeRangeOffset', [0, 0])
-
-        timestamps = np.linspace(
-            time_range[0], time_range[1], num_frames, endpoint=False)
+        
+        # Create 1-second grid timestamps starting from 0
+        timestamps = np.arange(num_frames, dtype=np.float32)
         labels = np.zeros(num_frames, dtype=np.float32)
 
         for idx, t in enumerate(timestamps):
@@ -145,10 +144,9 @@ class SequenceVideoDataset(Dataset):
         """Generate regression offsets for each frame."""
         ann = self.video_to_annotation[video_id]
         segments = ann.get('segmentsOffset', [])
-        time_range = ann.get('timeRangeOffset', [0, 0])
         
-        timestamps = np.linspace(
-            time_range[0], time_range[1], num_frames, endpoint=False)
+        # Create 1-second grid timestamps starting from 0
+        timestamps = np.arange(num_frames, dtype=np.float32)
         # Initialize with zeros - shape: (num_frames, 2) for [left_offset, right_offset]
         offsets = np.zeros((num_frames, 2), dtype=np.float32)
         
@@ -221,11 +219,18 @@ class SequenceVideoDataset(Dataset):
                 )
                 feature_masks[modality] = False
 
-        # Generate labels and regression offsets for the correctly sliced sequence length
-        actual_seq_length = len(
-            output_features[next(iter(output_features.keys()))])
-        labels = self._get_labels(video_id, actual_seq_length)
-        offsets = self._get_regression_offsets(video_id, actual_seq_length)
+        # Generate labels and regression offsets based on timeRangeOffset
+        ann = self.video_to_annotation[video_id]
+        time_range = ann.get('timeRangeOffset', [0, 0])
+        target_seq_length = int(time_range[1] - time_range[0])
+        
+        # Trim features to match target sequence length
+        for modality in output_features:
+            if output_features[modality].shape[0] > target_seq_length:
+                output_features[modality] = output_features[modality][:target_seq_length]
+        
+        labels = self._get_labels(video_id, target_seq_length)
+        offsets = self._get_regression_offsets(video_id, target_seq_length)
 
         return {
             'video_id': video_id,
