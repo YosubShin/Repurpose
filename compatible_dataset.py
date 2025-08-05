@@ -49,48 +49,75 @@ class SequenceVideoDataset(Dataset):
         with open(annotation_file, 'r') as f:
             annotations = json.load(f)
 
-        self.video_list = []
-        self.video_to_annotation = {}
-        self.video_feature_status = {}
+        self.annotations = []  # Store annotations by index
+        self.feature_status = []  # Store feature status by index
 
         complete_videos = 0
         partial_videos = 0
+        length_mismatch_filtered = 0
 
         for ann in annotations:
             video_id = ann['youtube_id']
+            time_range = ann.get('timeRangeOffset', [0, 0])
+            expected_length = int(time_range[1] - time_range[0])
 
-            # Check feature availability
+            # Check feature availability and lengths
             available_features = {}
+            feature_lengths = {}
             for modality, feat_dir in self.feature_dirs.items():
                 feat_path = os.path.join(feat_dir, f"{video_id}.npy")
-                available_features[modality] = os.path.exists(feat_path)
+                if os.path.exists(feat_path):
+                    available_features[modality] = True
+                    # Load just the shape to check length
+                    feat_shape = np.load(feat_path, mmap_mode='r').shape
+                    feature_lengths[modality] = feat_shape[0]
+                else:
+                    available_features[modality] = False
 
             # Include if minimum modalities are available
             available_count = sum(available_features.values())
             if available_count >= self.min_modalities:
-                self.video_list.append(video_id)
-                self.video_to_annotation[video_id] = ann
-                self.video_feature_status[video_id] = available_features
+                # Check if feature lengths are reasonable (within ±1 of expected)
+                length_ok = True
+                for modality, length in feature_lengths.items():
+                    # Apply timeRange slicing to get actual length
+                    time_range_full = ann.get('timeRange', [0, 0])
+                    start_idx = int(time_range_full[0])
+                    end_idx = int(time_range_full[1])
+                    sliced_length = min(length, end_idx) - start_idx
+                    
+                    # Check if sliced length matches expected length (±1 tolerance)
+                    if abs(sliced_length - expected_length) > 1:
+                        length_ok = False
+                        length_mismatch_filtered += 1
+                        break
+                
+                if length_ok:
+                    self.annotations.append(ann)
+                    self.feature_status.append(available_features)
 
-                if available_count == len(self.feature_dirs):
-                    complete_videos += 1
-                else:
-                    partial_videos += 1
+                    if available_count == len(self.feature_dirs):
+                        complete_videos += 1
+                    else:
+                        partial_videos += 1
 
-        print(f"Dataset loaded: {len(self.video_list)} videos total")
+        print(f"Dataset loaded: {len(self.annotations)} entries total")
         print(
             f"  Complete features: {complete_videos}, Partial: {partial_videos}")
+        if length_mismatch_filtered > 0:
+            print(f"  Filtered out {length_mismatch_filtered} entries due to length mismatch")
 
         # Print availability stats
         for modality in self.feature_dirs.keys():
-            count = sum(1 for status in self.video_feature_status.values()
+            count = sum(1 for status in self.feature_status
                         if status[modality])
-            print(f"  {modality}: {count}/{len(self.video_list)} videos")
+            print(f"  {modality}: {count}/{len(self.annotations)} entries")
 
-    def _load_video_impl(self, video_id: str) -> Dict[str, Optional[np.ndarray]]:
+    def _load_video_impl(self, idx: int) -> Dict[str, Optional[np.ndarray]]:
         """Load video features, handling missing modalities."""
+        video_id = self.annotations[idx]['youtube_id']
         features = {}
-        available_status = self.video_feature_status[video_id]
+        available_status = self.feature_status[idx]
 
         for modality, feat_dir in self.feature_dirs.items():
             if not available_status[modality]:
@@ -125,9 +152,8 @@ class SequenceVideoDataset(Dataset):
         }
         return default_dims.get(modality, 512)
 
-    def _get_labels(self, video_id: str, num_frames: int) -> np.ndarray:
+    def _get_labels(self, ann: dict, num_frames: int) -> np.ndarray:
         """Generate frame-level labels."""
-        ann = self.video_to_annotation[video_id]
         segments = ann.get('segmentsOffset', [])
         
         # Create 1-second grid timestamps starting from 0
@@ -140,9 +166,8 @@ class SequenceVideoDataset(Dataset):
 
         return labels
     
-    def _get_regression_offsets(self, video_id: str, num_frames: int) -> np.ndarray:
+    def _get_regression_offsets(self, ann: dict, num_frames: int) -> np.ndarray:
         """Generate regression offsets for each frame."""
-        ann = self.video_to_annotation[video_id]
         segments = ann.get('segmentsOffset', [])
         
         # Create 1-second grid timestamps starting from 0
@@ -163,16 +188,16 @@ class SequenceVideoDataset(Dataset):
         return offsets
 
     def __len__(self):
-        return len(self.video_list)
+        return len(self.annotations)
 
     def __getitem__(self, idx):
         return self._get_sequence(idx)
 
     def _get_sequence(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get full sequence - returns dict for custom collate_fn."""
-        video_id = self.video_list[idx]
-        features = self._load_video(video_id)
-        ann = self.video_to_annotation[video_id]
+        features = self._load_video(idx)
+        ann = self.annotations[idx]
+        video_id = ann['youtube_id']
         time_range = ann.get('timeRange', [0, 0])
 
         # Get available features and sequence length
@@ -220,7 +245,6 @@ class SequenceVideoDataset(Dataset):
                 feature_masks[modality] = False
 
         # Generate labels and regression offsets based on timeRangeOffset
-        ann = self.video_to_annotation[video_id]
         time_range = ann.get('timeRangeOffset', [0, 0])
         target_seq_length = int(time_range[1] - time_range[0])
         
@@ -237,8 +261,8 @@ class SequenceVideoDataset(Dataset):
                 padding = torch.zeros((pad_length, feat_dim), dtype=output_features[modality].dtype)
                 output_features[modality] = torch.cat([output_features[modality], padding], dim=0)
         
-        labels = self._get_labels(video_id, target_seq_length)
-        offsets = self._get_regression_offsets(video_id, target_seq_length)
+        labels = self._get_labels(ann, target_seq_length)
+        offsets = self._get_regression_offsets(ann, target_seq_length)
 
         return {
             'video_id': video_id,
