@@ -189,14 +189,13 @@ class RepurposeModel(pl.LightningModule):
             nn.LayerNorm(d_model) for _ in range(n_fusion_layers)
         ])
 
-        # Final fusion encoder (operates on cross-attended features)
-        layer_f = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_head,
-            dim_feedforward=d_model * 4,
-            batch_first=True
+        # Fusion projection to map concatenated features to lower dimension
+        # As per paper: "concatenated, mapped to lower dimensions"
+        self.fusion_projection = nn.Sequential(
+            nn.Linear(2 * d_model, d_model),
+            nn.ReLU(),
+            nn.LayerNorm(d_model)
         )
-        self.enc_fusion = nn.TransformerEncoder(layer_f, num_layers=1)
 
         # Classification heads - 3-layer MLP as per paper
         # Note: sigmoid will be applied in loss function, not here
@@ -291,11 +290,12 @@ class RepurposeModel(pl.LightningModule):
             av_fused = norm(av_fused + av_out)
             va_fused = norm(va_fused + va_out)
 
-        # Combine bidirectional cross-attended features
-        f = (av_fused + va_fused) / 2.0
-
-        # Final fusion with self-attention
-        f = self.enc_fusion(f)
+        # Concatenate bidirectional cross-attended features as per paper
+        f = torch.cat([av_fused, va_fused], dim=-1)  # [B, T, 2*d_model]
+        
+        # Map to lower dimensions as specified in paper
+        # This projection replaces the self-attention encoder
+        f = self.fusion_projection(f)  # [B, T, d_model]
 
         # Per-frame classification logits
         logit_a = self.head_a(a_enhanced).squeeze(-1)
