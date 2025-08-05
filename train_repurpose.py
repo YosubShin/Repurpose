@@ -112,7 +112,7 @@ class RepurposeModel(pl.LightningModule):
         dim_visual: int,
         dim_caption: int,
         d_model: int = 512,
-        n_head: int = 4,
+        n_head: int = 8,
         n_self_attn_layers: int = 3,  # Self-attention layers per modality
         n_cross_attn_layers: int = 3,  # Cross-attention layers for A-C and V-C
         n_fusion_layers: int = 3,  # Audio-Visual fusion layers
@@ -245,7 +245,7 @@ class RepurposeModel(pl.LightningModule):
         # Metrics tracking
         self.training_metrics = []
         self.validation_metrics = []
-        
+
         # Storage for validation outputs (PyTorch Lightning v2.0+ compatibility)
         self.validation_outputs = []
 
@@ -330,21 +330,22 @@ class RepurposeModel(pl.LightningModule):
             logit_a, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
         loss_v_all = sigmoid_focal_loss(
             logit_v, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
-        
+
         # Apply sequence mask and sum (following original paper pattern)
         loss_mul = (loss_mul_all * seq_mask).sum()
-        loss_a = (loss_a_all * seq_mask).sum()  
+        loss_a = (loss_a_all * seq_mask).sum()
         loss_v = (loss_v_all * seq_mask).sum()
         loss_uni = loss_a + loss_v
 
         # 2. Regression loss - following original paper implementation exactly
-        # Compute regression loss for all positions 
-        reg_loss_f_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
-        
+        # Compute regression loss for all positions
+        reg_loss_f_all = ctr_diou_loss_1d(
+            offset_f, offsets, reduction='none')  # [B, T]
+
         # Create combined mask: sequence mask AND positive label mask
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
-        
+
         # Apply combined mask and sum (following original pattern)
         reg_loss_f = (reg_loss_f_all * combined_mask).sum()
 
@@ -429,7 +430,8 @@ class RepurposeModel(pl.LightningModule):
         caption = batch['features']['caption']
         labels = batch['labels']
         offsets = batch['offsets']  # Ground truth regression offsets [B, T, 2]
-        gt_segments = batch['gt_segments']  # Ground truth segments from annotations
+        # Ground truth segments from annotations
+        gt_segments = batch['gt_segments']
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
@@ -441,7 +443,8 @@ class RepurposeModel(pl.LightningModule):
         val_loss_cls = (val_loss_cls_all * seq_mask).sum()
 
         # Regression loss - following original paper implementation exactly
-        val_loss_reg_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
+        val_loss_reg_all = ctr_diou_loss_1d(
+            offset_f, offsets, reduction='none')  # [B, T]
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
         val_loss_reg = (val_loss_reg_all * combined_mask).sum()
@@ -471,7 +474,7 @@ class RepurposeModel(pl.LightningModule):
 
         # Calculate tIoU metrics using proper inference with soft NMS
         batch_tiou_data = []
-        
+
         # Define inference settings similar to main.py
         inference_settings = {
             'pre_nms_thresh': 0.001,
@@ -481,20 +484,21 @@ class RepurposeModel(pl.LightningModule):
             'nms_sigma': 0.75,
             'min_score': 0.001
         }
-        
+
         # Get predictions using inference method
         predictions = self.inference_(batch, inference_settings)
-        
+
         # Calculate tIoU for each sample
         batch_size = len(predictions)
         for sample_idx in range(batch_size):
             pred_data = predictions[sample_idx]
             sample_gt_segments = gt_segments[sample_idx]
-            
+
             # Extract predicted segments
             if 'segments' in pred_data and len(pred_data['segments']) > 0:
-                predicted_segments = pred_data['segments'].cpu().numpy().tolist()
-                
+                predicted_segments = pred_data['segments'].cpu(
+                ).numpy().tolist()
+
                 # Calculate tIoU if we have both predictions and ground truth
                 if predicted_segments and sample_gt_segments:
                     thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
@@ -508,13 +512,13 @@ class RepurposeModel(pl.LightningModule):
             'tiou_data': batch_tiou_data
         }
         self.validation_outputs.append(validation_output)
-        
+
         return val_loss
 
     def on_validation_epoch_start(self):
         """Clear validation outputs at start of epoch."""
         self.validation_outputs = []
-    
+
     def on_validation_epoch_end(self):
         """Aggregate validation metrics across all batches."""
         # Collect all tIoU data from validation steps
@@ -522,30 +526,33 @@ class RepurposeModel(pl.LightningModule):
         for output in self.validation_outputs:
             if 'tiou_data' in output:
                 all_tiou_data.extend(output['tiou_data'])
-        
+
         # Calculate average tIoU metrics if we have data
         if all_tiou_data:
             thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
             tiou_metrics = {}
-            
+
             for threshold in thresholds:
                 # Average precision across all samples
-                threshold_precisions = [sample_data[threshold] for sample_data in all_tiou_data if threshold in sample_data]
+                threshold_precisions = [sample_data[threshold]
+                                        for sample_data in all_tiou_data if threshold in sample_data]
                 if threshold_precisions:
-                    avg_precision = sum(threshold_precisions) / len(threshold_precisions)
+                    avg_precision = sum(threshold_precisions) / \
+                        len(threshold_precisions)
                     tiou_metrics[f'val/tIoU@{threshold}'] = avg_precision
-            
+
             # Calculate Average tIoU (AtIoU)
             if tiou_metrics:
                 atiou = sum(tiou_metrics.values()) / len(tiou_metrics)
                 tiou_metrics['val/AtIoU'] = atiou
-                
+
                 # Log tIoU metrics
                 self.log_dict(tiou_metrics, prog_bar=True, logger=True)
-                
+
                 # Log to console
-                self.logger_instance.info(f"Validation tIoU metrics: {tiou_metrics}")
-        
+                self.logger_instance.info(
+                    f"Validation tIoU metrics: {tiou_metrics}")
+
         # Clear outputs after processing
         self.validation_outputs = []
 
@@ -558,7 +565,7 @@ class RepurposeModel(pl.LightningModule):
 
         # Get valid length for this sequence
         valid_length = int(seq_mask.sum().item())
-        
+
         # Apply sigmoid normalization and mask
         pred_prob = torch.sigmoid(logit_f[:valid_length]).flatten()
 
@@ -583,7 +590,8 @@ class RepurposeModel(pl.LightningModule):
         # 4. Keep seg with duration > a threshold
         seg_durations = seg_right - seg_left
         keep_idxs2 = seg_durations > inference_settings['duration_thresh']
-        keep_idxs3 = seg_durations < inference_settings.get('duration_thresh_max', 1000)
+        keep_idxs3 = seg_durations < inference_settings.get(
+            'duration_thresh_max', 1000)
         keep_idxs2 = keep_idxs2 & keep_idxs3
 
         # *_all : N (filtered # of segments) x 2 / 1
@@ -595,7 +603,7 @@ class RepurposeModel(pl.LightningModule):
         segs_all, scores_all, cls_idxs_all = [
             torch.cat(x) for x in [segs_all, scores_all, cls_idxs_all]
         ]
-        
+
         results = {
             'segments': segs_all,
             'scores': scores_all,
@@ -609,47 +617,48 @@ class RepurposeModel(pl.LightningModule):
         # Forward pass
         logit_a, logit_v, logit_f, offset_f = self(
             batch['features']['audio'],
-            batch['features']['visual'], 
+            batch['features']['visual'],
             batch['features']['caption']
         )
-        
+
         results = []
         seq_masks = batch['sequence_masks']
-        video_ids = batch.get('video_ids', [f'video_{i}' for i in range(logit_f.shape[0])])
-        
+        video_ids = batch.get(
+            'video_ids', [f'video_{i}' for i in range(logit_f.shape[0])])
+
         # Process each video in the batch
         for idx in range(logit_f.shape[0]):
             # Get per-video outputs
             cls_logits_per_vid = logit_f[idx]
             offsets_per_vid = offset_f[idx]
             seq_mask_per_vid = seq_masks[idx]
-            
+
             # Calculate max segments based on video length (simplified)
             valid_length = int(seq_mask_per_vid.sum().item())
             max_seg_num = max(1, valid_length // 10)  # Simplified heuristic
-            
+
             # Inference on single video
             results_per_vid = self.inference_single_video(
                 cls_logits_per_vid, offsets_per_vid, seq_mask_per_vid, inference_settings
             )
-            
+
             # Apply soft NMS if we have segments
             if len(results_per_vid['segments']) > 0:
                 results_per_vid_nms_idx = soft_nms_intervals_cpu(
-                    results_per_vid['scores'], 
-                    results_per_vid['segments'], 
-                    sigma=inference_settings.get('nms_sigma', 0.5), 
-                    thresh=inference_settings.get('min_score', 0.001), 
+                    results_per_vid['scores'],
+                    results_per_vid['segments'],
+                    sigma=inference_settings.get('nms_sigma', 0.5),
+                    thresh=inference_settings.get('min_score', 0.001),
                     max_seg_num=max_seg_num
                 )
                 results_per_vid['segments'] = results_per_vid['segments'][results_per_vid_nms_idx]
                 results_per_vid['scores'] = results_per_vid['scores'][results_per_vid_nms_idx]
                 results_per_vid['labels'] = results_per_vid['labels'][results_per_vid_nms_idx]
-            
+
             # Add video metadata
             results_per_vid['video_id'] = video_ids[idx]
             results.append(results_per_vid)
-        
+
         return results
 
     def configure_optimizers(self):
@@ -800,7 +809,8 @@ class EndOfEpochVisualizationCallback(Callback):
                             visual = batch['features']['visual'].to(device)
                             caption = batch['features']['caption'].to(device)
                             labels = batch['labels'].to(device)
-                            offsets = batch['offsets'].to(device)  # Get ground truth offsets
+                            offsets = batch['offsets'].to(
+                                device)  # Get ground truth offsets
                             seq_mask = batch['sequence_masks']
 
                             log_memory_usage(
@@ -843,8 +853,10 @@ class EndOfEpochVisualizationCallback(Callback):
                                 # Extract predictions and labels for this sequence only
                                 logit_f_seq = logit_f[seq_idx, :valid_length]
                                 labels_seq = labels[seq_idx, :valid_length]
-                                offset_f_seq = offset_f[seq_idx, :valid_length]  # Extract offsets
-                                offsets_seq = offsets[seq_idx, :valid_length]  # Ground truth offsets
+                                # Extract offsets
+                                offset_f_seq = offset_f[seq_idx, :valid_length]
+                                # Ground truth offsets
+                                offsets_seq = offsets[seq_idx, :valid_length]
 
                                 # Convert to numpy for visualization
                                 pred_probs = torch.sigmoid(
@@ -886,16 +898,16 @@ class EndOfEpochVisualizationCallback(Callback):
                                         axes[0].set_ylim(-0.1, 1.1)
 
                                         # Plot 2: Offset predictions
-                                        axes[1].plot(time_points, pred_offsets_np[:, 0], 'b-', 
+                                        axes[1].plot(time_points, pred_offsets_np[:, 0], 'b-',
                                                      label='Pred Left Offset', alpha=0.7)
-                                        axes[1].plot(time_points, pred_offsets_np[:, 1], 'b--', 
+                                        axes[1].plot(time_points, pred_offsets_np[:, 1], 'b--',
                                                      label='Pred Right Offset', alpha=0.7)
                                         # Plot GT offsets only at positive positions
                                         if np.any(positive_idx):
-                                            axes[1].scatter(time_points[positive_idx], 
+                                            axes[1].scatter(time_points[positive_idx],
                                                             gt_offsets_np[positive_idx, 0],
                                                             color='red', s=30, label='GT Left Offset', marker='o')
-                                            axes[1].scatter(time_points[positive_idx], 
+                                            axes[1].scatter(time_points[positive_idx],
                                                             gt_offsets_np[positive_idx, 1],
                                                             color='darkred', s=30, label='GT Right Offset', marker='s')
                                         axes[1].set_ylabel('Offset Value')
@@ -903,7 +915,7 @@ class EndOfEpochVisualizationCallback(Callback):
                                         axes[1].set_title('Offset Predictions')
                                         axes[1].legend()
                                         axes[1].grid(True, alpha=0.3)
-                                        
+
                                         # Plot 3: Segments visualization from offsets
                                         ax3 = axes[2]
                                         # Draw predicted segments at high confidence points
@@ -912,32 +924,37 @@ class EndOfEpochVisualizationCallback(Callback):
                                             left_offset = pred_offsets_np[t_idx, 0]
                                             right_offset = pred_offsets_np[t_idx, 1]
                                             start = max(0, t_idx - left_offset)
-                                            end = min(len(pred_probs), t_idx + right_offset)
+                                            end = min(len(pred_probs),
+                                                      t_idx + right_offset)
                                             ax3.add_patch(patches.Rectangle((start, 0.6), end - start, 0.3,
-                                                                          facecolor='blue', alpha=0.5))
-                                        
+                                                                            facecolor='blue', alpha=0.5))
+
                                         # Draw GT segments from offsets
                                         for t_idx in np.where(positive_idx)[0]:
                                             left_offset = gt_offsets_np[t_idx, 0]
                                             right_offset = gt_offsets_np[t_idx, 1]
                                             start = max(0, t_idx - left_offset)
-                                            end = min(len(pred_probs), t_idx + right_offset)
+                                            end = min(len(pred_probs),
+                                                      t_idx + right_offset)
                                             ax3.add_patch(patches.Rectangle((start, 0.1), end - start, 0.3,
-                                                                          facecolor='red', alpha=0.5))
-                                        
+                                                                            facecolor='red', alpha=0.5))
+
                                         ax3.set_xlim(0, len(pred_probs))
                                         ax3.set_ylim(0, 1)
                                         ax3.set_xlabel('Time Steps')
-                                        ax3.set_title('Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
+                                        ax3.set_title(
+                                            'Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
                                         ax3.grid(True, alpha=0.3, axis='x')
-                                        
+
                                         # Plot 4: Prediction confidence
-                                        confidence = np.abs(pred_probs - 0.5) * 2
+                                        confidence = np.abs(
+                                            pred_probs - 0.5) * 2
                                         axes[3].plot(time_points, confidence, 'g-',
                                                      label='Confidence', alpha=0.7)
                                         axes[3].set_ylabel('Confidence')
                                         axes[3].set_xlabel('Time Steps')
-                                        axes[3].set_title('Prediction Confidence')
+                                        axes[3].set_title(
+                                            'Prediction Confidence')
                                         axes[3].legend()
                                         axes[3].grid(True, alpha=0.3)
                                         axes[3].set_ylim(0, 1)
@@ -1087,7 +1104,8 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 visual = batch['features']['visual'].to(device)
                 caption = batch['features']['caption'].to(device)
                 labels = batch['labels'].to(device)
-                offsets = batch['offsets'].to(device)  # Get ground truth offsets
+                offsets = batch['offsets'].to(
+                    device)  # Get ground truth offsets
                 seq_mask = batch['sequence_masks']
 
                 logger.info(
@@ -1116,7 +1134,8 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 pred_probs = torch.sigmoid(
                     logit_f[seq_idx, :valid_length]).cpu().numpy()
                 labels_np = labels[seq_idx, :valid_length].cpu().numpy()
-                pred_offsets_np = offset_f[seq_idx, :valid_length].cpu().numpy()
+                pred_offsets_np = offset_f[seq_idx,
+                                           :valid_length].cpu().numpy()
                 gt_offsets_np = offsets[seq_idx, :valid_length].cpu().numpy()
 
                 # Create visualization with offset plots
@@ -1142,16 +1161,16 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
 
                 # Plot 2: Offset predictions
                 ax2 = axes[1]
-                ax2.plot(time_points, pred_offsets_np[:, 0], 'b-', 
+                ax2.plot(time_points, pred_offsets_np[:, 0], 'b-',
                          label='Pred Left Offset', alpha=0.7)
-                ax2.plot(time_points, pred_offsets_np[:, 1], 'b--', 
+                ax2.plot(time_points, pred_offsets_np[:, 1], 'b--',
                          label='Pred Right Offset', alpha=0.7)
                 # Plot GT offsets only at positive positions
                 if np.any(positive_idx):
-                    ax2.scatter(time_points[positive_idx], 
+                    ax2.scatter(time_points[positive_idx],
                                 gt_offsets_np[positive_idx, 0],
                                 color='red', s=30, label='GT Left Offset', marker='o')
-                    ax2.scatter(time_points[positive_idx], 
+                    ax2.scatter(time_points[positive_idx],
                                 gt_offsets_np[positive_idx, 1],
                                 color='darkred', s=30, label='GT Right Offset', marker='s')
                 ax2.set_ylabel('Offset Value')
@@ -1171,8 +1190,8 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                     start = max(0, t_idx - left_offset)
                     end = min(seq_len, t_idx + right_offset)
                     ax3.add_patch(patches.Rectangle((start, 0.6), end - start, 0.3,
-                                                  facecolor='blue', alpha=0.5))
-                
+                                                    facecolor='blue', alpha=0.5))
+
                 # Draw GT segments from offsets
                 for t_idx in np.where(positive_idx)[0]:
                     left_offset = gt_offsets_np[t_idx, 0]
@@ -1180,12 +1199,13 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                     start = max(0, t_idx - left_offset)
                     end = min(seq_len, t_idx + right_offset)
                     ax3.add_patch(patches.Rectangle((start, 0.1), end - start, 0.3,
-                                                  facecolor='red', alpha=0.5))
+                                                    facecolor='red', alpha=0.5))
 
                 ax3.set_xlim(0, seq_len)
                 ax3.set_ylim(0, 1)
                 ax3.set_xlabel('Time Steps')
-                ax3.set_title('Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
+                ax3.set_title(
+                    'Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
                 ax3.grid(True, alpha=0.3, axis='x')
 
                 # Plot 4: Confidence over time
@@ -1383,15 +1403,17 @@ def main(args):
         # Run initial validation to establish baseline (only for fresh training)
         if not (args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint)):
             if val_dataloader:
-                logger.info("Running initial validation before training to establish baseline...")
+                logger.info(
+                    "Running initial validation before training to establish baseline...")
                 try:
                     trainer.validate(model, val_dataloader)
                     logger.info("Initial validation completed")
                 except Exception as val_error:
                     logger.warning(f"Initial validation failed: {val_error}")
                     logger.warning("Proceeding with training anyway...")
-                    logger.warning("This might be due to visualization callbacks expecting training context")
-        
+                    logger.warning(
+                        "This might be due to visualization callbacks expecting training context")
+
         if args.resume_from_checkpoint and os.path.exists(args.resume_from_checkpoint):
             logger.info(
                 f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
