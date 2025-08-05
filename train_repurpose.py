@@ -298,8 +298,9 @@ class RepurposeModel(pl.LightningModule):
         f = self.fusion_projection(f)  # [B, T, d_model]
 
         # Per-frame classification logits
-        logit_a = self.head_a(a_enhanced).squeeze(-1)
-        logit_v = self.head_v(v_enhanced).squeeze(-1)
+        # Use cross-attended features for unimodal heads as per paper
+        logit_a = self.head_a(av_fused).squeeze(-1)
+        logit_v = self.head_v(va_fused).squeeze(-1)
         logit_f = self.head_f(f).squeeze(-1)
 
         # Per-frame regression offsets (left_offset, right_offset) - only multimodal
