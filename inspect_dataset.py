@@ -35,7 +35,14 @@ def analyze_split(split_name, annotation_file, feature_dirs):
     with open(annotation_file, 'r') as f:
         annotations = json.load(f)
 
-    total_videos = len(annotations)
+    # Handle both list and dict formats
+    if isinstance(annotations, list):
+        # Convert list to dict format using video_id field
+        annotations_dict = {item['video_id']: item for item in annotations}
+    else:
+        annotations_dict = annotations
+
+    total_videos = len(annotations_dict)
     print(f"Total videos in {split_name}: {total_videos}")
 
     # Track statistics
@@ -48,7 +55,7 @@ def analyze_split(split_name, annotation_file, feature_dirs):
     videos_with_all_modalities = 0
     videos_with_issues = []
 
-    for video_id, ann in annotations.items():
+    for video_id, ann in annotations_dict.items():
         video_modalities = []
         video_shapes = {}
         video_missing = []

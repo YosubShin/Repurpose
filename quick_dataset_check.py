@@ -70,11 +70,18 @@ def quick_check():
         with open(annotation_file, 'r') as f:
             annotations = json.load(f)
 
-        total_videos = len(annotations)
+        # Handle both list and dict formats
+        if isinstance(annotations, list):
+            # Convert list to dict format using video_id field
+            annotations_dict = {item['video_id']: item for item in annotations}
+        else:
+            annotations_dict = annotations
+
+        total_videos = len(annotations_dict)
         complete_videos = 0
 
         # Sample a few videos to check
-        sample_videos = list(annotations.keys())[:min(10, len(annotations))]
+        sample_videos = list(annotations_dict.keys())[:min(10, len(annotations_dict))]
 
         print(f"  Total videos: {total_videos}")
         print(f"  Checking sample of {len(sample_videos)} videos...")
