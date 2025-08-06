@@ -6,6 +6,7 @@ Incorporates memory optimizations and visualization capabilities.
 
 from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
 from models.softnms import soft_nms_intervals_cpu
+from models.transformer import PositionalEncoding, EncoderLayer, CrossAttentionEncoderLayer, CrossSelfEncoderLayer
 from utils.metrics import calculate_tiou
 import os
 import gc
@@ -132,70 +133,57 @@ class RepurposeModel(pl.LightningModule):
         self.log_interval = log_interval
         self.step_count = 0
 
-        # Projections to shared dimension - MLPs as per paper
+        # Projections to shared dimension - MLPs as per paper with 2048 hidden dim
         # "We then use three distinct MLP layers to map these features to a unified dimension d"
         def _projection_mlp(input_dim):
             return nn.Sequential(
-                nn.Linear(input_dim, d_model * 2),
+                nn.Linear(input_dim, 2048),
                 nn.ReLU(),
-                nn.Linear(d_model * 2, d_model)
+                nn.Linear(2048, d_model)
             )
 
         self.proj_a = _projection_mlp(dim_audio)
         self.proj_v = _projection_mlp(dim_visual)
         self.proj_c = _projection_mlp(dim_caption)
 
-        # Self-attention encoders (per modality)
+        # Add positional encoding (critical for temporal understanding!)
+        self.pos_encoding = PositionalEncoding(d_model, max_len=5000)
+
+        # Self-attention encoders (per modality) - using Pre-LN architecture
         def _encoder():
-            layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=n_head,
-                dim_feedforward=d_model * 4,
-                batch_first=True
-            )
-            return nn.TransformerEncoder(layer, num_layers=n_self_attn_layers)
+            return nn.ModuleList([
+                EncoderLayer(d_model, n_head, d_ff=2048, dropout=0.1)
+                for _ in range(n_self_attn_layers)
+            ])
 
         self.enc_a = _encoder()
         self.enc_v = _encoder()
         self.enc_c = _encoder()
 
-        # Multi-layer cross-attention for A-C and V-C modalities
+        # Multi-layer cross-attention for A-C and V-C modalities using CrossSelfEncoderLayer
+        # This includes self-attention followed by cross-attention as in the original
         self.cross_attn_ac_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=d_model, num_heads=n_head, batch_first=True)
+            CrossSelfEncoderLayer(d_model, n_head, d_ff=2048, dropout=0.1)
             for _ in range(n_cross_attn_layers)
         ])
         self.cross_attn_vc_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=d_model, num_heads=n_head, batch_first=True)
+            CrossSelfEncoderLayer(d_model, n_head, d_ff=2048, dropout=0.1)
             for _ in range(n_cross_attn_layers)
         ])
 
-        # Layer norms for A-C and V-C cross-attention layers
-        self.norm_ac_layers = nn.ModuleList([
-            nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
-        ])
-        self.norm_vc_layers = nn.ModuleList([
-            nn.LayerNorm(d_model) for _ in range(n_cross_attn_layers)
-        ])
-
-        # Multi-layer Audio-Visual fusion cross-attention (separate parameter)
-        self.cross_attn_av_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=d_model, num_heads=n_head, batch_first=True)
+        # Multi-layer Audio-Visual fusion cross-attention using CrossAttentionEncoderLayer
+        self.vis_aud_cross_att = nn.ModuleList([
+            CrossAttentionEncoderLayer(d_model, n_head, d_ff=2048, dropout=0.1)
             for _ in range(n_fusion_layers)
         ])
-        self.norm_av_layers = nn.ModuleList([
-            nn.LayerNorm(d_model) for _ in range(n_fusion_layers)
+        self.aud_vis_cross_att = nn.ModuleList([
+            CrossAttentionEncoderLayer(d_model, n_head, d_ff=2048, dropout=0.1)
+            for _ in range(n_fusion_layers)
         ])
 
         # Fusion projection to map concatenated features to lower dimension
         # As per paper: "concatenated, mapped to lower dimensions"
-        self.fusion_projection = nn.Sequential(
-            nn.Linear(2 * d_model, d_model),
-            nn.ReLU(),
-            nn.LayerNorm(d_model)
-        )
+        self.fusion_projection = nn.Linear(d_model*2, d_model)
 
         # Classification heads - 3-layer MLP as per paper
         # Note: sigmoid will be applied in loss function, not here
@@ -255,52 +243,63 @@ class RepurposeModel(pl.LightningModule):
         v = self.proj_v(visual)
         c = self.proj_c(caption)
 
+        # Add positional encoding (critical for temporal understanding!)
+        # The PositionalEncoding expects [seq_len, batch, d_model] but we have [batch, seq_len, d_model]
+        a = a.transpose(0, 1)
+        v = v.transpose(0, 1)
+        c = c.transpose(0, 1)
+
+        a = self.pos_encoding(a)
+        v = self.pos_encoding(v)
+        c = self.pos_encoding(c)
+
+        # Transpose back to [batch, seq_len, d_model]
+        a = a.transpose(0, 1)
+        v = v.transpose(0, 1)
+        c = c.transpose(0, 1)
+
         # Self-attention encoding for each modality
-        a = self.enc_a(a)
-        v = self.enc_v(v)
-        c = self.enc_c(c)
+        # Note: The original uses masks, we should add them later
+        for layer in self.enc_a:
+            a = layer(a, mask=None)
+        for layer in self.enc_v:
+            v = layer(v, mask=None)
+        for layer in self.enc_c:
+            c = layer(c, mask=None)
 
         # Multi-layer Cross-attention: Audio-Caption
+        # CrossSelfEncoderLayer does self-attention + cross-attention internally
         a_enhanced = a
-        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_ac_layers, self.norm_ac_layers)):
-            # Query: audio, Key/Value: caption
-            attn_out, _ = cross_attn(a_enhanced, c, c)
-            # Residual connection + LayerNorm
-            a_enhanced = norm(a_enhanced + attn_out)
+        for layer in self.cross_attn_ac_layers:
+            a_enhanced = layer(a_enhanced, c, mask=None)
 
         # Multi-layer Cross-attention: Visual-Caption
         v_enhanced = v
-        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_vc_layers, self.norm_vc_layers)):
-            # Query: visual, Key/Value: caption
-            attn_out, _ = cross_attn(v_enhanced, c, c)
-            # Residual connection + LayerNorm
-            v_enhanced = norm(v_enhanced + attn_out)
+        for layer in self.cross_attn_vc_layers:
+            v_enhanced = layer(v_enhanced, c, mask=None)
 
         # Multi-layer Audio-Visual fusion cross-attention
-        # Start with enhanced features
-        av_fused = a_enhanced
-        va_fused = v_enhanced
+        # Following the original architecture with separate cross-attention layers
+        vis_feats = v_enhanced
+        aud_feats = a_enhanced
 
-        for i, (cross_attn, norm) in enumerate(zip(self.cross_attn_av_layers, self.norm_av_layers)):
-            # Bidirectional cross-attention
-            av_out, _ = cross_attn(av_fused, va_fused, va_fused)  # A queries V
-            va_out, _ = cross_attn(va_fused, av_fused, av_fused)  # V queries A
+        for idx, layer in enumerate(self.vis_aud_cross_att):
+            vis_feats = layer(vis_feats, aud_feats, mask=None)
 
-            # Apply residual connections and layer norm
-            av_fused = norm(av_fused + av_out)
-            va_fused = norm(va_fused + va_out)
+        for idx, layer in enumerate(self.aud_vis_cross_att):
+            aud_feats = layer(aud_feats, vis_feats, mask=None)
 
         # Concatenate bidirectional cross-attended features as per paper
-        f = torch.cat([av_fused, va_fused], dim=-1)  # [B, T, 2*d_model]
-        
+        f = torch.cat([vis_feats, aud_feats], dim=-1)  # [B, T, 2*d_model]
+
         # Map to lower dimensions as specified in paper
         # This projection replaces the self-attention encoder
         f = self.fusion_projection(f)  # [B, T, d_model]
 
         # Per-frame classification logits
         # Use cross-attended features for unimodal heads as per paper
-        logit_a = self.head_a(av_fused).squeeze(-1)
-        logit_v = self.head_v(va_fused).squeeze(-1)
+        logit_a = self.head_a(aud_feats).squeeze(-1)
+        logit_v = self.head_v(vis_feats).squeeze(-1)
         logit_f = self.head_f(f).squeeze(-1)
 
         # Per-frame regression offsets (left_offset, right_offset) - only multimodal
