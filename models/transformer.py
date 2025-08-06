@@ -15,9 +15,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # Clone the positional encoding to avoid in-place operations that cause DDP issues
-        pe_slice = self.pe[:x.size(0), :].clone()
-        x = x + pe_slice
+        x = x + self.pe[:x.size(0), :]
         return x
 
 
@@ -46,11 +44,10 @@ class MultiHeadAttention(nn.Module):
         self.v_linear = nn.Linear(d_model, d_model)
         self.out = nn.Linear(d_model, d_model)
 
-        # Register scale as a buffer to avoid DDP issues with shared parameters
-        self.register_buffer('scale', torch.sqrt(torch.FloatTensor([self.d_k])))
+        self.scale = torch.sqrt(torch.FloatTensor([self.d_k]))
 
     def forward(self, q, k, v, mask=None):
-        # Scale should already be on the correct device as a buffer
+        self.scale = self.scale.to(q.device)
         bs = q.size(0)
 
         # perform linear operation and split into num_heads
