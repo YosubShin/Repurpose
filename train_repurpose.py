@@ -146,7 +146,7 @@ class RepurposeModel(pl.LightningModule):
         self.proj_v = _projection_mlp(dim_visual)
         self.proj_c = _projection_mlp(dim_caption)
 
-        # Add positional encoding (critical for temporal understanding!)
+        # Add positional encoding
         self.pos_encoding = PositionalEncoding(d_model, max_len=5000)
 
         # Self-attention encoders (per modality) - using Pre-LN architecture
@@ -236,14 +236,14 @@ class RepurposeModel(pl.LightningModule):
         # Storage for validation outputs (PyTorch Lightning v2.0+ compatibility)
         self.validation_outputs = []
 
-    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor):
+    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor = None):
         """Forward pass with cross-attention between modalities."""
         # Project to shared dimension
         a = self.proj_a(audio)
         v = self.proj_v(visual)
         c = self.proj_c(caption)
 
-        # Add positional encoding (critical for temporal understanding!)
+        # Add positional encoding
         # The PositionalEncoding expects [seq_len, batch, d_model] but we have [batch, seq_len, d_model]
         a = a.transpose(0, 1)
         v = v.transpose(0, 1)
@@ -259,24 +259,23 @@ class RepurposeModel(pl.LightningModule):
         c = c.transpose(0, 1)
 
         # Self-attention encoding for each modality
-        # Note: The original uses masks, we should add them later
         for layer in self.enc_a:
-            a = layer(a, mask=None)
+            a = layer(a, mask=mask)
         for layer in self.enc_v:
-            v = layer(v, mask=None)
+            v = layer(v, mask=mask)
         for layer in self.enc_c:
-            c = layer(c, mask=None)
+            c = layer(c, mask=mask)
 
         # Multi-layer Cross-attention: Audio-Caption
         # CrossSelfEncoderLayer does self-attention + cross-attention internally
         a_enhanced = a
         for layer in self.cross_attn_ac_layers:
-            a_enhanced = layer(a_enhanced, c, mask=None)
+            a_enhanced = layer(a_enhanced, c, mask=mask)
 
         # Multi-layer Cross-attention: Visual-Caption
         v_enhanced = v
         for layer in self.cross_attn_vc_layers:
-            v_enhanced = layer(v_enhanced, c, mask=None)
+            v_enhanced = layer(v_enhanced, c, mask=mask)
 
         # Multi-layer Audio-Visual fusion cross-attention
         # Following the original architecture with separate cross-attention layers
@@ -284,10 +283,10 @@ class RepurposeModel(pl.LightningModule):
         aud_feats = a_enhanced
 
         for idx, layer in enumerate(self.vis_aud_cross_att):
-            vis_feats = layer(vis_feats, aud_feats, mask=None)
+            vis_feats = layer(vis_feats, aud_feats, mask=mask)
 
         for idx, layer in enumerate(self.aud_vis_cross_att):
-            aud_feats = layer(aud_feats, vis_feats, mask=None)
+            aud_feats = layer(aud_feats, vis_feats, mask=mask)
 
         # Concatenate bidirectional cross-attended features as per paper
         f = torch.cat([vis_feats, aud_feats], dim=-1)  # [B, T, 2*d_model]
@@ -320,7 +319,7 @@ class RepurposeModel(pl.LightningModule):
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
+        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
 
         # Compute losses following original paper implementation exactly
         # 1. Classification losses - compute for all positions first, then mask
@@ -435,7 +434,7 @@ class RepurposeModel(pl.LightningModule):
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption)
+        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
 
         # Classification loss - following original paper implementation exactly
         val_loss_cls_all = sigmoid_focal_loss(
