@@ -250,18 +250,24 @@ class RepurposeModel(pl.LightningModule):
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor):
         """Forward pass with cross-attention between modalities."""
-        # DEBUG: Shuffle caption features along the time dimension
-        # This helps test if the model can learn without proper caption alignment
+        # DEBUG: Shuffle all modality features along the time dimension
+        # This helps test if the model can learn without proper temporal alignment
         if self.training:  # Only shuffle during training
-            batch_size, seq_len, feat_dim = caption.shape
+            batch_size, seq_len, _ = audio.shape
             for b in range(batch_size):
-                # Generate random permutation for each sample in the batch
-                perm = torch.randperm(seq_len, device=caption.device)
-                caption[b] = caption[b, perm]
+                # Generate separate random permutations for each modality per sample
+                audio_perm = torch.randperm(seq_len, device=audio.device)
+                visual_perm = torch.randperm(seq_len, device=visual.device)
+                caption_perm = torch.randperm(seq_len, device=caption.device)
+                
+                # Shuffle each modality independently
+                audio[b] = audio[b, audio_perm]
+                visual[b] = visual[b, visual_perm]
+                caption[b] = caption[b, caption_perm]
             
-            # Log once per epoch that we're using shuffled captions
+            # Log once per epoch that we're using shuffled features
             if hasattr(self, 'logger_instance') and self.global_step % 100 == 0:
-                self.logger_instance.info("DEBUG: Using shuffled caption features")
+                self.logger_instance.info("DEBUG: Using shuffled audio, visual, and caption features")
         
         # Project to shared dimension
         a = self.proj_a(audio)
