@@ -32,6 +32,26 @@ class TextFeatureExtractor:
 
         # Check dependencies
         self.check_dependencies()
+        
+        # Load sentence transformer model once during initialization
+        self.logger.info("Loading SentenceTransformer model...")
+        from sentence_transformers import SentenceTransformer
+        import time
+        
+        # Try loading with retries in case of rate limiting
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder='./models')
+                self.logger.info("SentenceTransformer model loaded successfully")
+                break
+            except Exception as e:
+                if "429" in str(e) and i < max_retries - 1:
+                    wait_time = (i + 1) * 10  # 10, 20, 30 seconds
+                    self.logger.warning(f"Rate limited, waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    raise
 
     def check_dependencies(self):
         """Check if required dependencies are available."""
@@ -264,11 +284,8 @@ class TextFeatureExtractor:
             self.save_progress()
 
         try:
-            from sentence_transformers import SentenceTransformer
-
-            # Load sentence transformer model
-            # 384-dimensional embeddings
-            model = SentenceTransformer('all-MiniLM-L6-v2')
+            # Use pre-loaded sentence transformer model
+            model = self.sentence_model
 
             # Try to load existing transcript first
             segments = self.load_transcript(youtube_id)
