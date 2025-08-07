@@ -136,10 +136,20 @@ def train_visual_only_full_model(args):
             reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
             cls_mask = (labels > 0.5).float()
             combined_mask = seq_mask * cls_mask
-            reg_loss = (reg_loss_all * combined_mask).sum() / (combined_mask.sum() + 1e-8)  # Avoid division by zero
             
-            # Combined loss (similar to full model)
-            loss = cls_loss + 0.7 * reg_loss  # lambda4=0.7 for regression
+            # Debug: Check if we have any positive examples
+            num_positives = combined_mask.sum().item()
+            if num_positives > 0:
+                reg_loss = (reg_loss_all * combined_mask).sum() / num_positives
+            else:
+                reg_loss = torch.tensor(0.0, device=device)
+            
+            # Debug logging for first batch
+            if batch_idx == 0:
+                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f}, positives={num_positives}")
+            
+            # Much smaller weight for regression loss to start
+            loss = cls_loss + 0.1 * reg_loss  # Reduced from 0.7 to 0.1
             
             # Backward pass
             optimizer.zero_grad()
@@ -196,9 +206,14 @@ def train_visual_only_full_model(args):
                     reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
                     cls_mask = (labels > 0.5).float()
                     combined_mask = seq_mask * cls_mask
-                    reg_loss = (reg_loss_all * combined_mask).sum() / (combined_mask.sum() + 1e-8)
                     
-                    loss = cls_loss + 0.7 * reg_loss
+                    num_positives = combined_mask.sum().item()
+                    if num_positives > 0:
+                        reg_loss = (reg_loss_all * combined_mask).sum() / num_positives
+                    else:
+                        reg_loss = torch.tensor(0.0, device=device)
+                    
+                    loss = cls_loss + 0.1 * reg_loss  # Same reduced weight
                     val_loss += loss.item()
                     
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
