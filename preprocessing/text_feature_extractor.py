@@ -29,6 +29,9 @@ class TextFeatureExtractor:
         # Progress tracking
         self.progress_file = self.output_dir / "extraction_progress.json"
         self.processed_videos = self.load_progress()
+        
+        # Debug flag for first video
+        self.debug_first_video = True
 
         # Check dependencies
         self.check_dependencies()
@@ -324,6 +327,11 @@ class TextFeatureExtractor:
         try:
             # Use pre-loaded sentence transformer model
             model = self.sentence_model
+            
+            # Debug info for first video
+            if self.debug_first_video:
+                self.logger.info(f"[DEBUG] Starting text feature extraction for first video: {youtube_id}")
+                self.logger.info(f"[DEBUG] Will log combined text for each second to understand what's being encoded")
 
             # Try to load existing transcript first
             segments = self.load_transcript(youtube_id)
@@ -411,12 +419,22 @@ class TextFeatureExtractor:
                         combined_text = self.clean_text(combined_text)
 
                         if combined_text:
+                            # Debug logging for first video only
+                            if self.debug_first_video:
+                                self.logger.info(f"[DEBUG - First Video {youtube_id}] Second {second}:")
+                                self.logger.info(f"  Text length: {len(combined_text)} chars")
+                                self.logger.info(f"  Text preview: {combined_text[:200]}...")
+                                if len(combined_text) > 200:
+                                    self.logger.info(f"  Text end: ...{combined_text[-100:]}")
+                            
                             # Encode text to get 384-dimensional embedding
                             # show_progress_bar=False to avoid spamming stderr
                             embedding = model.encode([combined_text], show_progress_bar=False)[0]
                             features.append(embedding)
                         else:
                             # Empty text - use zero vector
+                            if self.debug_first_video:
+                                self.logger.info(f"[DEBUG - First Video {youtube_id}] Second {second}: Empty text, using zero vector")
                             features.append(np.zeros(384))
                     else:
                         # No speech in this second - use zero vector
@@ -439,6 +457,12 @@ class TextFeatureExtractor:
 
                 self.logger.info(
                     f"Successfully extracted text features for {youtube_id}, shape: {features.shape} (duration: {duration_seconds}s)")
+                
+                # Turn off debug after first video
+                if self.debug_first_video:
+                    self.logger.info(f"[DEBUG] Finished debugging first video {youtube_id}, disabling debug output")
+                    self.debug_first_video = False
+                
                 return True
 
         except Exception as e:
