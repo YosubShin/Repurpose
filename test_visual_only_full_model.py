@@ -17,6 +17,10 @@ from compatible_dataset import create_sequence_dataloader
 from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
 import argparse
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import os
+import numpy as np
 
 class VisualOnlyRepurposeModel(RepurposeModel):
     """Modified RepurposeModel that only uses visual features"""
@@ -50,6 +54,136 @@ class VisualOnlyRepurposeModel(RepurposeModel):
         logit_a = torch.zeros_like(logit_v)
         
         return logit_a, logit_v, logit_f, offset_f
+
+def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 3, device='cuda'):
+    """Visualize model predictions vs ground truth for visual-only model."""
+    print(f"Creating visualizations for {num_samples} samples")
+    
+    model.eval()
+    os.makedirs(save_dir, exist_ok=True)
+    saved_paths = []
+    
+    with torch.no_grad():
+        sample_count = 0
+        
+        for batch_idx, batch in enumerate(dataloader):
+            if sample_count >= num_samples:
+                break
+            
+            if batch_idx >= 3:  # Only process first few batches
+                break
+                
+            # Extract features 
+            audio = batch['features']['audio'].to(device)
+            visual = batch['features']['visual'].to(device)
+            caption = batch['features']['caption'].to(device)
+            labels = batch['labels'].to(device)
+            offsets = batch['offsets'].to(device)
+            seq_mask = batch['sequence_masks']
+            
+            # Get predictions (model ignores audio/caption)
+            _, _, logit_f, offset_f = model(audio, visual, caption)
+            
+            # Process each sequence in the batch individually
+            batch_size = logit_f.shape[0]
+            for seq_idx in range(batch_size):
+                if sample_count >= num_samples:
+                    break
+                
+                # Get valid length for this sequence
+                valid_length = int(seq_mask[seq_idx].sum().item())
+                
+                # Extract predictions and labels for this sequence only
+                pred_probs = torch.sigmoid(logit_f[seq_idx, :valid_length]).cpu().numpy()
+                labels_np = labels[seq_idx, :valid_length].cpu().numpy()
+                pred_offsets_np = offset_f[seq_idx, :valid_length].cpu().numpy()
+                gt_offsets_np = offsets[seq_idx, :valid_length].cpu().numpy()
+                
+                # Create visualization with offset plots
+                fig, axes = plt.subplots(4, 1, figsize=(15, 12))
+                seq_len = len(pred_probs)
+                time_points = np.arange(seq_len)
+                
+                # Plot 1: Classification scores
+                ax1 = axes[0]
+                ax1.plot(time_points, pred_probs, 'b-', label='Predicted Prob', alpha=0.7)
+                positive_idx = labels_np > 0.5
+                if np.any(positive_idx):
+                    ax1.scatter(time_points[positive_idx], np.ones(np.sum(positive_idx)),
+                              color='red', s=50, label='GT Positive', zorder=5)
+                ax1.set_ylabel('Classification Score')
+                ax1.set_title(f'Sample {sample_count} - Classification Predictions (Visual-Only)')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                ax1.set_ylim(-0.1, 1.1)
+                
+                # Plot 2: Offset predictions
+                ax2 = axes[1]
+                ax2.plot(time_points, pred_offsets_np[:, 0], 'b-', label='Pred Left Offset', alpha=0.7)
+                ax2.plot(time_points, pred_offsets_np[:, 1], 'b--', label='Pred Right Offset', alpha=0.7)
+                # Plot GT offsets only at positive positions
+                if np.any(positive_idx):
+                    ax2.scatter(time_points[positive_idx], gt_offsets_np[positive_idx, 0],
+                              color='red', s=30, label='GT Left Offset', marker='o')
+                    ax2.scatter(time_points[positive_idx], gt_offsets_np[positive_idx, 1],
+                              color='darkred', s=30, label='GT Right Offset', marker='s')
+                ax2.set_ylabel('Offset Value')
+                ax2.set_xlabel('Time Steps')
+                ax2.set_title('Offset Predictions')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                
+                # Plot 3: Segments visualization from offsets
+                ax3 = axes[2]
+                
+                # Draw predicted segments at high confidence points
+                high_conf_idx = pred_probs > 0.5
+                for t_idx in np.where(high_conf_idx)[0]:
+                    left_offset = pred_offsets_np[t_idx, 0]
+                    right_offset = pred_offsets_np[t_idx, 1]
+                    start = max(0, t_idx - left_offset)
+                    end = min(seq_len, t_idx + right_offset)
+                    ax3.add_patch(patches.Rectangle((start, 0.6), end - start, 0.3,
+                                                  facecolor='blue', alpha=0.5))
+                
+                # Draw GT segments from offsets  
+                for t_idx in np.where(positive_idx)[0]:
+                    left_offset = gt_offsets_np[t_idx, 0]
+                    right_offset = gt_offsets_np[t_idx, 1]
+                    start = max(0, t_idx - left_offset)
+                    end = min(seq_len, t_idx + right_offset)
+                    ax3.add_patch(patches.Rectangle((start, 0.1), end - start, 0.3,
+                                                  facecolor='red', alpha=0.5))
+                
+                ax3.set_xlim(0, seq_len)
+                ax3.set_ylim(0, 1)
+                ax3.set_xlabel('Time Steps')
+                ax3.set_title('Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)')
+                ax3.grid(True, alpha=0.3, axis='x')
+                
+                # Plot 4: Confidence over time
+                ax4 = axes[3]
+                confidence = np.abs(pred_probs - 0.5) * 2
+                ax4.plot(time_points, confidence, 'g-', label='Confidence', alpha=0.7)
+                ax4.set_ylabel('Confidence')
+                ax4.set_xlabel('Time Steps')
+                ax4.set_title('Prediction Confidence')
+                ax4.legend()
+                ax4.grid(True, alpha=0.3)
+                ax4.set_ylim(0, 1)
+                
+                plt.tight_layout()
+                
+                # Save figure
+                path = os.path.join(save_dir, f'visual_only_sample_{sample_count}.png')
+                plt.savefig(path, dpi=150, bbox_inches='tight')
+                saved_paths.append(path)
+                print(f"Saved visualization to {path}")
+                
+                plt.close()
+                sample_count += 1
+    
+    return saved_paths
 
 def train_visual_only_full_model(args):
     """Train full model architecture but with only visual features"""
@@ -246,11 +380,34 @@ def train_visual_only_full_model(args):
             
             if val_accuracy > 0.8:
                 print(f"✅ Visual-only full model learned successfully in {epoch+1} epochs!")
+                
+                # Create visualizations after successful training
+                print("\n📊 Creating visualizations...")
+                viz_dir = "visual_only_visualizations"
+                val_dataloader_for_viz = val_loader if val_loader else train_loader
+                saved_paths = visualize_predictions(model, val_dataloader_for_viz, viz_dir, num_samples=3, device=device)
+                print(f"✅ Created {len(saved_paths)} visualizations in {viz_dir}/")
+                
                 break
         
         if train_accuracy > 0.8 and not val_loader:
             print(f"✅ Visual-only full model learned successfully in {epoch+1} epochs!")
+            
+            # Create visualizations after successful training 
+            print("\n📊 Creating visualizations...")
+            viz_dir = "visual_only_visualizations"
+            saved_paths = visualize_predictions(model, train_loader, viz_dir, num_samples=3, device=device)
+            print(f"✅ Created {len(saved_paths)} visualizations in {viz_dir}/")
+            
             break
+    
+    # Create visualizations at the end regardless of performance for debugging
+    if 'saved_paths' not in locals():
+        print("\n📊 Creating final visualizations for debugging...")
+        viz_dir = "visual_only_visualizations"
+        final_dataloader = val_loader if val_loader else train_loader
+        saved_paths = visualize_predictions(model, final_dataloader, viz_dir, num_samples=2, device=device)
+        print(f"✅ Created {len(saved_paths)} final visualizations in {viz_dir}/")
 
 def main():
     parser = argparse.ArgumentParser(description="Test visual-only full model")
@@ -293,6 +450,11 @@ def main():
     print("• Classification should still achieve ~90% accuracy")  
     print("• Regression loss contributes minimally (~0.01 * 0.47 = 0.005 vs 0.08 classification)")
     print("• Model learns both classification and boundary regression simultaneously")
+    print("• Visualizations saved to 'visual_only_visualizations/' showing:")
+    print("  - Classification predictions vs ground truth")
+    print("  - Offset predictions (left and right)")
+    print("  - Segment visualization from predicted offsets")
+    print("  - Prediction confidence over time")
     print()
     print("If accuracy is still low, try:")
     print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.001  # Even smaller")
