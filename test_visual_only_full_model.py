@@ -319,6 +319,7 @@ def train_visual_only_full_model(args):
             val_positives = 0
             val_predicted_positives = 0
             val_true_positives = 0
+            val_offset_errors = []  # Track offset prediction errors
             
             with torch.no_grad():
                 for batch_idx, batch in enumerate(val_loader):
@@ -364,6 +365,16 @@ def train_visual_only_full_model(args):
                     val_positives += positives
                     val_predicted_positives += pred_pos
                     val_true_positives += true_pos
+                    
+                    # Calculate offset errors for positive positions
+                    if num_positives > 0:
+                        pos_mask_bool = combined_mask.bool()
+                        pred_offsets_pos = offset_f[pos_mask_bool]  # [num_pos, 2]
+                        gt_offsets_pos = offsets[pos_mask_bool]      # [num_pos, 2]
+                        
+                        # Calculate absolute errors for each offset
+                        offset_abs_errors = torch.abs(pred_offsets_pos - gt_offsets_pos)  # [num_pos, 2]
+                        val_offset_errors.extend(offset_abs_errors.cpu().numpy())
             
             val_accuracy = val_correct / val_samples if val_samples > 0 else 0
             val_precision = val_true_positives / val_predicted_positives if val_predicted_positives > 0 else 0
@@ -371,15 +382,39 @@ def train_visual_only_full_model(args):
             val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall) if (val_precision + val_recall) > 0 else 0
             avg_val_loss = val_loss / min(len(val_loader), 10)
             
+            # Calculate offset metrics
+            if len(val_offset_errors) > 0:
+                val_offset_errors = np.array(val_offset_errors)  # [num_errors, 2]
+                mean_left_error = np.mean(val_offset_errors[:, 0])
+                mean_right_error = np.mean(val_offset_errors[:, 1])
+                mean_total_error = np.mean(val_offset_errors)
+                
+                # Calculate accuracy within tolerance (e.g., within 2 time steps)
+                tolerance = 2.0
+                accurate_left = np.mean(val_offset_errors[:, 0] <= tolerance) * 100
+                accurate_right = np.mean(val_offset_errors[:, 1] <= tolerance) * 100
+                accurate_both = np.mean(np.all(val_offset_errors <= tolerance, axis=1)) * 100
+            else:
+                mean_left_error = mean_right_error = mean_total_error = float('inf')
+                accurate_left = accurate_right = accurate_both = 0.0
+            
             val_loss_desc = f"(classification + {args.regression_weight}*regression)"
             print(f"  Val Loss: {avg_val_loss:.4f} {val_loss_desc}")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
             print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
             print(f"  Val Recall: {val_recall:.4f} ({val_recall*100:.1f}%)")
             print(f"  Val F1: {val_f1:.4f} ({val_f1*100:.1f}%)")
+            print(f"  Val Offset Error: L={mean_left_error:.2f}, R={mean_right_error:.2f}, Avg={mean_total_error:.2f}")
+            print(f"  Val Offset Accuracy (≤{tolerance} steps): L={accurate_left:.1f}%, R={accurate_right:.1f}%, Both={accurate_both:.1f}%")
             
-            if val_accuracy > 0.8:
+            # Enhanced stopping criteria: good classification AND reasonable offset prediction
+            classification_good = val_accuracy > 0.8 and val_recall > 0.7
+            offset_reasonable = mean_total_error < 10.0 and accurate_both > 20.0  # At least 20% within 2 steps
+            
+            if classification_good and offset_reasonable:
                 print(f"✅ Visual-only full model learned successfully in {epoch+1} epochs!")
+                print(f"   Classification: {val_accuracy*100:.1f}% accuracy, {val_recall*100:.1f}% recall")
+                print(f"   Offset Quality: {mean_total_error:.2f} avg error, {accurate_both:.1f}% accurate")
                 
                 # Create visualizations after successful training
                 print("\n📊 Creating visualizations...")
@@ -389,9 +424,14 @@ def train_visual_only_full_model(args):
                 print(f"✅ Created {len(saved_paths)} visualizations in {viz_dir}/")
                 
                 break
+            elif classification_good and not offset_reasonable:
+                print(f"⚠️  Good classification ({val_accuracy*100:.1f}%) but poor offsets (error={mean_total_error:.2f}, accuracy={accurate_both:.1f}%)")
+            elif not classification_good and offset_reasonable:
+                print(f"⚠️  Good offsets (error={mean_total_error:.2f}) but poor classification ({val_accuracy*100:.1f}%)")
         
         if train_accuracy > 0.8 and not val_loader:
             print(f"✅ Visual-only full model learned successfully in {epoch+1} epochs!")
+            print(f"   Note: No validation set - offset quality will be checked in visualizations")
             
             # Create visualizations after successful training 
             print("\n📊 Creating visualizations...")
@@ -447,9 +487,10 @@ def main():
     print("• Visual-only Full Model + Regression: [Your result above]")
     print()
     print("Expected results with small regression weight (0.01):")
-    print("• Classification should still achieve ~90% accuracy")  
+    print("• Classification: ~90% accuracy, >70% recall")  
+    print("• Regression: <10 avg error, >20% accuracy within ±2 steps")
+    print("• Early stopping requires BOTH good classification AND reasonable offsets")
     print("• Regression loss contributes minimally (~0.01 * 0.47 = 0.005 vs 0.08 classification)")
-    print("• Model learns both classification and boundary regression simultaneously")
     print("• Visualizations saved to 'visual_only_visualizations/' showing:")
     print("  - Classification predictions vs ground truth")
     print("  - Offset predictions (left and right)")
