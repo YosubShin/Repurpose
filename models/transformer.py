@@ -44,10 +44,10 @@ class MultiHeadAttention(nn.Module):
         self.v_linear = nn.Linear(d_model, d_model)
         self.out = nn.Linear(d_model, d_model)
 
-        self.scale = torch.sqrt(torch.FloatTensor([self.d_k]))
+        # Register scale as a buffer (no gradients needed)
+        self.register_buffer('scale', torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32)))
 
     def forward(self, q, k, v, mask=None):
-        self.scale = self.scale.to(q.device)
         bs = q.size(0)
 
         # perform linear operation and split into num_heads
