@@ -144,12 +144,12 @@ def train_visual_only_full_model(args):
             else:
                 reg_loss = torch.tensor(0.0, device=device)
             
-            # Debug logging for first batch
-            if batch_idx == 0:
-                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f}, positives={num_positives}")
+            # Debug logging for first batch  
+            if batch_idx == 0 and epoch < 3:  # Only show first few epochs
+                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {args.regression_weight * reg_loss:.4f}), positives={num_positives}")
             
-            # Much smaller weight for regression loss to start
-            loss = cls_loss + 0.1 * reg_loss  # Reduced from 0.7 to 0.1
+            # Combined loss
+            loss = cls_loss + args.regression_weight * reg_loss
             
             # Backward pass
             optimizer.zero_grad()
@@ -172,7 +172,8 @@ def train_visual_only_full_model(args):
         avg_loss = total_loss / min(len(train_loader), 20)
         
         print(f"\nEpoch {epoch+1}:")
-        print(f"  Train Loss: {avg_loss:.4f} (includes classification + regression)")
+        loss_desc = f"(classification + {args.regression_weight}*regression)"
+        print(f"  Train Loss: {avg_loss:.4f} {loss_desc}")
         print(f"  Train Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.1f}%)")
         
         # Validation
@@ -199,10 +200,11 @@ def train_visual_only_full_model(args):
                     
                     logit_a, logit_v, logit_f, offset_f = model(audio, visual, caption, mask=seq_mask)
                     
-                    # Classification + regression loss for validation too
+                    # Classification loss for validation
                     cls_loss = sigmoid_focal_loss(logit_f, labels, alpha=0.5, gamma=2.0, reduction='none')
                     cls_loss = (cls_loss * seq_mask).sum() / seq_mask.sum()
                     
+                    # Regression loss for validation
                     reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
                     cls_mask = (labels > 0.5).float()
                     combined_mask = seq_mask * cls_mask
@@ -213,7 +215,7 @@ def train_visual_only_full_model(args):
                     else:
                         reg_loss = torch.tensor(0.0, device=device)
                     
-                    loss = cls_loss + 0.1 * reg_loss  # Same reduced weight
+                    loss = cls_loss + args.regression_weight * reg_loss
                     val_loss += loss.item()
                     
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
@@ -235,7 +237,8 @@ def train_visual_only_full_model(args):
             val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall) if (val_precision + val_recall) > 0 else 0
             avg_val_loss = val_loss / min(len(val_loader), 10)
             
-            print(f"  Val Loss: {avg_val_loss:.4f} (includes classification + regression)")
+            val_loss_desc = f"(classification + {args.regression_weight}*regression)"
+            print(f"  Val Loss: {avg_val_loss:.4f} {val_loss_desc}")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
             print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
             print(f"  Val Recall: {val_recall:.4f} ({val_recall*100:.1f}%)")
@@ -262,16 +265,17 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--n-head", type=int, default=8)
-    parser.add_argument("--n-self-attn-layers", type=int, default=3)  # Back to 3 since hints work well
+    parser.add_argument("--n-self-attn-layers", type=int, default=3)
+    parser.add_argument("--regression-weight", type=float, default=0.01,
+                      help="Weight for regression loss (default: 0.01)")
     
     args = parser.parse_args()
     
-    print("🔍 TESTING VISUAL-ONLY FULL MODEL WITH REGRESSION LOSS")
-    print("=" * 60)
-    print("Now testing with both classification AND regression losses,")
-    print("matching the full RepurposeModel training setup...")
-    print(f"Configuration: {args.n_self_attn_layers} self-attention layers, d_model={args.d_model}, {args.n_head} heads")
-    print("Loss: Classification (focal) + 0.7 * Regression (CTR-DIOU)")
+    print("🔍 TESTING VISUAL-ONLY FULL MODEL")
+    print("=" * 50)
+    print(f"Mode: Classification + Regression (weight={args.regression_weight})")
+    print(f"Configuration: {args.n_self_attn_layers} layers, d_model={args.d_model}, {args.n_head} heads")
+    print("Strategy: Small regression weight to avoid interference with classification learning")
     print()
     
     train_visual_only_full_model(args)
@@ -285,10 +289,13 @@ def main():
     print("• Visual-only Full Model (3 layers, WITH hints): 92.2% accuracy, 77.5% recall ✅")
     print("• Visual-only Full Model + Regression: [Your result above]")
     print()
-    print("Expected with regression loss:")
-    print("• Accuracy should remain high (>85%)")
-    print("• Regression loss helps with precise segment boundary prediction")
-    print("• This validates the full model is ready for multi-modal training")
+    print("Expected results with small regression weight (0.01):")
+    print("• Classification should still achieve ~90% accuracy")  
+    print("• Regression loss contributes minimally (~0.01 * 0.47 = 0.005 vs 0.08 classification)")
+    print("• Model learns both classification and boundary regression simultaneously")
+    print()
+    print("If accuracy is still low, try:")
+    print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.001  # Even smaller")
 
 if __name__ == "__main__":
     main()
