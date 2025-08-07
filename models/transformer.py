@@ -65,7 +65,9 @@ class MultiHeadAttention(nn.Module):
 
         if mask is not None:
             mask = mask.unsqueeze(1)  # Add a dimension for heads
-            scores = scores.masked_fill(mask == 0, -1e9)
+            # Use dtype-appropriate large negative value for masking
+            mask_value = torch.finfo(scores.dtype).min
+            scores = scores.masked_fill(mask == 0, mask_value)
 
         attention = torch.softmax(scores, dim=-1)
 
