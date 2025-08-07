@@ -27,17 +27,6 @@ python preprocessing/visual_feature_extractor_clip.py \
     --inject-hints \
     --log-level INFO
 
-# Extract visual features with red dot hints for validation set
-echo "Extracting visual features with red dot hints for validation set..."
-echo "Output directory: $VISUAL_HINT_DIR"
-
-python preprocessing/visual_feature_extractor_clip.py \
-    --video-dir "$VIDEO_DIR" \
-    --dataset "$VAL_ANNOTATION" \
-    --output-dir "$VISUAL_HINT_DIR" \
-    --inject-hints \
-    --log-level INFO
-
 # Check if extraction was successful
 if [ $? -ne 0 ]; then
     echo "Error: Visual feature extraction failed"
