@@ -161,6 +161,9 @@ def train_visual_only_full_model(args):
             val_correct = 0
             val_samples = 0
             val_loss = 0
+            val_positives = 0
+            val_predicted_positives = 0
+            val_true_positives = 0
             
             with torch.no_grad():
                 for batch_idx, batch in enumerate(val_loader):
@@ -182,15 +185,27 @@ def train_visual_only_full_model(args):
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
                     correct = ((preds == labels) * seq_mask).sum().item()
                     samples = seq_mask.sum().item()
+                    positives = (labels * seq_mask).sum().item()
+                    pred_pos = (preds * seq_mask).sum().item()
+                    true_pos = ((preds == 1) * (labels == 1) * seq_mask).sum().item()
                     
                     val_correct += correct
                     val_samples += samples
+                    val_positives += positives
+                    val_predicted_positives += pred_pos
+                    val_true_positives += true_pos
             
             val_accuracy = val_correct / val_samples if val_samples > 0 else 0
+            val_precision = val_true_positives / val_predicted_positives if val_predicted_positives > 0 else 0
+            val_recall = val_true_positives / val_positives if val_positives > 0 else 0
+            val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall) if (val_precision + val_recall) > 0 else 0
             avg_val_loss = val_loss / min(len(val_loader), 10)
             
             print(f"  Val Loss: {avg_val_loss:.4f}")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
+            print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
+            print(f"  Val Recall: {val_recall:.4f} ({val_recall*100:.1f}%)")
+            print(f"  Val F1: {val_f1:.4f} ({val_f1*100:.1f}%)")
             
             if val_accuracy > 0.8:
                 print(f"✅ Visual-only full model learned successfully in {epoch+1} epochs!")
@@ -224,6 +239,19 @@ def main():
     print()
     
     train_visual_only_full_model(args)
+    
+    print("\n" + "=" * 60)
+    print("COMPARISON SUMMARY")
+    print("=" * 60)
+    print("Expected results based on previous tests:")
+    print("• Minimal Transformer (1 layer): 86.5% val accuracy ✅")
+    print("• Visual-only Full Model (3 layers): [Your result above]")
+    print("• Full Multi-modal Model: <50% accuracy ❌")
+    print()
+    print("Analysis:")
+    print("• If visual-only full model ≈ 86%: Issue is multi-modal interference")
+    print("• If visual-only full model ≈ 65%: Issue is architectural depth (too many layers)")
+    print("• If visual-only full model < 50%: Issue is fundamental architecture problem")
 
 if __name__ == "__main__":
     main()
