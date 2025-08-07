@@ -33,8 +33,10 @@ class TextFeatureExtractor:
         # Check dependencies
         self.check_dependencies()
         
-        # Load sentence transformer model once during initialization
-        self.logger.info("Loading SentenceTransformer model...")
+        # Load models once during initialization
+        self.logger.info("Loading models...")
+        
+        # Load sentence transformer model
         from sentence_transformers import SentenceTransformer
         import time
         
@@ -52,6 +54,36 @@ class TextFeatureExtractor:
                     time.sleep(wait_time)
                 else:
                     raise
+        
+        # Load Whisper models
+        self.whisperx_model = None
+        self.whisper_model = None
+        
+        try:
+            import whisperx
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.logger.info(f"Loading WhisperX model on {device}...")
+            self.whisperx_model = whisperx.load_model("base", device)
+            self.whisperx_device = device
+            self.logger.info("WhisperX model loaded successfully")
+        except ImportError:
+            self.logger.warning("WhisperX not available, will use Whisper fallback")
+        except Exception as e:
+            self.logger.warning(f"Failed to load WhisperX: {e}")
+        
+        try:
+            import whisper
+            self.logger.info("Loading Whisper model...")
+            self.whisper_model = whisper.load_model("base")
+            self.logger.info("Whisper model loaded successfully")
+        except ImportError:
+            self.logger.warning("Whisper not available")
+        except Exception as e:
+            self.logger.warning(f"Failed to load Whisper: {e}")
+        
+        if not self.whisperx_model and not self.whisper_model:
+            raise RuntimeError("Neither WhisperX nor Whisper models could be loaded!")
 
     def check_dependencies(self):
         """Check if required dependencies are available."""
@@ -156,13 +188,15 @@ class TextFeatureExtractor:
         Returns:
             List of transcription segments with timestamps
         """
+        if not self.whisperx_model:
+            raise RuntimeError("WhisperX model not available")
+            
         try:
             import whisperx
 
-            device = "cuda" if self.check_gpu() else "cpu"
-
-            # Load model
-            model = whisperx.load_model("base", device)
+            # Use pre-loaded model and device
+            model = self.whisperx_model
+            device = self.whisperx_device
 
             # Transcribe
             audio = whisperx.load_audio(audio_path)
@@ -190,10 +224,12 @@ class TextFeatureExtractor:
         Returns:
             List of transcription segments with timestamps
         """
+        if not self.whisper_model:
+            raise RuntimeError("Whisper model not available")
+            
         try:
-            import whisper
-
-            model = whisper.load_model("base")
+            # Use pre-loaded model
+            model = self.whisper_model
             result = model.transcribe(audio_path)
 
             return result["segments"]
