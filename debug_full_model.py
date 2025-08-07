@@ -24,7 +24,7 @@ class MinimalTransformer(nn.Module):
         self.pos_encoding = PositionalEncoding(d_model, max_len=2000)
         
         # Single self-attention layer
-        self.encoder = EncoderLayer(d_model, n_head=4, d_ff=512, dropout=0.1)
+        self.encoder = EncoderLayer(d_model, num_heads=4, d_ff=512, dropout=0.1)
         
         # Simple head
         self.head = nn.Sequential(
