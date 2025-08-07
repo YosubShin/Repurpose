@@ -1,14 +1,11 @@
-import os
 import json
 import numpy as np
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import argparse
-import subprocess
-import tempfile
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 import clip
 from tqdm import tqdm
 
@@ -20,7 +17,8 @@ except ImportError:
 
 
 class VisualFeatureExtractorCLIP:
-    def __init__(self, output_dir: str = "data/video_clip_features", log_level: str = "INFO"):
+    def __init__(self, output_dir: str = "data/video_clip_features", log_level: str = "INFO", inject_hints: bool = False):
+        self.inject_hints = inject_hints
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,6 +41,9 @@ class VisualFeatureExtractorCLIP:
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
         self.model.eval()
         self.logger.info("Loaded CLIP ViT-B/32 model")
+        if self.inject_hints:
+            self.logger.info(
+                "HINT INJECTION ENABLED: Red dots will be added to highlight frames")
 
     def load_progress(self) -> Dict[str, bool]:
         """Load extraction progress from file."""
@@ -56,66 +57,63 @@ class VisualFeatureExtractorCLIP:
         with open(self.progress_file, 'w') as f:
             json.dump(self.processed_videos, f, indent=2)
 
-    def extract_frames_ffmpeg(self, video_path: str, fps: float = 1.0, max_duration: Optional[float] = None) -> List[Tuple[float, Image.Image]]:
+    def add_red_dot_to_frame(self, frame: np.ndarray) -> np.ndarray:
         """
-        Extract frames from video using FFmpeg at specified FPS.
-        Fallback method if PyAV fails.
+        Add a red dot in the center of the frame as a visual hint.
 
         Args:
-            video_path: Path to video file
-            fps: Frames per second to extract
-            max_duration: Maximum duration in seconds to extract (if None, extract entire video)
+            frame: numpy array of shape (H, W, 3)
 
         Returns:
-            List of (timestamp, PIL Image) tuples
+            Modified frame with red dot
         """
-        frames = []
+        # Convert to PIL Image
+        img = Image.fromarray(frame)
+        draw = ImageDraw.Draw(img)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Extract frames using FFmpeg
-            frame_pattern = os.path.join(temp_dir, "frame_%04d.jpg")
+        # Get center coordinates
+        width, height = img.size
+        center_x, center_y = width // 2, height // 2
 
-            cmd = [
-                "ffmpeg", "-i", video_path,
-                "-vf", f"fps={fps}",
-                "-q:v", "2",
-                frame_pattern,
-                "-y"
-            ]
+        # Draw a large red circle in the center (radius = 10 pixels)
+        radius = 10
+        draw.ellipse(
+            [(center_x - radius, center_y - radius),
+             (center_x + radius, center_y + radius)],
+            fill='red',
+            outline='darkred',
+            width=2
+        )
 
-            # Add duration limit if specified
-            if max_duration is not None:
-                cmd = cmd[:2] + ["-t", str(max_duration)] + cmd[2:]
+        # Convert back to numpy array
+        return np.array(img)
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"FFmpeg failed: {result.stderr}")
+    def is_highlight_frame(self, timestamp: float, segments: List[List[float]]) -> bool:
+        """
+        Check if a given timestamp falls within any highlight segment.
 
-            # Load extracted frames
-            frame_files = sorted(
-                [f for f in os.listdir(temp_dir) if f.endswith('.jpg')])
+        Args:
+            timestamp: Current frame timestamp in seconds
+            segments: List of [start, end] pairs defining highlight segments
 
-            for i, frame_file in enumerate(frame_files):
-                timestamp = i / fps
+        Returns:
+            True if timestamp is within a highlight segment
+        """
+        for start, end in segments:
+            if start <= timestamp < end:
+                return True
+        return False
 
-                # Double-check duration limit
-                if max_duration is not None and timestamp >= max_duration:
-                    break
-
-                frame_path = os.path.join(temp_dir, frame_file)
-                frame = Image.open(frame_path)
-                frames.append((timestamp, frame))
-
-        return frames
-
-    def extract_frames_pyav(self, video_path: str, max_duration: Optional[float] = None) -> List[Tuple[float, np.ndarray]]:
+    def extract_frames_pyav(self, video_path: str, max_duration: Optional[float] = None,
+                            segments: Optional[List[List[float]]] = None) -> List[Tuple[float, np.ndarray]]:
         """
         Extract frames from video using PyAV with precise timestamp seeking.
-        Most accurate method for non-integer frame rates.
+        Optionally inject red dots for highlighted frames if inject_hints is enabled.
 
         Args:
             video_path: Path to video file
             max_duration: Maximum duration in seconds to extract
+            segments: Optional list of [start, end] pairs for highlight segments (used with inject_hints)
 
         Returns:
             List of (timestamp, frame) tuples
@@ -155,6 +153,13 @@ class VisualFeatureExtractorCLIP:
                     if abs(frame_time - timestamp) < 0.5:  # Within 0.5 seconds
                         # Convert to numpy array
                         frame_rgb = frame.to_rgb().to_ndarray()
+
+                        # Optionally add red dot for highlighted frames
+                        if self.inject_hints and segments and self.is_highlight_frame(timestamp, segments):
+                            frame_rgb = self.add_red_dot_to_frame(frame_rgb)
+                            self.logger.debug(
+                                f"Added red dot to frame at {timestamp}s")
+
                         frames.append((timestamp, frame_rgb))
                         break
 
@@ -200,7 +205,9 @@ class VisualFeatureExtractorCLIP:
 
         return np.array(features)
 
-    def extract_features_from_video(self, video_path: str, youtube_id: str, video_duration: Optional[float] = None) -> bool:
+    def extract_features_from_video(self, video_path: str, youtube_id: str,
+                                    video_duration: Optional[float] = None,
+                                    segments: Optional[List[List[float]]] = None) -> bool:
         """
         Extract visual features from a video file using CLIP.
         Note: video_duration parameter is ignored - features are extracted for the entire video.
@@ -209,6 +216,7 @@ class VisualFeatureExtractorCLIP:
             video_path: Path to input video file
             youtube_id: YouTube video ID for naming output file
             video_duration: IGNORED - kept for compatibility only
+            segments: Optional list of [start, end] pairs for highlight segments (used with inject_hints)
 
         Returns:
             bool: True if successful, False otherwise
@@ -222,28 +230,25 @@ class VisualFeatureExtractorCLIP:
 
         try:
             self.logger.info(f"Extracting visual features for {youtube_id}...")
+            if self.inject_hints and segments:
+                self.logger.info(
+                    f"  Hint injection enabled: {len(segments)} highlight segments")
 
-            # Try PyAV first (most accurate), then FFmpeg as fallback
+            # Use PyAV only (no FFmpeg fallback)
             frames = None
 
-            if PYAV_AVAILABLE:
-                try:
-                    frames = self.extract_frames_pyav(
-                        video_path, max_duration=None)
-                    self.logger.debug(
-                        f"Extracted {len(frames)} frames using PyAV")
-                except Exception as e:
-                    self.logger.warning(f"PyAV extraction failed: {e}")
+            if not PYAV_AVAILABLE:
+                self.logger.error(
+                    "PyAV is required but not installed. Install with: pip install av")
+                return False
 
-            if frames is None:
-                try:
-                    frames = self.extract_frames_ffmpeg(
-                        video_path, max_duration=None)
-                    self.logger.debug(
-                        f"Extracted {len(frames)} frames using FFmpeg")
-                except Exception as e:
-                    self.logger.warning(
-                        f"FFmpeg extraction failed: {e}")
+            try:
+                frames = self.extract_frames_pyav(
+                    video_path, max_duration=None, segments=segments)
+                self.logger.debug(
+                    f"Extracted {len(frames)} frames using PyAV")
+            except Exception as e:
+                self.logger.error(f"PyAV extraction failed: {e}")
 
             if not frames:
                 self.logger.error(f"No frames extracted for {youtube_id}")
@@ -251,7 +256,7 @@ class VisualFeatureExtractorCLIP:
 
             # Extract CLIP features
             features = self.extract_clip_features(frames)
-            
+
             # Note: No longer truncating or padding based on dataset duration
             # The dataset loader will handle slicing based on timeRange
 
@@ -320,6 +325,7 @@ class VisualFeatureExtractorCLIP:
     def process_from_dataset(self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None) -> Dict[str, Any]:
         """
         Process videos based on dataset JSON file.
+        Uses two-pass approach to aggregate segments for videos split into multiple pieces.
 
         Args:
             dataset_path: Path to dataset JSON file
@@ -332,19 +338,47 @@ class VisualFeatureExtractorCLIP:
         with open(dataset_path, 'r') as f:
             dataset = json.load(f)
 
+        # First pass: Aggregate segments by youtube_id
+        # Videos longer than 1800 seconds are split into multiple entries
+        video_segments = {}  # youtube_id -> list of all segments for that video
+
+        self.logger.info("First pass: Aggregating segments by video ID...")
+        for video_info in dataset:
+            youtube_id = video_info['youtube_id']
+
+            # Use 'segments' (absolute timestamps) not 'segmentsOffset' (relative to timeRange)
+            segments = video_info.get('segments', [])
+
+            if youtube_id not in video_segments:
+                video_segments[youtube_id] = []
+
+            # Add all segments for this video
+            video_segments[youtube_id].extend(segments)
+
+        # Sort segments for each video (no merging needed as splits don't overlap)
+        for youtube_id in video_segments:
+            segments = video_segments[youtube_id]
+            if segments:
+                # Sort by start time for consistency
+                segments.sort(key=lambda x: x[0])
+                video_segments[youtube_id] = segments
+                self.logger.info(
+                    f"  {youtube_id}: {len(segments)} highlight segments")
+
+        # Apply max_videos limit if specified
         if max_videos:
-            dataset = dataset[:max_videos]
+            video_ids = list(video_segments.keys())[:max_videos]
+            video_segments = {k: video_segments[k] for k in video_ids}
 
         video_dir = Path(video_dir)
-        total_videos = len(dataset)
+        total_videos = len(video_segments)
         successful_extractions = 0
         failed_extractions = 0
 
         self.logger.info(
-            f"Starting feature extraction for {total_videos} videos from dataset...")
+            f"Second pass: Extracting features for {total_videos} unique videos...")
 
-        for i, video_info in enumerate(dataset, 1):
-            youtube_id = video_info['youtube_id']
+        for i, (youtube_id, segments) in enumerate(video_segments.items(), 1):
             video_file = video_dir / f"{youtube_id}.mp4"
 
             if not video_file.exists():
@@ -355,9 +389,22 @@ class VisualFeatureExtractorCLIP:
             self.logger.info(
                 f"Processing video {i}/{total_videos}: {youtube_id}")
 
-            # Extract features for the entire video (ignoring dataset timeRange)
-            # The dataset loader will handle slicing based on timeRange at runtime
-            if self.extract_features_from_video(str(video_file), youtube_id):
+            # Get segments for hint injection if enabled
+            segments_for_hints = None
+            if self.inject_hints and segments:
+                segments_for_hints = segments
+                # Calculate total highlight duration
+                total_highlight_duration = sum(
+                    end - start for start, end in segments)
+                self.logger.info(f"  Will inject hints for {len(segments_for_hints)} segments, "
+                                 f"total highlight duration: {total_highlight_duration:.1f}s")
+                # Log first few segments for debugging
+                if segments_for_hints:
+                    preview = segments_for_hints[:3]
+                    self.logger.debug(f"  First segments: {preview}")
+
+            # Extract features for the entire video
+            if self.extract_features_from_video(str(video_file), youtube_id, segments=segments_for_hints):
                 successful_extractions += 1
             else:
                 failed_extractions += 1
@@ -385,12 +432,15 @@ def main():
                         help="Output directory for features")
     parser.add_argument("--max-videos", type=int,
                         help="Maximum number of videos to process")
+    parser.add_argument("--inject-hints", action="store_true",
+                        help="Inject red dots into highlight frames (for debugging)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
     args = parser.parse_args()
 
-    extractor = VisualFeatureExtractorCLIP(args.output_dir, args.log_level)
+    extractor = VisualFeatureExtractorCLIP(
+        args.output_dir, args.log_level, inject_hints=args.inject_hints)
 
     try:
         if args.dataset:
