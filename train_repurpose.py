@@ -118,6 +118,7 @@ class RepurposeModel(pl.LightningModule):
         n_cross_attn_layers: int = 3,  # Cross-attention layers for A-C and V-C
         n_fusion_layers: int = 3,  # Audio-Visual fusion layers
         lr: float = 1e-4,
+        weight_decay: float = 1e-4,  # Weight decay for optimizer
         warmup_epochs: int = 1,
         lambda1: float = 0.1,
         lambda2: float = 0.3,
@@ -662,7 +663,11 @@ class RepurposeModel(pl.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(
+            self.parameters(), 
+            lr=self.hparams.lr, 
+            weight_decay=self.hparams.weight_decay
+        )
 
         # We need to create a custom scheduler that combines warmup and cosine decay
         # The actual warmup_steps will be set in on_train_start when we know the dataloader size
@@ -1320,6 +1325,7 @@ def main(args):
         n_cross_attn_layers=args.n_cross_attn_layers,
         n_fusion_layers=args.n_fusion_layers,
         lr=args.learning_rate,
+        weight_decay=args.weight_decay,
         warmup_epochs=args.warmup_epochs,
         lambda1=args.lambda1,
         lambda2=args.lambda2,
@@ -1520,6 +1526,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument("--learning_rate", type=float,
                         default=1e-3, help="Learning rate")
+    parser.add_argument("--weight_decay", type=float,
+                        default=1e-4, help="Weight decay for optimizer regularization")
     parser.add_argument("--warmup_epochs", type=int,
                         default=1, help="Number of warmup epochs for learning rate schedule")
     parser.add_argument("--gradient_clip", type=float,

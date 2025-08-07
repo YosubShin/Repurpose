@@ -58,9 +58,11 @@ python train_repurpose.py \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
     --val_annotation "$VAL_ANNOTATION" \
-    --batch_size 12 \
-    --epochs 20 \
+    --batch_size 6 \
+    --epochs 30 \
     --learning_rate 1e-4 \
+    --weight_decay 1e-4 \
+    --warmup_epochs 5 \
     --d_model 512 \
     --n_head 8 \
     --n_self_attn_layers 3 \
