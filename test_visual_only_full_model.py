@@ -240,6 +240,10 @@ def train_visual_only_full_model(args):
     
     print(f"Visual-only full model has {sum(p.numel() for p in model.parameters())} parameters")
     
+    # Adaptive regression weight tracking
+    current_regression_weight = args.regression_weight
+    classification_good_epochs = 0
+    
     # Training loop
     for epoch in range(args.epochs):
         model.train()
@@ -280,10 +284,10 @@ def train_visual_only_full_model(args):
             
             # Debug logging for first batch  
             if batch_idx == 0 and epoch < 3:  # Only show first few epochs
-                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {args.regression_weight * reg_loss:.4f}), positives={num_positives}")
+                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {current_regression_weight * reg_loss:.4f}), positives={num_positives}")
             
-            # Combined loss
-            loss = cls_loss + args.regression_weight * reg_loss
+            # Combined loss with current (possibly adaptive) regression weight
+            loss = cls_loss + current_regression_weight * reg_loss
             
             # Backward pass
             optimizer.zero_grad()
@@ -306,7 +310,7 @@ def train_visual_only_full_model(args):
         avg_loss = total_loss / min(len(train_loader), 20)
         
         print(f"\nEpoch {epoch+1}:")
-        loss_desc = f"(classification + {args.regression_weight}*regression)"
+        loss_desc = f"(classification + {current_regression_weight}*regression)"
         print(f"  Train Loss: {avg_loss:.4f} {loss_desc}")
         print(f"  Train Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.1f}%)")
         
@@ -350,7 +354,7 @@ def train_visual_only_full_model(args):
                     else:
                         reg_loss = torch.tensor(0.0, device=device)
                     
-                    loss = cls_loss + args.regression_weight * reg_loss
+                    loss = cls_loss + current_regression_weight * reg_loss
                     val_loss += loss.item()
                     
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
@@ -398,7 +402,7 @@ def train_visual_only_full_model(args):
                 mean_left_error = mean_right_error = mean_total_error = float('inf')
                 accurate_left = accurate_right = accurate_both = 0.0
             
-            val_loss_desc = f"(classification + {args.regression_weight}*regression)"
+            val_loss_desc = f"(classification + {current_regression_weight}*regression)"
             print(f"  Val Loss: {avg_val_loss:.4f} {val_loss_desc}")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
             print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
@@ -406,6 +410,22 @@ def train_visual_only_full_model(args):
             print(f"  Val F1: {val_f1:.4f} ({val_f1*100:.1f}%)")
             print(f"  Val Offset Error: L={mean_left_error:.2f}, R={mean_right_error:.2f}, Avg={mean_total_error:.2f}")
             print(f"  Val Offset Accuracy (≤{tolerance} steps): L={accurate_left:.1f}%, R={accurate_right:.1f}%, Both={accurate_both:.1f}%")
+            
+            # Adaptive regression weight adjustment
+            if args.adaptive_regression:
+                classification_is_good = val_accuracy > 0.85 and val_recall > 0.75
+                offset_is_poor = mean_total_error > 15.0 or accurate_both < 5.0
+                
+                if classification_is_good and offset_is_poor:
+                    classification_good_epochs += 1
+                    if classification_good_epochs >= 2:  # Classification good for 2+ epochs
+                        old_weight = current_regression_weight
+                        current_regression_weight = min(current_regression_weight * 2.0, args.max_regression_weight)
+                        if current_regression_weight != old_weight:
+                            print(f"  📈 Increasing regression weight: {old_weight:.4f} → {current_regression_weight:.4f}")
+                            classification_good_epochs = 0  # Reset counter after adjustment
+                else:
+                    classification_good_epochs = 0  # Reset if classification drops or offsets improve
             
             # Enhanced stopping criteria: good classification AND reasonable offset prediction
             classification_good = val_accuracy > 0.8 and val_recall > 0.7
@@ -464,15 +484,24 @@ def main():
     parser.add_argument("--n-head", type=int, default=8)
     parser.add_argument("--n-self-attn-layers", type=int, default=3)
     parser.add_argument("--regression-weight", type=float, default=0.01,
-                      help="Weight for regression loss (default: 0.01)")
+                      help="Initial weight for regression loss (default: 0.01)")
+    parser.add_argument("--adaptive-regression", action="store_true",
+                      help="Adaptively increase regression weight once classification is good")
+    parser.add_argument("--max-regression-weight", type=float, default=0.1,
+                      help="Maximum regression weight for adaptive strategy (default: 0.1)")
     
     args = parser.parse_args()
     
     print("🔍 TESTING VISUAL-ONLY FULL MODEL")
     print("=" * 50)
-    print(f"Mode: Classification + Regression (weight={args.regression_weight})")
+    print(f"Mode: Classification + Regression (initial weight={args.regression_weight})")
+    if args.adaptive_regression:
+        print(f"Strategy: Adaptive regression weighting (max={args.max_regression_weight})")
+        print("  - Start with small weight to learn classification first")
+        print("  - Increase regression weight when classification is good but offsets are poor")
+    else:
+        print("Strategy: Fixed small regression weight to avoid interference with classification learning")
     print(f"Configuration: {args.n_self_attn_layers} layers, d_model={args.d_model}, {args.n_head} heads")
-    print("Strategy: Small regression weight to avoid interference with classification learning")
     print()
     
     train_visual_only_full_model(args)
@@ -486,19 +515,27 @@ def main():
     print("• Visual-only Full Model (3 layers, WITH hints): 92.2% accuracy, 77.5% recall ✅")
     print("• Visual-only Full Model + Regression: [Your result above]")
     print()
-    print("Expected results with small regression weight (0.01):")
+    print("Expected results:")
     print("• Classification: ~90% accuracy, >70% recall")  
     print("• Regression: <10 avg error, >20% accuracy within ±2 steps")
     print("• Early stopping requires BOTH good classification AND reasonable offsets")
-    print("• Regression loss contributes minimally (~0.01 * 0.47 = 0.005 vs 0.08 classification)")
+    print("• With --adaptive-regression: weight increases from 0.01 to 0.1 when classification is good")
+    print("• Fixed weight strategy may struggle with offset learning after classification converges")
     print("• Visualizations saved to 'visual_only_visualizations/' showing:")
     print("  - Classification predictions vs ground truth")
     print("  - Offset predictions (left and right)")
     print("  - Segment visualization from predicted offsets")
     print("  - Prediction confidence over time")
     print()
-    print("If accuracy is still low, try:")
-    print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.001  # Even smaller")
+    print("Usage examples:")
+    print("# Fixed small weight (original approach)")
+    print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.01")
+    print()
+    print("# Adaptive weighting (recommended for better offset learning)")
+    print("python test_visual_only_full_model.py --train-json ... --adaptive-regression")
+    print()
+    print("# Adaptive with custom max weight") 
+    print("python test_visual_only_full_model.py --train-json ... --adaptive-regression --max-regression-weight 0.2")
 
 if __name__ == "__main__":
     main()
