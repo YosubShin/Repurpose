@@ -139,9 +139,10 @@ class SequenceVideoDataset(Dataset):
 
     def _get_feature_dim(self, modality: str) -> int:
         """Get feature dimension for a modality."""
-        for video_id in self.video_list:
-            if self.video_feature_status[video_id][modality]:
-                features = self._load_video(video_id)
+        # Try to get dimension from first available feature
+        for idx, status in enumerate(self.feature_status):
+            if status.get(modality, False):
+                features = self._load_video(idx)
                 if features[modality] is not None:
                     return features[modality].shape[-1]
 
