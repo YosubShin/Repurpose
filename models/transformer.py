@@ -64,7 +64,9 @@ class MultiHeadAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
 
         if mask is not None:
-            mask = mask.unsqueeze(1)  # Add a dimension for heads
+            # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
+            # This allows broadcasting to [batch_size, num_heads, seq_len, seq_len]
+            mask = mask.unsqueeze(1).unsqueeze(2)
             # Use dtype-appropriate large negative value for masking
             mask_value = torch.finfo(scores.dtype).min
             scores = scores.masked_fill(mask == 0, mask_value)
