@@ -14,7 +14,7 @@ from train_repurpose import RepurposeModel
 import torch
 import torch.nn.functional as F
 from compatible_dataset import create_sequence_dataloader
-from models.losses import sigmoid_focal_loss
+from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
 import argparse
 from tqdm import tqdm
 
@@ -122,14 +122,24 @@ def train_visual_only_full_model(args):
             visual = batch['features']['visual'].to(device)
             caption = batch['features']['caption'].to(device)
             labels = batch['labels'].to(device)
+            offsets = batch['offsets'].to(device)  # Ground truth regression offsets
             seq_mask = batch['sequence_masks'].to(device)
             
             # Forward pass - model will ignore audio/caption
             logit_a, logit_v, logit_f, offset_f = model(audio, visual, caption, mask=seq_mask)
             
-            # Simple loss - just use the fused head (which is visual-only)
-            loss = sigmoid_focal_loss(logit_f, labels, alpha=0.5, gamma=2.0, reduction='none')
-            loss = (loss * seq_mask).sum() / seq_mask.sum()
+            # Classification loss
+            cls_loss = sigmoid_focal_loss(logit_f, labels, alpha=0.5, gamma=2.0, reduction='none')
+            cls_loss = (cls_loss * seq_mask).sum() / seq_mask.sum()
+            
+            # Regression loss - only on positive positions
+            reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
+            cls_mask = (labels > 0.5).float()
+            combined_mask = seq_mask * cls_mask
+            reg_loss = (reg_loss_all * combined_mask).sum() / (combined_mask.sum() + 1e-8)  # Avoid division by zero
+            
+            # Combined loss (similar to full model)
+            loss = cls_loss + 0.7 * reg_loss  # lambda4=0.7 for regression
             
             # Backward pass
             optimizer.zero_grad()
@@ -152,7 +162,7 @@ def train_visual_only_full_model(args):
         avg_loss = total_loss / min(len(train_loader), 20)
         
         print(f"\nEpoch {epoch+1}:")
-        print(f"  Train Loss: {avg_loss:.4f}")
+        print(f"  Train Loss: {avg_loss:.4f} (includes classification + regression)")
         print(f"  Train Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.1f}%)")
         
         # Validation
@@ -174,12 +184,21 @@ def train_visual_only_full_model(args):
                     visual = batch['features']['visual'].to(device)
                     caption = batch['features']['caption'].to(device)
                     labels = batch['labels'].to(device)
+                    offsets = batch['offsets'].to(device)
                     seq_mask = batch['sequence_masks'].to(device)
                     
                     logit_a, logit_v, logit_f, offset_f = model(audio, visual, caption, mask=seq_mask)
                     
-                    loss = sigmoid_focal_loss(logit_f, labels, alpha=0.5, gamma=2.0, reduction='none')
-                    loss = (loss * seq_mask).sum() / seq_mask.sum()
+                    # Classification + regression loss for validation too
+                    cls_loss = sigmoid_focal_loss(logit_f, labels, alpha=0.5, gamma=2.0, reduction='none')
+                    cls_loss = (cls_loss * seq_mask).sum() / seq_mask.sum()
+                    
+                    reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+                    cls_mask = (labels > 0.5).float()
+                    combined_mask = seq_mask * cls_mask
+                    reg_loss = (reg_loss_all * combined_mask).sum() / (combined_mask.sum() + 1e-8)
+                    
+                    loss = cls_loss + 0.7 * reg_loss
                     val_loss += loss.item()
                     
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
@@ -201,7 +220,7 @@ def train_visual_only_full_model(args):
             val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall) if (val_precision + val_recall) > 0 else 0
             avg_val_loss = val_loss / min(len(val_loader), 10)
             
-            print(f"  Val Loss: {avg_val_loss:.4f}")
+            print(f"  Val Loss: {avg_val_loss:.4f} (includes classification + regression)")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
             print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
             print(f"  Val Recall: {val_recall:.4f} ({val_recall*100:.1f}%)")
@@ -228,14 +247,16 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--n-head", type=int, default=8)
-    parser.add_argument("--n-self-attn-layers", type=int, default=3)
+    parser.add_argument("--n-self-attn-layers", type=int, default=3)  # Back to 3 since hints work well
     
     args = parser.parse_args()
     
-    print("🔍 TESTING VISUAL-ONLY FULL MODEL")
-    print("=" * 50)
-    print("This tests if the full model architecture works when simplified to visual-only...")
-    print("If this works but the full multi-modal doesn't, the issue is multi-modal interference.")
+    print("🔍 TESTING VISUAL-ONLY FULL MODEL WITH REGRESSION LOSS")
+    print("=" * 60)
+    print("Now testing with both classification AND regression losses,")
+    print("matching the full RepurposeModel training setup...")
+    print(f"Configuration: {args.n_self_attn_layers} self-attention layers, d_model={args.d_model}, {args.n_head} heads")
+    print("Loss: Classification (focal) + 0.7 * Regression (CTR-DIOU)")
     print()
     
     train_visual_only_full_model(args)
@@ -243,15 +264,16 @@ def main():
     print("\n" + "=" * 60)
     print("COMPARISON SUMMARY")
     print("=" * 60)
-    print("Expected results based on previous tests:")
-    print("• Minimal Transformer (1 layer): 86.5% val accuracy ✅")
-    print("• Visual-only Full Model (3 layers): [Your result above]")
-    print("• Full Multi-modal Model: <50% accuracy ❌")
+    print("RESULTS COMPARISON:")
+    print("• Minimal Transformer (1 layer, d_model=128): 86.5% val accuracy, 65.4% recall ✅")
+    print("• Visual-only Full Model (3 layers, NO hints): 65.8% accuracy, 0.7% recall ❌") 
+    print("• Visual-only Full Model (3 layers, WITH hints): 92.2% accuracy, 77.5% recall ✅")
+    print("• Visual-only Full Model + Regression: [Your result above]")
     print()
-    print("Analysis:")
-    print("• If visual-only full model ≈ 86%: Issue is multi-modal interference")
-    print("• If visual-only full model ≈ 65%: Issue is architectural depth (too many layers)")
-    print("• If visual-only full model < 50%: Issue is fundamental architecture problem")
+    print("Expected with regression loss:")
+    print("• Accuracy should remain high (>85%)")
+    print("• Regression loss helps with precise segment boundary prediction")
+    print("• This validates the full model is ready for multi-modal training")
 
 if __name__ == "__main__":
     main()
