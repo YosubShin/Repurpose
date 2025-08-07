@@ -45,6 +45,8 @@ class TextFeatureExtractor:
         for i in range(max_retries):
             try:
                 self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder='./models')
+                # Disable progress bars for all encode operations
+                self.sentence_model.show_progress_bar = False
                 self.logger.info("SentenceTransformer model loaded successfully")
                 break
             except Exception as e:
@@ -410,7 +412,8 @@ class TextFeatureExtractor:
 
                         if combined_text:
                             # Encode text to get 384-dimensional embedding
-                            embedding = model.encode([combined_text])[0]
+                            # show_progress_bar=False to avoid spamming stderr
+                            embedding = model.encode([combined_text], show_progress_bar=False)[0]
                             features.append(embedding)
                         else:
                             # Empty text - use zero vector
