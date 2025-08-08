@@ -14,7 +14,7 @@ from train_repurpose import RepurposeModel
 import torch
 import torch.nn.functional as F
 from compatible_dataset import create_sequence_dataloader
-from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d
+from models.losses import sigmoid_focal_loss, ctr_diou_loss_1d, segment_consistency_loss
 import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -358,17 +358,26 @@ def train_visual_only_full_model(args):
             else:
                 reg_loss = torch.tensor(0.0, device=device)
             
+            # Consistency loss - enforce consistent boundaries within segments
+            if args.use_consistency_loss:
+                consistency_loss = segment_consistency_loss(offset_f, labels, seq_mask, reduction='mean')
+            else:
+                consistency_loss = torch.tensor(0.0, device=device)
+            
             # Debug logging for first batch  
             if batch_idx == 0 and epoch < 3:  # Only show first few epochs
-                print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {current_regression_weight * reg_loss:.4f}), positives={num_positives}")
+                if args.use_consistency_loss:
+                    print(f"  Debug - Batch {batch_idx}: cls={cls_loss:.4f}, reg={reg_loss:.4f} (w={current_regression_weight * reg_loss:.4f}), cons={consistency_loss:.4f}, pos={num_positives}")
+                else:
+                    print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {current_regression_weight * reg_loss:.4f}), positives={num_positives}")
             
             # Combined loss - different for each phase
             if args.two_phase_training and current_phase == 2:
-                # Phase 2: Only regression loss (classification is frozen)
-                loss = reg_loss
+                # Phase 2: Only regression loss + consistency (classification is frozen)
+                loss = reg_loss + args.consistency_weight * consistency_loss
             else:
                 # Phase 1 or single-phase: Combined loss
-                loss = cls_loss + current_regression_weight * reg_loss
+                loss = cls_loss + current_regression_weight * reg_loss + args.consistency_weight * consistency_loss
             
             # Backward pass
             optimizer.zero_grad()
@@ -442,13 +451,19 @@ def train_visual_only_full_model(args):
                     else:
                         reg_loss = torch.tensor(0.0, device=device)
                     
+                    # Consistency loss for validation
+                    if args.use_consistency_loss:
+                        consistency_loss = segment_consistency_loss(offset_f, labels, seq_mask, reduction='mean')
+                    else:
+                        consistency_loss = torch.tensor(0.0, device=device)
+                    
                     # Validation loss - different for each phase
                     if args.two_phase_training and current_phase == 2:
-                        # Phase 2: Only regression loss
-                        loss = reg_loss
+                        # Phase 2: Only regression loss + consistency
+                        loss = reg_loss + args.consistency_weight * consistency_loss
                     else:
                         # Phase 1 or single-phase: Combined loss
-                        loss = cls_loss + current_regression_weight * reg_loss
+                        loss = cls_loss + current_regression_weight * reg_loss + args.consistency_weight * consistency_loss
                     
                     val_loss += loss.item()
                     
@@ -616,6 +631,10 @@ def main():
                       help="Maximum regression weight for adaptive strategy (default: 0.1)")
     parser.add_argument("--use-pattern-loss", action="store_true",
                       help="Use pattern-aware offset loss instead of DIOU loss")
+    parser.add_argument("--use-consistency-loss", action="store_true",
+                      help="Add segment consistency loss to enforce consistent boundaries within segments")
+    parser.add_argument("--consistency-weight", type=float, default=0.5,
+                      help="Weight for consistency loss when enabled (default: 0.5)")
     parser.add_argument("--two-phase-training", action="store_true",
                       help="Phase 1: train classification, Phase 2: freeze backbone and train only regression")
     parser.add_argument("--phase1-epochs", type=int, default=10,
@@ -632,6 +651,10 @@ def main():
     if args.use_pattern_loss:
         print("  - Custom loss that understands highlight offset patterns")
         print("  - Encourages left↑ right↓ pattern within highlights")
+    if args.use_consistency_loss:
+        print(f"Consistency Loss: Enabled (weight={args.consistency_weight})")
+        print("  - Enforces adjacent positives to predict same segment boundaries")
+        print("  - Prevents independent optimization of each timestep")
     
     if args.two_phase_training:
         print(f"Strategy: Two-phase training (recommended!)")
@@ -671,16 +694,19 @@ def main():
     print("  - Prediction confidence over time")
     print()
     print("Usage examples:")
-    print("# ⭐ RECOMMENDED: Two-phase training with pattern-aware loss")
-    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-pattern-loss")
+    print("# ⭐ RECOMMENDED: Two-phase training with consistency loss")
+    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-consistency-loss")
     print()
-    print("# Two-phase with custom phase 1 duration and phase 2 learning rate")
-    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-pattern-loss --phase1-epochs 8 --phase2-lr 1e-2")
+    print("# Two-phase + pattern-aware + consistency (all improvements)")
+    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-pattern-loss --use-consistency-loss")
     print()
-    print("# Alternative: Pattern-aware loss with adaptive weighting (single-phase)")
-    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss --adaptive-regression")
+    print("# Consistency loss with custom weight")
+    print("python test_visual_only_full_model.py --train-json ... --use-consistency-loss --consistency-weight 1.0")
     print()
-    print("# Original: DIOU loss with fixed weight (may struggle with offset learning)")
+    print("# Alternative: Single-phase with consistency + adaptive weighting")
+    print("python test_visual_only_full_model.py --train-json ... --use-consistency-loss --adaptive-regression")
+    print()
+    print("# Original: DIOU loss without consistency (likely to fail)")
     print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.01")
 
 if __name__ == "__main__":
