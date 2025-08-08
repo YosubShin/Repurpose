@@ -232,6 +232,20 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 3
     
     return saved_paths
 
+def freeze_except_regression_head(model):
+    """Freeze all parameters except the regression head (reg_head_f)."""
+    for name, param in model.named_parameters():
+        if 'reg_head_f' in name:
+            param.requires_grad = True
+            print(f"  ✓ Keeping trainable: {name}")
+        else:
+            param.requires_grad = False
+
+def unfreeze_all_parameters(model):
+    """Unfreeze all model parameters."""
+    for param in model.parameters():
+        param.requires_grad = True
+
 def train_visual_only_full_model(args):
     """Train full model architecture but with only visual features"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,7 +301,18 @@ def train_visual_only_full_model(args):
     
     print(f"Visual-only full model has {sum(p.numel() for p in model.parameters())} parameters")
     
-    # Adaptive regression weight tracking
+    # Phase tracking for two-phase training
+    if args.two_phase_training:
+        current_phase = 1
+        phase_switched = False
+        print("🎯 Two-phase training enabled:")
+        print(f"  Phase 1: Full model training (classification focus, up to {args.phase1_epochs} epochs)")
+        print(f"  Phase 2: Freeze backbone, train only regression head (LR={args.phase2_lr})")
+    else:
+        current_phase = 0
+        phase_switched = False
+    
+    # Adaptive regression weight tracking (for single-phase mode)
     current_regression_weight = args.regression_weight
     classification_good_epochs = 0
     
@@ -337,8 +362,13 @@ def train_visual_only_full_model(args):
             if batch_idx == 0 and epoch < 3:  # Only show first few epochs
                 print(f"  Debug - Batch {batch_idx}: cls_loss={cls_loss:.4f}, reg_loss={reg_loss:.4f} (weighted: {current_regression_weight * reg_loss:.4f}), positives={num_positives}")
             
-            # Combined loss with current (possibly adaptive) regression weight
-            loss = cls_loss + current_regression_weight * reg_loss
+            # Combined loss - different for each phase
+            if args.two_phase_training and current_phase == 2:
+                # Phase 2: Only regression loss (classification is frozen)
+                loss = reg_loss
+            else:
+                # Phase 1 or single-phase: Combined loss
+                loss = cls_loss + current_regression_weight * reg_loss
             
             # Backward pass
             optimizer.zero_grad()
@@ -361,7 +391,10 @@ def train_visual_only_full_model(args):
         avg_loss = total_loss / min(len(train_loader), 20)
         
         print(f"\nEpoch {epoch+1}:")
-        loss_desc = f"(classification + {current_regression_weight}*regression)"
+        if args.two_phase_training and current_phase == 2:
+            loss_desc = "(regression only - Phase 2)"
+        else:
+            loss_desc = f"(classification + {current_regression_weight}*regression)"
         print(f"  Train Loss: {avg_loss:.4f} {loss_desc}")
         print(f"  Train Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.1f}%)")
         
@@ -409,7 +442,14 @@ def train_visual_only_full_model(args):
                     else:
                         reg_loss = torch.tensor(0.0, device=device)
                     
-                    loss = cls_loss + current_regression_weight * reg_loss
+                    # Validation loss - different for each phase
+                    if args.two_phase_training and current_phase == 2:
+                        # Phase 2: Only regression loss
+                        loss = reg_loss
+                    else:
+                        # Phase 1 or single-phase: Combined loss
+                        loss = cls_loss + current_regression_weight * reg_loss
+                    
                     val_loss += loss.item()
                     
                     preds = (torch.sigmoid(logit_f) > 0.5).float()
@@ -457,7 +497,10 @@ def train_visual_only_full_model(args):
                 mean_left_error = mean_right_error = mean_total_error = float('inf')
                 accurate_left = accurate_right = accurate_both = 0.0
             
-            val_loss_desc = f"(classification + {current_regression_weight}*regression)"
+            if args.two_phase_training and current_phase == 2:
+                val_loss_desc = "(regression only - Phase 2)"
+            else:
+                val_loss_desc = f"(classification + {current_regression_weight}*regression)"
             print(f"  Val Loss: {avg_val_loss:.4f} {val_loss_desc}")
             print(f"  Val Accuracy: {val_accuracy:.4f} ({val_accuracy*100:.1f}%)")
             print(f"  Val Precision: {val_precision:.4f} ({val_precision*100:.1f}%)")
@@ -466,8 +509,35 @@ def train_visual_only_full_model(args):
             print(f"  Val Offset Error: L={mean_left_error:.2f}, R={mean_right_error:.2f}, Avg={mean_total_error:.2f}")
             print(f"  Val Offset Accuracy (≤{tolerance} steps): L={accurate_left:.1f}%, R={accurate_right:.1f}%, Both={accurate_both:.1f}%")
             
-            # Adaptive regression weight adjustment
-            if args.adaptive_regression:
+            # Two-phase training: check for phase transition
+            if args.two_phase_training and current_phase == 1 and not phase_switched:
+                classification_excellent = val_accuracy > 0.90 and val_recall > 0.80
+                reached_max_phase1 = epoch + 1 >= args.phase1_epochs
+                
+                if classification_excellent or reached_max_phase1:
+                    print(f"\n🔄 SWITCHING TO PHASE 2 after epoch {epoch + 1}")
+                    if classification_excellent:
+                        print(f"   ✅ Classification excellent: {val_accuracy*100:.1f}% accuracy, {val_recall*100:.1f}% recall")
+                    else:
+                        print(f"   ⏰ Reached max phase 1 epochs ({args.phase1_epochs})")
+                    
+                    # Freeze everything except regression head
+                    print("   🔒 Freezing backbone and classification heads...")
+                    freeze_except_regression_head(model)
+                    
+                    # Create new optimizer for regression head only
+                    regression_params = [p for p in model.parameters() if p.requires_grad]
+                    optimizer = torch.optim.Adam(regression_params, lr=args.phase2_lr, weight_decay=args.weight_decay)
+                    print(f"   📈 New optimizer: {len(regression_params)} regression parameters, LR={args.phase2_lr}")
+                    
+                    # Update phase tracking
+                    current_phase = 2
+                    phase_switched = True
+                    current_regression_weight = 1.0  # Use full regression weight in phase 2
+                    print(f"   ⚖️ Phase 2: regression weight = {current_regression_weight}")
+            
+            # Adaptive regression weight adjustment (only for single-phase mode)
+            if args.adaptive_regression and not args.two_phase_training:
                 classification_is_good = val_accuracy > 0.85 and val_recall > 0.75
                 offset_is_poor = mean_total_error > 15.0 or accurate_both < 5.0
                 
@@ -546,6 +616,12 @@ def main():
                       help="Maximum regression weight for adaptive strategy (default: 0.1)")
     parser.add_argument("--use-pattern-loss", action="store_true",
                       help="Use pattern-aware offset loss instead of DIOU loss")
+    parser.add_argument("--two-phase-training", action="store_true",
+                      help="Phase 1: train classification, Phase 2: freeze backbone and train only regression")
+    parser.add_argument("--phase1-epochs", type=int, default=10,
+                      help="Max epochs for phase 1 (classification) before switching to phase 2")
+    parser.add_argument("--phase2-lr", type=float, default=5e-3,
+                      help="Learning rate for phase 2 (regression-only) training")
     
     args = parser.parse_args()
     
@@ -557,7 +633,12 @@ def main():
         print("  - Custom loss that understands highlight offset patterns")
         print("  - Encourages left↑ right↓ pattern within highlights")
     
-    if args.adaptive_regression:
+    if args.two_phase_training:
+        print(f"Strategy: Two-phase training (recommended!)")
+        print(f"  - Phase 1: Train entire model for classification (up to {args.phase1_epochs} epochs)")
+        print(f"  - Phase 2: Freeze backbone, train only regression head (LR={args.phase2_lr})")
+        print("  - Eliminates gradient competition between classification and regression")
+    elif args.adaptive_regression:
         print(f"Strategy: Adaptive regression weighting (max={args.max_regression_weight})")
         print("  - Start with small weight to learn classification first")
         print("  - Increase regression weight when classification is good but offsets are poor")
@@ -581,8 +662,8 @@ def main():
     print("• Classification: ~90% accuracy, >70% recall")  
     print("• Regression: <10 avg error, >20% accuracy within ±2 steps")
     print("• Early stopping requires BOTH good classification AND reasonable offsets")
-    print("• With --adaptive-regression: weight increases from 0.01 to 0.1 when classification is good")
-    print("• Fixed weight strategy may struggle with offset learning after classification converges")
+    print("• Two-phase training: Phase 1 learns classification, Phase 2 focuses on regression")
+    print("• Single-phase strategies may struggle with gradient competition")
     print("• Visualizations saved to 'visual_only_visualizations/' showing:")
     print("  - Classification predictions vs ground truth")
     print("  - Offset predictions (left and right)")
@@ -590,17 +671,17 @@ def main():
     print("  - Prediction confidence over time")
     print()
     print("Usage examples:")
-    print("# Original DIOU loss with fixed weight")
-    print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.01")
+    print("# ⭐ RECOMMENDED: Two-phase training with pattern-aware loss")
+    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-pattern-loss")
     print()
-    print("# NEW: Pattern-aware loss (recommended for highlight offset patterns)")
-    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss")
+    print("# Two-phase with custom phase 1 duration and phase 2 learning rate")
+    print("python test_visual_only_full_model.py --train-json ... --two-phase-training --use-pattern-loss --phase1-epochs 8 --phase2-lr 1e-2")
     print()
-    print("# Pattern-aware + adaptive weighting (best for offset learning)")
+    print("# Alternative: Pattern-aware loss with adaptive weighting (single-phase)")
     print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss --adaptive-regression")
     print()
-    print("# Pattern-aware + custom max weight") 
-    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss --adaptive-regression --max-regression-weight 0.2")
+    print("# Original: DIOU loss with fixed weight (may struggle with offset learning)")
+    print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.01")
 
 if __name__ == "__main__":
     main()
