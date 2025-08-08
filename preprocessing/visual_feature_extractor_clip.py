@@ -7,7 +7,6 @@ import argparse
 import torch
 from PIL import Image, ImageDraw
 import clip
-from tqdm import tqdm
 
 try:
     import av
@@ -186,7 +185,7 @@ class VisualFeatureExtractorCLIP:
         features = []
 
         with torch.no_grad():
-            for timestamp, frame in tqdm(frames, desc="Extracting CLIP features"):
+            for timestamp, frame in frames:
                 # Convert numpy array to PIL Image if needed
                 if isinstance(frame, np.ndarray):
                     frame = Image.fromarray(frame)
