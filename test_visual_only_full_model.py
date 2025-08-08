@@ -22,6 +22,53 @@ import matplotlib.patches as patches
 import os
 import numpy as np
 
+def pattern_aware_offset_loss(pred_offsets: torch.Tensor, gt_offsets: torch.Tensor, reduction: str = 'none'):
+    """
+    Custom loss function that understands highlight offset patterns.
+    
+    Expected pattern within highlights:
+    - left_offset should increase from 0 to segment_duration
+    - right_offset should decrease from segment_duration to 0
+    - Both should sum approximately to segment_duration
+    
+    Args:
+        pred_offsets: [B, T, 2] predicted (left, right) offsets
+        gt_offsets: [B, T, 2] ground truth (left, right) offsets
+        reduction: 'none', 'mean', or 'sum'
+    
+    Returns:
+        Loss tensor
+    """
+    pred_left, pred_right = pred_offsets[:, :, 0], pred_offsets[:, :, 1]
+    gt_left, gt_right = gt_offsets[:, :, 0], gt_offsets[:, :, 1]
+    
+    # Component 1: Direct L1 loss on each offset
+    left_loss = torch.abs(pred_left - gt_left)
+    right_loss = torch.abs(pred_right - gt_right)
+    
+    # Component 2: Pattern consistency loss
+    # Ground truth duration for each position
+    gt_duration = gt_left + gt_right
+    pred_duration = pred_left + pred_right
+    
+    # Duration consistency loss (predicted duration should match ground truth)
+    duration_loss = torch.abs(pred_duration - gt_duration)
+    
+    # Component 3: Offset relationship loss  
+    # Within a highlight, left + right should equal duration
+    # This encourages the model to learn the complementary pattern
+    consistency_loss = torch.abs((pred_left + pred_right) - gt_duration)
+    
+    # Combine losses
+    total_loss = left_loss + right_loss + 0.5 * duration_loss + 0.3 * consistency_loss
+    
+    if reduction == 'mean':
+        return total_loss.mean()
+    elif reduction == 'sum':
+        return total_loss.sum()
+    else:
+        return total_loss
+
 class VisualOnlyRepurposeModel(RepurposeModel):
     """Modified RepurposeModel that only uses visual features"""
     
@@ -271,7 +318,11 @@ def train_visual_only_full_model(args):
             cls_loss = (cls_loss * seq_mask).sum() / seq_mask.sum()
             
             # Regression loss - only on positive positions
-            reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
+            if args.use_pattern_loss:
+                reg_loss_all = pattern_aware_offset_loss(offset_f, offsets, reduction='none')  # [B, T]
+            else:
+                reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')  # [B, T]
+                
             cls_mask = (labels > 0.5).float()
             combined_mask = seq_mask * cls_mask
             
@@ -344,7 +395,11 @@ def train_visual_only_full_model(args):
                     cls_loss = (cls_loss * seq_mask).sum() / seq_mask.sum()
                     
                     # Regression loss for validation
-                    reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+                    if args.use_pattern_loss:
+                        reg_loss_all = pattern_aware_offset_loss(offset_f, offsets, reduction='none')
+                    else:
+                        reg_loss_all = ctr_diou_loss_1d(offset_f, offsets, reduction='none')
+                        
                     cls_mask = (labels > 0.5).float()
                     combined_mask = seq_mask * cls_mask
                     
@@ -489,12 +544,19 @@ def main():
                       help="Adaptively increase regression weight once classification is good")
     parser.add_argument("--max-regression-weight", type=float, default=0.1,
                       help="Maximum regression weight for adaptive strategy (default: 0.1)")
+    parser.add_argument("--use-pattern-loss", action="store_true",
+                      help="Use pattern-aware offset loss instead of DIOU loss")
     
     args = parser.parse_args()
     
     print("🔍 TESTING VISUAL-ONLY FULL MODEL")
     print("=" * 50)
     print(f"Mode: Classification + Regression (initial weight={args.regression_weight})")
+    print(f"Regression Loss: {'Pattern-Aware' if args.use_pattern_loss else 'DIOU'}")
+    if args.use_pattern_loss:
+        print("  - Custom loss that understands highlight offset patterns")
+        print("  - Encourages left↑ right↓ pattern within highlights")
+    
     if args.adaptive_regression:
         print(f"Strategy: Adaptive regression weighting (max={args.max_regression_weight})")
         print("  - Start with small weight to learn classification first")
@@ -528,14 +590,17 @@ def main():
     print("  - Prediction confidence over time")
     print()
     print("Usage examples:")
-    print("# Fixed small weight (original approach)")
+    print("# Original DIOU loss with fixed weight")
     print("python test_visual_only_full_model.py --train-json ... --regression-weight 0.01")
     print()
-    print("# Adaptive weighting (recommended for better offset learning)")
-    print("python test_visual_only_full_model.py --train-json ... --adaptive-regression")
+    print("# NEW: Pattern-aware loss (recommended for highlight offset patterns)")
+    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss")
     print()
-    print("# Adaptive with custom max weight") 
-    print("python test_visual_only_full_model.py --train-json ... --adaptive-regression --max-regression-weight 0.2")
+    print("# Pattern-aware + adaptive weighting (best for offset learning)")
+    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss --adaptive-regression")
+    print()
+    print("# Pattern-aware + custom max weight") 
+    print("python test_visual_only_full_model.py --train-json ... --use-pattern-loss --adaptive-regression --max-regression-weight 0.2")
 
 if __name__ == "__main__":
     main()
