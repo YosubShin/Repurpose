@@ -157,13 +157,12 @@ class SequenceVideoDataset(Dataset):
         """Generate frame-level labels."""
         segments = ann.get('segmentsOffset', [])
         
-        # Create integer timestamps (frame indices)
-        timestamps = np.arange(num_frames, dtype=np.int32)
+        # Create 1-second grid timestamps starting from 0
+        timestamps = np.arange(num_frames, dtype=np.float32)
         labels = np.zeros(num_frames, dtype=np.float32)
 
         for idx, t in enumerate(timestamps):
-            # Round segment boundaries to nearest integer frame
-            if any(round(start) <= t < round(end) for start, end in segments):
+            if any(start <= t < end for start, end in segments):
                 labels[idx] = 1.0
 
         return labels
@@ -172,22 +171,18 @@ class SequenceVideoDataset(Dataset):
         """Generate regression offsets for each frame."""
         segments = ann.get('segmentsOffset', [])
         
-        # Create integer timestamps (frame indices)
-        timestamps = np.arange(num_frames, dtype=np.int32)
+        # Create 1-second grid timestamps starting from 0
+        timestamps = np.arange(num_frames, dtype=np.float32)
         # Initialize with zeros - shape: (num_frames, 2) for [left_offset, right_offset]
         offsets = np.zeros((num_frames, 2), dtype=np.float32)
         
         for idx, t in enumerate(timestamps):
             # Find if this timestamp is inside any segment
             for start, end in segments:
-                # Round segment boundaries to nearest integer frame
-                start_frame = round(start)
-                end_frame = round(end)
-                
-                if start_frame <= t < end_frame:
-                    # Calculate offsets to segment boundaries (will be integers)
-                    left_offset = float(t - start_frame)
-                    right_offset = float(end_frame - t)
+                if start <= t < end:
+                    # Calculate offsets to segment boundaries
+                    left_offset = t - start
+                    right_offset = end - t
                     offsets[idx] = [left_offset, right_offset]
                     break  # Use first matching segment
         
