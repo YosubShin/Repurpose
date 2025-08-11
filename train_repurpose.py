@@ -782,13 +782,13 @@ class RepurposeModel(pl.LightningModule):
         # Prepare loss data
         loss_data = {
             'time_step': list(range(valid_len)),
-            'cls_mask': cls_mask[sample_idx, :valid_len].cpu().numpy(),
-            'combined_mask': combined_mask[sample_idx, :valid_len].cpu().numpy(),
-            'reg_loss_all': reg_loss_f_all[sample_idx, :valid_len].cpu().numpy(),
+            'cls_mask': cls_mask[sample_idx, :valid_len].detach().cpu().numpy(),
+            'combined_mask': combined_mask[sample_idx, :valid_len].detach().cpu().numpy(),
+            'reg_loss_all': reg_loss_f_all[sample_idx, :valid_len].detach().cpu().numpy(),
             'pred_left_offset': offset_f[sample_idx, :valid_len, 0].detach().cpu().numpy(),
             'pred_right_offset': offset_f[sample_idx, :valid_len, 1].detach().cpu().numpy(),
-            'gt_left_offset': offsets[sample_idx, :valid_len, 0].cpu().numpy(),
-            'gt_right_offset': offsets[sample_idx, :valid_len, 1].cpu().numpy(),
+            'gt_left_offset': offsets[sample_idx, :valid_len, 0].detach().cpu().numpy(),
+            'gt_right_offset': offsets[sample_idx, :valid_len, 1].detach().cpu().numpy(),
         }
         
         # Add masked loss
@@ -804,13 +804,13 @@ class RepurposeModel(pl.LightningModule):
             'metric': ['total_loss', 'num_active_positions', 'mean_loss_at_active',
                       'mean_pred_left', 'mean_pred_right', 'std_pred_left', 'std_pred_right'],
             'value': [
-                float(reg_loss_f.item()),
+                float(reg_loss_f.detach().item()),
                 int(combined_mask.sum().item()),
-                float(reg_loss_f_all[combined_mask.bool()].mean().item()) if combined_mask.sum() > 0 else 0,
-                float(offset_f[sample_idx, :valid_len, 0].mean().item()),
-                float(offset_f[sample_idx, :valid_len, 1].mean().item()),
-                float(offset_f[sample_idx, :valid_len, 0].std().item()),
-                float(offset_f[sample_idx, :valid_len, 1].std().item()),
+                float(reg_loss_f_all[combined_mask.bool()].detach().mean().item()) if combined_mask.sum() > 0 else 0,
+                float(offset_f[sample_idx, :valid_len, 0].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len, 1].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len, 0].detach().std().item()),
+                float(offset_f[sample_idx, :valid_len, 1].detach().std().item()),
             ]
         }
         metrics_df = pd.DataFrame(metrics)
