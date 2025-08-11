@@ -85,13 +85,13 @@ class SequenceVideoDataset(Dataset):
                     start_idx = int(time_range_full[0])
                     end_idx = int(time_range_full[1])
                     sliced_length = min(length, end_idx) - start_idx
-                    
+
                     # Check if sliced length matches expected length (±1 tolerance)
                     if abs(sliced_length - expected_length) > 1:
                         length_ok = False
                         length_mismatch_filtered += 1
                         break
-                
+
                 if length_ok:
                     self.annotations.append(ann)
                     self.feature_status.append(available_features)
@@ -105,7 +105,8 @@ class SequenceVideoDataset(Dataset):
         print(
             f"  Complete features: {complete_videos}, Partial: {partial_videos}")
         if length_mismatch_filtered > 0:
-            print(f"  Filtered out {length_mismatch_filtered} entries due to length mismatch")
+            print(
+                f"  Filtered out {length_mismatch_filtered} entries due to length mismatch")
 
         # Print availability stats
         for modality in self.feature_dirs.keys():
@@ -156,7 +157,7 @@ class SequenceVideoDataset(Dataset):
     def _get_labels(self, ann: dict, num_frames: int) -> np.ndarray:
         """Generate frame-level labels."""
         segments = ann.get('segmentsOffset', [])
-        
+
         # Create integer timestamps (frame indices)
         timestamps = np.arange(num_frames, dtype=np.int32)
         labels = np.zeros(num_frames, dtype=np.float32)
@@ -167,30 +168,30 @@ class SequenceVideoDataset(Dataset):
                 labels[idx] = 1.0
 
         return labels
-    
+
     def _get_regression_offsets(self, ann: dict, num_frames: int) -> np.ndarray:
         """Generate regression offsets for each frame."""
         segments = ann.get('segmentsOffset', [])
-        
+
         # Create integer timestamps (frame indices)
         timestamps = np.arange(num_frames, dtype=np.int32)
         # Initialize with zeros - shape: (num_frames, 2) for [left_offset, right_offset]
         offsets = np.zeros((num_frames, 2), dtype=np.float32)
-        
+
         for idx, t in enumerate(timestamps):
             # Find if this timestamp is inside any segment
             for start, end in segments:
                 # Round segment boundaries to nearest integer frame
                 start_frame = round(start)
                 end_frame = round(end)
-                
+
                 if start_frame <= t < end_frame:
                     # Calculate offsets to segment boundaries (will be integers)
                     left_offset = float(t - start_frame)
-                    right_offset = float(end_frame - t)
+                    right_offset = float(end_frame - t - 1)
                     offsets[idx] = [left_offset, right_offset]
                     break  # Use first matching segment
-        
+
         return offsets
 
     def __len__(self):
@@ -253,7 +254,7 @@ class SequenceVideoDataset(Dataset):
         # Generate labels and regression offsets based on timeRangeOffset
         time_range = ann.get('timeRangeOffset', [0, 0])
         target_seq_length = int(time_range[1] - time_range[0])
-        
+
         # Adjust features to match target sequence length (handle ±1 duration differences)
         for modality in output_features:
             current_length = output_features[modality].shape[0]
@@ -264,9 +265,11 @@ class SequenceVideoDataset(Dataset):
                 # Pad if shorter (handle off-by-1 cases)
                 feat_dim = output_features[modality].shape[1]
                 pad_length = target_seq_length - current_length
-                padding = torch.zeros((pad_length, feat_dim), dtype=output_features[modality].dtype)
-                output_features[modality] = torch.cat([output_features[modality], padding], dim=0)
-        
+                padding = torch.zeros(
+                    (pad_length, feat_dim), dtype=output_features[modality].dtype)
+                output_features[modality] = torch.cat(
+                    [output_features[modality], padding], dim=0)
+
         labels = self._get_labels(ann, target_seq_length)
         offsets = self._get_regression_offsets(ann, target_seq_length)
 
@@ -276,7 +279,8 @@ class SequenceVideoDataset(Dataset):
             'feature_masks': feature_masks,
             'labels': torch.from_numpy(labels),
             'offsets': torch.from_numpy(offsets),  # Shape: [seq_len, 2]
-            'gt_segments': ann.get('segmentsOffset', []),  # Ground truth segments
+            # Ground truth segments
+            'gt_segments': ann.get('segmentsOffset', []),
             'duration': ann.get('duration', 0)
         }
 
@@ -321,7 +325,8 @@ def create_sequence_dataloader(
             'feature_masks': {},
             'labels': [],
             'offsets': [],  # Add regression offsets
-            'gt_segments': [s['gt_segments'] for s in batch],  # Ground truth segments
+            # Ground truth segments
+            'gt_segments': [s['gt_segments'] for s in batch],
             'sequence_masks': []
         }
 
@@ -349,7 +354,7 @@ def create_sequence_dataloader(
                 labels = torch.cat(
                     [labels, torch.zeros(max_len - seq_len)], dim=0)
             output['labels'].append(labels)
-            
+
             # Pad offsets - shape: [seq_len, 2]
             offsets = sample['offsets']
             if seq_len < max_len:
@@ -370,7 +375,8 @@ def create_sequence_dataloader(
             output['feature_masks'][modality] = torch.tensor(
                 output['feature_masks'][modality])
         output['labels'] = torch.stack(output['labels'])
-        output['offsets'] = torch.stack(output['offsets'])  # Shape: [batch_size, max_len, 2]
+        # Shape: [batch_size, max_len, 2]
+        output['offsets'] = torch.stack(output['offsets'])
         output['sequence_masks'] = torch.stack(output['sequence_masks'])
 
         return output
