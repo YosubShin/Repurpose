@@ -237,7 +237,7 @@ class RepurposeModel(pl.LightningModule):
         # Storage for validation outputs (PyTorch Lightning v2.0+ compatibility)
         self.validation_outputs = []
 
-    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor = None):
+    def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor):
         """Forward pass with cross-attention between modalities."""
         # Project to shared dimension
         a = self.proj_a(audio)
@@ -324,7 +324,8 @@ class RepurposeModel(pl.LightningModule):
             self._save_batch_debug_csv(batch, labels, offsets, seq_mask)
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
+        logit_a, logit_v, logit_f, offset_f = self(
+            audio, visual, caption, mask=seq_mask)
 
         # Compute losses following original paper implementation exactly
         # 1. Classification losses - compute for all positions first, then mask
@@ -356,7 +357,7 @@ class RepurposeModel(pl.LightningModule):
         # Debug: Save loss details for first batch
         if batch_idx == 0 and self.current_epoch == 0:
             self._save_loss_debug_csv(
-                reg_loss_f_all, cls_mask, combined_mask, 
+                reg_loss_f_all, cls_mask, combined_mask,
                 reg_loss_f, offset_f, offsets
             )
 
@@ -446,7 +447,8 @@ class RepurposeModel(pl.LightningModule):
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
+        logit_a, logit_v, logit_f, offset_f = self(
+            audio, visual, caption, mask=seq_mask)
 
         # Classification loss - following original paper implementation exactly
         val_loss_cls_all = sigmoid_focal_loss(
@@ -629,7 +631,8 @@ class RepurposeModel(pl.LightningModule):
         logit_a, logit_v, logit_f, offset_f = self(
             batch['features']['audio'],
             batch['features']['visual'],
-            batch['features']['caption']
+            batch['features']['caption'],
+            mask=batch['sequence_masks']
         )
 
         results = []
@@ -675,8 +678,8 @@ class RepurposeModel(pl.LightningModule):
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""
         optimizer = torch.optim.Adam(
-            self.parameters(), 
-            lr=self.hparams.lr, 
+            self.parameters(),
+            lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay
         )
 
@@ -711,14 +714,14 @@ class RepurposeModel(pl.LightningModule):
         """Save first batch data to CSV for debugging."""
         import pandas as pd
         import os
-        
+
         debug_dir = "debug_regression"
         os.makedirs(debug_dir, exist_ok=True)
-        
+
         # Process first sample in batch
         sample_idx = 0
         valid_len = int(seq_mask[sample_idx].sum().item())
-        
+
         # Prepare data for CSV
         data = {
             'time_step': list(range(valid_len)),
@@ -727,32 +730,38 @@ class RepurposeModel(pl.LightningModule):
             'gt_right_offset': offsets[sample_idx, :valid_len, 1].cpu().numpy(),
             'seq_mask': seq_mask[sample_idx, :valid_len].cpu().numpy(),
         }
-        
+
         # Add video ID if available
         if 'video_ids' in batch:
             video_id = batch['video_ids'][sample_idx]
             data['video_id'] = [video_id] * valid_len
-        
+
         df = pd.DataFrame(data)
         csv_path = os.path.join(debug_dir, 'batch_0_sample_0_data.csv')
         df.to_csv(csv_path, index=False)
         self.logger_instance.info(f"Saved batch debug data to {csv_path}")
-        
+
         # Also save summary statistics
         stats = {
-            'metric': ['total_frames', 'positive_frames', 'positive_ratio', 
-                      'min_left_offset', 'max_left_offset', 'mean_left_offset',
-                      'min_right_offset', 'max_right_offset', 'mean_right_offset'],
+            'metric': ['total_frames', 'positive_frames', 'positive_ratio',
+                       'min_left_offset', 'max_left_offset', 'mean_left_offset',
+                       'min_right_offset', 'max_right_offset', 'mean_right_offset'],
             'value': [
                 valid_len,
                 int((data['label'] > 0.5).sum()),
                 float((data['label'] > 0.5).mean()),
-                float(data['gt_left_offset'][data['label'] > 0.5].min()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_left_offset'][data['label'] > 0.5].max()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_left_offset'][data['label'] > 0.5].mean()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].min()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].max()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].mean()) if (data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].min()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].max()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].mean()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].min()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].max()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].mean()) if (
+                    data['label'] > 0.5).any() else 0,
             ]
         }
         stats_df = pd.DataFrame(stats)
@@ -760,25 +769,25 @@ class RepurposeModel(pl.LightningModule):
         stats_df.to_csv(stats_path, index=False)
         self.logger_instance.info(f"Saved batch statistics to {stats_path}")
 
-    def _save_loss_debug_csv(self, reg_loss_f_all, cls_mask, combined_mask, 
+    def _save_loss_debug_csv(self, reg_loss_f_all, cls_mask, combined_mask,
                              reg_loss_f, offset_f, offsets):
         """Save loss calculation details to CSV for debugging."""
         import pandas as pd
         import os
-        
+
         debug_dir = "debug_regression"
         os.makedirs(debug_dir, exist_ok=True)
-        
+
         # Process first sample
         sample_idx = 0
         batch_size, seq_len = reg_loss_f_all.shape
-        
+
         # Get valid length from combined mask
-        valid_len = int(combined_mask[sample_idx].sum().item() + 
-                       (cls_mask[sample_idx] - combined_mask[sample_idx]).sum().item() +
-                       100)  # Add some buffer to see non-positive positions too
+        valid_len = int(combined_mask[sample_idx].sum().item() +
+                        (cls_mask[sample_idx] - combined_mask[sample_idx]).sum().item() +
+                        100)  # Add some buffer to see non-positive positions too
         valid_len = min(valid_len, seq_len)
-        
+
         # Prepare loss data
         loss_data = {
             'time_step': list(range(valid_len)),
@@ -790,27 +799,33 @@ class RepurposeModel(pl.LightningModule):
             'gt_left_offset': offsets[sample_idx, :valid_len, 0].detach().cpu().numpy(),
             'gt_right_offset': offsets[sample_idx, :valid_len, 1].detach().cpu().numpy(),
         }
-        
+
         # Add masked loss
-        loss_data['masked_loss'] = loss_data['reg_loss_all'] * loss_data['combined_mask']
-        
+        loss_data['masked_loss'] = loss_data['reg_loss_all'] * \
+            loss_data['combined_mask']
+
         df = pd.DataFrame(loss_data)
         csv_path = os.path.join(debug_dir, 'batch_0_sample_0_losses.csv')
         df.to_csv(csv_path, index=False, float_format='%.6f')
         self.logger_instance.info(f"Saved loss debug data to {csv_path}")
-        
+
         # Save aggregate metrics
         metrics = {
             'metric': ['total_loss', 'num_active_positions', 'mean_loss_at_active',
-                      'mean_pred_left', 'mean_pred_right', 'std_pred_left', 'std_pred_right'],
+                       'mean_pred_left', 'mean_pred_right', 'std_pred_left', 'std_pred_right'],
             'value': [
                 float(reg_loss_f.detach().item()),
                 int(combined_mask.sum().item()),
-                float(reg_loss_f_all[combined_mask.bool()].detach().mean().item()) if combined_mask.sum() > 0 else 0,
-                float(offset_f[sample_idx, :valid_len, 0].detach().mean().item()),
-                float(offset_f[sample_idx, :valid_len, 1].detach().mean().item()),
-                float(offset_f[sample_idx, :valid_len, 0].detach().std().item()),
-                float(offset_f[sample_idx, :valid_len, 1].detach().std().item()),
+                float(reg_loss_f_all[combined_mask.bool()].detach(
+                ).mean().item()) if combined_mask.sum() > 0 else 0,
+                float(offset_f[sample_idx, :valid_len,
+                      0].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      1].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      0].detach().std().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      1].detach().std().item()),
             ]
         }
         metrics_df = pd.DataFrame(metrics)
@@ -944,7 +959,7 @@ class EndOfEpochVisualizationCallback(Callback):
 
                             # Get predictions - now includes regression output
                             logit_a, logit_v, logit_f, offset_f = pl_module(
-                                audio, visual, caption)
+                                audio, visual, caption, mask=seq_mask)
 
                             log_memory_usage(
                                 self.logger, f"{dataset_name} batch {batch_idx} after inference")
