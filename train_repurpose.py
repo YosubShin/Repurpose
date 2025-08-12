@@ -1012,7 +1012,7 @@ class EndOfEpochVisualizationCallback(Callback):
 
                             # Get predictions - now includes regression output
                             logit_a, logit_v, logit_f, offset_f = pl_module(
-                                audio, visual, caption)
+                                audio, visual, caption, mask=seq_mask)
 
                             log_memory_usage(
                                 self.logger, f"{dataset_name} batch {batch_idx} after inference")
