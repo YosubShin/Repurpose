@@ -134,6 +134,46 @@ class RepurposeModel(pl.LightningModule):
         self.log_interval = log_interval
         self.step_count = 0
 
+        # SIMPLE ARCHITECTURE FOR DEBUGGING
+        # Using only visual features with a simple transformer
+        simple_d_model = 32
+        simple_nhead = 4
+        simple_num_layers = 2
+        max_seq_len = 2000
+
+        # Simple input projection for visual only
+        self.simple_input_proj = nn.Linear(dim_visual, simple_d_model)
+
+        # Simple transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=simple_d_model,
+            nhead=simple_nhead,
+            dim_feedforward=64,
+            batch_first=True,
+            dropout=0.1
+        )
+        self.simple_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=simple_num_layers)
+
+        # Simple positional embedding
+        self.simple_pos_embed = nn.Parameter(
+            torch.randn(1, max_seq_len, simple_d_model) * 0.01)
+
+        # Simple output head with Softplus for positive offsets
+        self.simple_output = nn.Sequential(
+            nn.Linear(simple_d_model, 16),
+            nn.ReLU(),
+            nn.Linear(16, 2),
+            nn.Softplus()  # Ensures positive outputs
+        )
+
+        # Dummy heads for compatibility with loss calculation
+        self.head_a = nn.Linear(1, 1)  # Dummy
+        self.head_v = nn.Linear(1, 1)  # Dummy
+        self.head_f = nn.Linear(1, 1)  # Dummy
+
+        # COMMENTED OUT COMPLEX ARCHITECTURE
+        """
         # Projections to shared dimension - MLPs as per paper with 2048 hidden dim
         # "We then use three distinct MLP layers to map these features to a unified dimension d"
         def _projection_mlp(input_dim):
@@ -216,6 +256,7 @@ class RepurposeModel(pl.LightningModule):
             )
 
         self.reg_head_f = _regression_head()  # Multi-modal fused regression head
+        """
 
         # Use less conservative focal loss parameters that worked well before
         # alpha=0.5 (balanced), gamma=1.0 (moderate down-weighting)
@@ -238,7 +279,33 @@ class RepurposeModel(pl.LightningModule):
         self.validation_outputs = []
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor = None):
-        """Forward pass with cross-attention between modalities."""
+        """SIMPLE FORWARD PASS - USING ONLY VISUAL FEATURES"""
+        batch_size, seq_len, _ = visual.shape
+
+        # Project visual features
+        x = self.simple_input_proj(visual)
+
+        # Add positional embeddings
+        x = x + self.simple_pos_embed[:, :seq_len, :]
+
+        # Apply transformer encoder
+
+        # Create attention mask for transformer (True = ignore)
+        attn_mask = ~mask.bool()
+        x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
+
+        # Get offset predictions
+        offset_f = self.simple_output(x)  # [B, T, 2]
+
+        # Create dummy logits for compatibility
+        # Just return zeros that will be ignored in loss calculation
+        logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
+        logit_v = torch.zeros(batch_size, seq_len, device=visual.device)
+        logit_f = torch.zeros(batch_size, seq_len, device=visual.device)
+
+        return logit_a, logit_v, logit_f, offset_f
+
+        """ORIGINAL COMPLEX FORWARD - COMMENTED OUT
         # Project to shared dimension
         a = self.proj_a(audio)
         v = self.proj_v(visual)
@@ -306,6 +373,7 @@ class RepurposeModel(pl.LightningModule):
         offset_f = self.reg_head_f(f)  # [B, T, 2]
 
         return logit_a, logit_v, logit_f, offset_f
+        """
 
     def training_step(self, batch, batch_idx):
         """Training step with comprehensive logging."""
@@ -324,24 +392,10 @@ class RepurposeModel(pl.LightningModule):
             self._save_batch_debug_csv(batch, labels, offsets, seq_mask)
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
+        logit_a, logit_v, logit_f, offset_f = self(
+            audio, visual, caption, mask=seq_mask)
 
-        # Compute losses following original paper implementation exactly
-        # 1. Classification losses - compute for all positions first, then mask
-        loss_mul_all = sigmoid_focal_loss(
-            logit_f, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
-        loss_a_all = sigmoid_focal_loss(
-            logit_a, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
-        loss_v_all = sigmoid_focal_loss(
-            logit_v, labels, alpha=self.focal_alpha, gamma=self.focal_gamma, reduction='none')
-
-        # Apply sequence mask and sum (following original paper pattern)
-        loss_mul = (loss_mul_all * seq_mask).sum()
-        loss_a = (loss_a_all * seq_mask).sum()
-        loss_v = (loss_v_all * seq_mask).sum()
-        loss_uni = loss_a + loss_v
-
-        # 2. Regression loss - following original paper implementation exactly
+        # SIMPLIFIED LOSS - ONLY REGRESSION
         # Compute regression loss for all positions
         reg_loss_f_all = ctr_diou_loss_1d(
             offset_f, offsets, reduction='none')  # [B, T]
@@ -350,39 +404,40 @@ class RepurposeModel(pl.LightningModule):
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
 
-        # Apply combined mask and sum (following original pattern)
-        reg_loss_f = (reg_loss_f_all * combined_mask).sum()
+        # Apply combined mask and compute mean loss
+        num_positives = combined_mask.sum()
+        if num_positives > 0:
+            reg_loss_f = (reg_loss_f_all * combined_mask).sum() / num_positives
+        else:
+            raise ValueError("No positive samples found in batch")
 
         # Debug: Save loss details for first batch
         if batch_idx == 0 and self.current_epoch == 0:
             self._save_loss_debug_csv(
-                reg_loss_f_all, cls_mask, combined_mask, 
+                reg_loss_f_all, cls_mask, combined_mask,
                 reg_loss_f, offset_f, offsets
             )
 
-        # Alignment losses (KL divergence) - apply to valid positions only
-        valid_positions = seq_mask.bool()
-        prob_a = torch.sigmoid(logit_a[valid_positions]).detach()
-        prob_v = torch.sigmoid(logit_v[valid_positions]).detach()
-        prob_f = torch.sigmoid(logit_f[valid_positions])
-        loss_kl = kl_div_bernoulli(prob_v, prob_f) + \
-            kl_div_bernoulli(prob_a, prob_f)
+        # Total loss - ONLY REGRESSION NOW
+        total_loss = reg_loss_f
 
-        # Total loss - includes classification and regression components
-        total_loss = self.lambda1 * loss_uni + \
-            self.lambda2 * loss_mul + self.lambda3 * loss_kl + \
-            self.lambda4 * reg_loss_f
+        # Dummy values for compatibility
+        loss_uni = torch.tensor(0.0, device=labels.device)
+        loss_mul = torch.tensor(0.0, device=labels.device)
+        loss_kl = torch.tensor(0.0, device=labels.device)
+        loss_a = torch.tensor(0.0, device=labels.device)
+        loss_v = torch.tensor(0.0, device=labels.device)
 
-        # Compute metrics
-        with torch.no_grad():
-            labels_valid = labels[valid_positions]
-            pred_binary = (prob_f > 0.5).float()
-            accuracy = (pred_binary == labels_valid).float().mean()
+        # # Compute metrics
+        # with torch.no_grad():
+        #     labels_valid = labels[valid_positions]
+        #     pred_binary = (prob_f > 0.5).float()
+        #     accuracy = (pred_binary == labels_valid).float().mean()
 
-            # Positive predictions
-            n_positive_preds = pred_binary.sum().item()
-            n_positive_labels = labels_valid.sum().item()
-            n_total = len(labels_valid)
+        #     # Positive predictions
+        #     n_positive_preds = pred_binary.sum().item()
+        #     n_positive_labels = labels_valid.sum().item()
+        #     n_total = len(labels_valid)
 
         # Log metrics
         metrics = {
@@ -393,9 +448,9 @@ class RepurposeModel(pl.LightningModule):
             'train/loss_audio': loss_a,
             'train/loss_visual': loss_v,
             'train/reg_loss_f': reg_loss_f,
-            'train/accuracy': accuracy,
-            'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
-            'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
+            # 'train/accuracy': accuracy,
+            # 'train/positive_pred_ratio': n_positive_preds / n_total if n_total > 0 else 0,
+            # 'train/positive_label_ratio': n_positive_labels / n_total if n_total > 0 else 0,
             'train/step_time': time.time() - start_time,
             # Log current LR
             'train/learning_rate': self.optimizers().param_groups[0]['lr'],
@@ -426,8 +481,8 @@ class RepurposeModel(pl.LightningModule):
             self.logger_instance.info(
                 f"Step {self.step_count} | "
                 f"Loss: {total_loss:.4f} | "
-                f"Acc: {accuracy:.4f} | "
-                f"Pos preds: {n_positive_preds}/{n_total} | "
+                # f"Acc: {accuracy:.4f} | "
+                # f"Pos preds: {n_positive_preds}/{n_total} | "
                 f"Time: {step_time:.3f}s"
             )
 
@@ -446,7 +501,8 @@ class RepurposeModel(pl.LightningModule):
         seq_mask = batch['sequence_masks']
 
         # Forward pass - now returns both classification and regression outputs
-        logit_a, logit_v, logit_f, offset_f = self(audio, visual, caption, mask=seq_mask)
+        logit_a, logit_v, logit_f, offset_f = self(
+            audio, visual, caption, mask=seq_mask)
 
         # Classification loss - following original paper implementation exactly
         val_loss_cls_all = sigmoid_focal_loss(
@@ -675,8 +731,8 @@ class RepurposeModel(pl.LightningModule):
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""
         optimizer = torch.optim.Adam(
-            self.parameters(), 
-            lr=self.hparams.lr, 
+            self.parameters(),
+            lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay
         )
 
@@ -711,14 +767,14 @@ class RepurposeModel(pl.LightningModule):
         """Save first batch data to CSV for debugging."""
         import pandas as pd
         import os
-        
+
         debug_dir = "debug_regression"
         os.makedirs(debug_dir, exist_ok=True)
-        
+
         # Process first sample in batch
         sample_idx = 0
         valid_len = int(seq_mask[sample_idx].sum().item())
-        
+
         # Prepare data for CSV
         data = {
             'time_step': list(range(valid_len)),
@@ -727,32 +783,38 @@ class RepurposeModel(pl.LightningModule):
             'gt_right_offset': offsets[sample_idx, :valid_len, 1].cpu().numpy(),
             'seq_mask': seq_mask[sample_idx, :valid_len].cpu().numpy(),
         }
-        
+
         # Add video ID if available
         if 'video_ids' in batch:
             video_id = batch['video_ids'][sample_idx]
             data['video_id'] = [video_id] * valid_len
-        
+
         df = pd.DataFrame(data)
         csv_path = os.path.join(debug_dir, 'batch_0_sample_0_data.csv')
         df.to_csv(csv_path, index=False)
         self.logger_instance.info(f"Saved batch debug data to {csv_path}")
-        
+
         # Also save summary statistics
         stats = {
-            'metric': ['total_frames', 'positive_frames', 'positive_ratio', 
-                      'min_left_offset', 'max_left_offset', 'mean_left_offset',
-                      'min_right_offset', 'max_right_offset', 'mean_right_offset'],
+            'metric': ['total_frames', 'positive_frames', 'positive_ratio',
+                       'min_left_offset', 'max_left_offset', 'mean_left_offset',
+                       'min_right_offset', 'max_right_offset', 'mean_right_offset'],
             'value': [
                 valid_len,
                 int((data['label'] > 0.5).sum()),
                 float((data['label'] > 0.5).mean()),
-                float(data['gt_left_offset'][data['label'] > 0.5].min()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_left_offset'][data['label'] > 0.5].max()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_left_offset'][data['label'] > 0.5].mean()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].min()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].max()) if (data['label'] > 0.5).any() else 0,
-                float(data['gt_right_offset'][data['label'] > 0.5].mean()) if (data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].min()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].max()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_left_offset'][data['label'] > 0.5].mean()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].min()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].max()) if (
+                    data['label'] > 0.5).any() else 0,
+                float(data['gt_right_offset'][data['label'] > 0.5].mean()) if (
+                    data['label'] > 0.5).any() else 0,
             ]
         }
         stats_df = pd.DataFrame(stats)
@@ -760,25 +822,25 @@ class RepurposeModel(pl.LightningModule):
         stats_df.to_csv(stats_path, index=False)
         self.logger_instance.info(f"Saved batch statistics to {stats_path}")
 
-    def _save_loss_debug_csv(self, reg_loss_f_all, cls_mask, combined_mask, 
+    def _save_loss_debug_csv(self, reg_loss_f_all, cls_mask, combined_mask,
                              reg_loss_f, offset_f, offsets):
         """Save loss calculation details to CSV for debugging."""
         import pandas as pd
         import os
-        
+
         debug_dir = "debug_regression"
         os.makedirs(debug_dir, exist_ok=True)
-        
+
         # Process first sample
         sample_idx = 0
         batch_size, seq_len = reg_loss_f_all.shape
-        
+
         # Get valid length from combined mask
-        valid_len = int(combined_mask[sample_idx].sum().item() + 
-                       (cls_mask[sample_idx] - combined_mask[sample_idx]).sum().item() +
-                       100)  # Add some buffer to see non-positive positions too
+        valid_len = int(combined_mask[sample_idx].sum().item() +
+                        (cls_mask[sample_idx] - combined_mask[sample_idx]).sum().item() +
+                        100)  # Add some buffer to see non-positive positions too
         valid_len = min(valid_len, seq_len)
-        
+
         # Prepare loss data
         loss_data = {
             'time_step': list(range(valid_len)),
@@ -790,27 +852,33 @@ class RepurposeModel(pl.LightningModule):
             'gt_left_offset': offsets[sample_idx, :valid_len, 0].detach().cpu().numpy(),
             'gt_right_offset': offsets[sample_idx, :valid_len, 1].detach().cpu().numpy(),
         }
-        
+
         # Add masked loss
-        loss_data['masked_loss'] = loss_data['reg_loss_all'] * loss_data['combined_mask']
-        
+        loss_data['masked_loss'] = loss_data['reg_loss_all'] * \
+            loss_data['combined_mask']
+
         df = pd.DataFrame(loss_data)
         csv_path = os.path.join(debug_dir, 'batch_0_sample_0_losses.csv')
         df.to_csv(csv_path, index=False, float_format='%.6f')
         self.logger_instance.info(f"Saved loss debug data to {csv_path}")
-        
+
         # Save aggregate metrics
         metrics = {
             'metric': ['total_loss', 'num_active_positions', 'mean_loss_at_active',
-                      'mean_pred_left', 'mean_pred_right', 'std_pred_left', 'std_pred_right'],
+                       'mean_pred_left', 'mean_pred_right', 'std_pred_left', 'std_pred_right'],
             'value': [
                 float(reg_loss_f.detach().item()),
                 int(combined_mask.sum().item()),
-                float(reg_loss_f_all[combined_mask.bool()].detach().mean().item()) if combined_mask.sum() > 0 else 0,
-                float(offset_f[sample_idx, :valid_len, 0].detach().mean().item()),
-                float(offset_f[sample_idx, :valid_len, 1].detach().mean().item()),
-                float(offset_f[sample_idx, :valid_len, 0].detach().std().item()),
-                float(offset_f[sample_idx, :valid_len, 1].detach().std().item()),
+                float(reg_loss_f_all[combined_mask.bool()].detach(
+                ).mean().item()) if combined_mask.sum() > 0 else 0,
+                float(offset_f[sample_idx, :valid_len,
+                      0].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      1].detach().mean().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      0].detach().std().item()),
+                float(offset_f[sample_idx, :valid_len,
+                      1].detach().std().item()),
             ]
         }
         metrics_df = pd.DataFrame(metrics)
