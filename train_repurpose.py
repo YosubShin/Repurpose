@@ -289,7 +289,6 @@ class RepurposeModel(pl.LightningModule):
         x = x + self.simple_pos_embed[:, :seq_len, :]
 
         # Apply transformer encoder
-
         # Create attention mask for transformer (True = ignore)
         attn_mask = ~mask.bool()
         x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
@@ -685,7 +684,8 @@ class RepurposeModel(pl.LightningModule):
         logit_a, logit_v, logit_f, offset_f = self(
             batch['features']['audio'],
             batch['features']['visual'],
-            batch['features']['caption']
+            batch['features']['caption'],
+            mask=batch['sequence_masks']
         )
 
         results = []
