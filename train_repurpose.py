@@ -952,7 +952,7 @@ class EndOfEpochVisualizationCallback(Callback):
                             labels = batch['labels'].to(device)
                             offsets = batch['offsets'].to(
                                 device)  # Get ground truth offsets
-                            seq_mask = batch['sequence_masks']
+                            seq_mask = batch['sequence_masks'].to(device)
 
                             log_memory_usage(
                                 self.logger, f"{dataset_name} batch {batch_idx} after data load")
