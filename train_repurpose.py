@@ -238,7 +238,61 @@ class RepurposeModel(pl.LightningModule):
         self.validation_outputs = []
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor):
-        """Forward pass with cross-attention between modalities."""
+        """SIMPLE OFFSET TRANSFORMER FOR TESTING - uses only visual features."""
+        # Use only visual features for this simple test
+        batch_size, seq_len, feature_dim = visual.shape
+        
+        # Simple transformer architecture for offset regression
+        d_model = 32
+        nhead = 4
+        num_layers = 2
+        
+        # Create simple transformer if not exists (lazy initialization)
+        if not hasattr(self, 'simple_transformer'):
+            self.simple_transformer = nn.ModuleDict({
+                'input_proj': nn.Linear(feature_dim, d_model),
+                'pos_embed': nn.Parameter(torch.randn(1, 2000, d_model) * 0.01),  # Max seq len
+                'encoder': nn.TransformerEncoder(
+                    nn.TransformerEncoderLayer(
+                        d_model=d_model, 
+                        nhead=nhead, 
+                        dim_feedforward=64, 
+                        batch_first=True,
+                        dropout=0.1
+                    ), 
+                    num_layers=num_layers
+                ),
+                'output': nn.Sequential(
+                    nn.Linear(d_model, 2), 
+                    nn.Softplus()  # Ensure positive offsets
+                )
+            }).to(visual.device)
+        
+        # Forward pass through simple transformer
+        x = self.simple_transformer['input_proj'](visual)
+        x = x + self.simple_transformer['pos_embed'][:, :seq_len, :]
+        
+        # Apply transformer with mask if provided
+        if mask is not None:
+            # Convert mask to attention mask (True = ignore)
+            attn_mask = ~mask.bool()
+            x = self.simple_transformer['encoder'](x, src_key_padding_mask=attn_mask)
+        else:
+            x = self.simple_transformer['encoder'](x)
+        
+        # Get offset predictions
+        offset_f = self.simple_transformer['output'](x)  # [B, T, 2]
+        
+        # Create dummy classification outputs for compatibility
+        logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
+        logit_v = torch.zeros(batch_size, seq_len, device=visual.device) 
+        logit_f = torch.zeros(batch_size, seq_len, device=visual.device)
+        
+        return logit_a, logit_v, logit_f, offset_f
+        
+        """
+        # ORIGINAL COMPLEX FORWARD PASS - COMMENTED OUT FOR TESTING
+        # Forward pass with cross-attention between modalities.
         # TEMPORARY: Zero out audio and caption for testing
         audio = torch.zeros_like(audio)
         caption = torch.zeros_like(caption)
@@ -310,6 +364,7 @@ class RepurposeModel(pl.LightningModule):
         offset_f = self.reg_head_f(f)  # [B, T, 2]
 
         return logit_a, logit_v, logit_f, offset_f
+        """
 
     def training_step(self, batch, batch_idx):
         """Training step with comprehensive logging."""
