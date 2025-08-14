@@ -236,52 +236,46 @@ class RepurposeModel(pl.LightningModule):
 
         # Storage for validation outputs (PyTorch Lightning v2.0+ compatibility)
         self.validation_outputs = []
+        
+        # SIMPLE TRANSFORMER FOR TESTING - minimal architecture
+        simple_d_model = 32
+        simple_nhead = 4
+        simple_num_layers = 2
+        self.simple_input_proj = nn.Linear(dim_visual, simple_d_model)
+        self.simple_pos_embed = nn.Parameter(torch.randn(1, 2000, simple_d_model) * 0.01)
+        self.simple_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=simple_d_model, 
+                nhead=simple_nhead, 
+                dim_feedforward=64, 
+                batch_first=True,
+                dropout=0.1
+            ), 
+            num_layers=simple_num_layers
+        )
+        self.simple_output = nn.Sequential(
+            nn.Linear(simple_d_model, 2), 
+            nn.Softplus()  # Ensure positive offsets
+        )
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor):
         """SIMPLE OFFSET TRANSFORMER FOR TESTING - uses only visual features."""
-        # Use only visual features for this simple test
-        batch_size, seq_len, feature_dim = visual.shape
-        
-        # Simple transformer architecture for offset regression
-        d_model = 32
-        nhead = 4
-        num_layers = 2
-        
-        # Create simple transformer if not exists (lazy initialization)
-        if not hasattr(self, 'simple_transformer'):
-            self.simple_transformer = nn.ModuleDict({
-                'input_proj': nn.Linear(feature_dim, d_model),
-                'pos_embed': nn.Parameter(torch.randn(1, 2000, d_model) * 0.01),  # Max seq len
-                'encoder': nn.TransformerEncoder(
-                    nn.TransformerEncoderLayer(
-                        d_model=d_model, 
-                        nhead=nhead, 
-                        dim_feedforward=64, 
-                        batch_first=True,
-                        dropout=0.1
-                    ), 
-                    num_layers=num_layers
-                ),
-                'output': nn.Sequential(
-                    nn.Linear(d_model, 2), 
-                    nn.Softplus()  # Ensure positive offsets
-                )
-            }).to(visual.device)
+        batch_size, seq_len = visual.shape[:2]
         
         # Forward pass through simple transformer
-        x = self.simple_transformer['input_proj'](visual)
-        x = x + self.simple_transformer['pos_embed'][:, :seq_len, :]
+        x = self.simple_input_proj(visual)
+        x = x + self.simple_pos_embed[:, :seq_len, :]
         
         # Apply transformer with mask if provided
         if mask is not None:
             # Convert mask to attention mask (True = ignore)
             attn_mask = ~mask.bool()
-            x = self.simple_transformer['encoder'](x, src_key_padding_mask=attn_mask)
+            x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
         else:
-            x = self.simple_transformer['encoder'](x)
+            x = self.simple_encoder(x)
         
         # Get offset predictions
-        offset_f = self.simple_transformer['output'](x)  # [B, T, 2]
+        offset_f = self.simple_output(x)  # [B, T, 2]
         
         # Create dummy classification outputs for compatibility
         logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
@@ -1311,7 +1305,7 @@ def visualize_predictions(model, dataloader, save_dir: str, num_samples: int = 5
                 logger.info(
                     f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}")
 
-                _, _, logit_f, offset_f = model(audio, visual, caption)
+                _, _, logit_f, offset_f = model(audio, visual, caption, mask=seq_mask)
                 logger.info(
                     f"Model inference completed, logit_f shape: {logit_f.shape}")
 
