@@ -796,7 +796,7 @@ class RepurposeModel(pl.LightningModule):
         optimizer = torch.optim.Adam(
             self.parameters(),
             lr=self.hparams.lr,
-            weight_decay=self.hparams.weight_decay,
+            # weight_decay=self.hparams.weight_decay,
         )
 
         # We need to create a custom scheduler that combines warmup and cosine decay
