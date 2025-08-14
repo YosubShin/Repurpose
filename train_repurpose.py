@@ -265,12 +265,13 @@ class RepurposeModel(pl.LightningModule):
                 nhead=simple_nhead,
                 dim_feedforward=64,
                 batch_first=True,
-                dropout=0.1,
             ),
             num_layers=simple_num_layers,
         )
         self.simple_output = nn.Sequential(
-            nn.Linear(simple_d_model, 2), nn.Softplus()  # Ensure positive offsets
+            # Ensure positive offsets
+            nn.Linear(simple_d_model, 2),
+            nn.Softplus(),
         )
 
     def forward(
