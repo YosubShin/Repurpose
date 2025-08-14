@@ -28,19 +28,19 @@ def quick_check():
     data_root = "/home/yosubs/koa_scratch/repurpose/data"
 
     feature_dirs = {
-        'audio': f"{data_root}/audio_pann_features",
-        'visual': f"{data_root}/video_clip_features",
-        'caption': f"{data_root}/caption_features"
+        "audio": f"{data_root}/audio_pann_features",
+        "visual": f"{data_root}/video_clip_features",
+        "caption": f"{data_root}/caption_features",
     }
 
     splits = {
-        'train': f"data/train.json",
-        'val': f"data/val.json",
-        'test': f"data/test.json"
+        "train": f"data/train.json",
+        "val": f"data/val.json",
+        "test": f"data/test.json",
     }
 
     print("QUICK DATASET CHECK")
-    print("="*50)
+    print("=" * 50)
 
     # Check if paths exist
     print("Checking paths...")
@@ -61,19 +61,19 @@ def quick_check():
         print("\n❌ Some paths are missing. Please update the paths in the script.")
         return
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
 
     # Quick analysis for each split
     for split_name, annotation_file in splits.items():
         print(f"\n{split_name.upper()} SPLIT:")
 
-        with open(annotation_file, 'r') as f:
+        with open(annotation_file, "r") as f:
             annotations = json.load(f)
 
         # Handle both list and dict formats
         if isinstance(annotations, list):
             # Convert list to dict format using youtube_id field
-            annotations_dict = {item['youtube_id']: item for item in annotations}
+            annotations_dict = {item["youtube_id"]: item for item in annotations}
         else:
             annotations_dict = annotations
 
@@ -81,7 +81,7 @@ def quick_check():
         complete_videos = 0
 
         # Sample a few videos to check
-        sample_videos = list(annotations_dict.keys())[:min(10, len(annotations_dict))]
+        sample_videos = list(annotations_dict.keys())[: min(10, len(annotations_dict))]
 
         print(f"  Total videos: {total_videos}")
         print(f"  Checking sample of {len(sample_videos)} videos...")
@@ -109,23 +109,22 @@ def quick_check():
                 # Check length consistency
                 lengths = [shape[0] for shape in video_shapes.values()]
                 if len(set(lengths)) > 1:
-                    print(
-                        f"    ⚠️  Length mismatch in {video_id}: {video_shapes}")
+                    print(f"    ⚠️  Length mismatch in {video_id}: {video_shapes}")
 
-        print(
-            f"  Sample complete videos: {complete_videos}/{len(sample_videos)}")
+        print(f"  Sample complete videos: {complete_videos}/{len(sample_videos)}")
 
         for modality, count in modality_available.items():
             print(f"  {modality}: {count}/{len(sample_videos)} available")
             if modality in sample_shapes:
                 shapes = list(sample_shapes[modality])
                 print(
-                    f"    Sample shapes: {shapes[:3]}{'...' if len(shapes) > 3 else ''}")
+                    f"    Sample shapes: {shapes[:3]}{'...' if len(shapes) > 3 else ''}"
+                )
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("✅ Quick check complete!")
     print("Run 'python inspect_dataset.py' for detailed analysis.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     quick_check()

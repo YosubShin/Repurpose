@@ -11,14 +11,16 @@ import librosa
 
 
 class AudioFeatureExtractor:
-    def __init__(self, output_dir: str = "data/audio_pann_features", log_level: str = "INFO"):
+    def __init__(
+        self, output_dir: str = "data/audio_pann_features", log_level: str = "INFO"
+    ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Setup logging
         logging.basicConfig(
             level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(levelname)s - %(message)s",
         )
         self.logger = logging.getLogger(__name__)
 
@@ -33,31 +35,34 @@ class AudioFeatureExtractor:
         """Check if required dependencies are available."""
         try:
             import panns_inference
+
             self.logger.info("panns_inference library found")
         except ImportError:
             self.logger.warning(
-                "panns_inference library not found. Install with: pip install panns_inference")
-            self.logger.info(
-                "Will use librosa fallback for audio feature extraction")
+                "panns_inference library not found. Install with: pip install panns_inference"
+            )
+            self.logger.info("Will use librosa fallback for audio feature extraction")
 
         try:
             import librosa
+
             self.logger.info("librosa library found")
         except ImportError:
             self.logger.error(
-                "librosa library not found. Install with: pip install librosa")
+                "librosa library not found. Install with: pip install librosa"
+            )
             raise ImportError("librosa library is required")
 
     def load_progress(self) -> Dict[str, bool]:
         """Load extraction progress from file."""
         if self.progress_file.exists():
-            with open(self.progress_file, 'r') as f:
+            with open(self.progress_file, "r") as f:
                 return json.load(f)
         return {}
 
     def save_progress(self):
         """Save extraction progress to file."""
-        with open(self.progress_file, 'w') as f:
+        with open(self.progress_file, "w") as f:
             json.dump(self.processed_videos, f, indent=2)
 
     def extract_audio_from_video(self, video_path: str, temp_dir: str) -> str:
@@ -74,19 +79,23 @@ class AudioFeatureExtractor:
         audio_path = os.path.join(temp_dir, "audio.wav")
 
         cmd = [
-            "ffmpeg", "-i", video_path,
+            "ffmpeg",
+            "-i",
+            video_path,
             "-vn",  # No video
-            "-acodec", "pcm_s16le",  # PCM 16-bit
-            "-ar", "22050",  # 22.05 kHz sample rate
-            "-ac", "1",  # Mono
+            "-acodec",
+            "pcm_s16le",  # PCM 16-bit
+            "-ar",
+            "22050",  # 22.05 kHz sample rate
+            "-ac",
+            "1",  # Mono
             audio_path,
-            "-y"  # Overwrite output file
+            "-y",  # Overwrite output file
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"FFmpeg audio extraction failed: {result.stderr}")
+            raise RuntimeError(f"FFmpeg audio extraction failed: {result.stderr}")
 
         return audio_path
 
@@ -103,7 +112,8 @@ class AudioFeatureExtractor:
         """
         if youtube_id in self.processed_videos:
             self.logger.info(
-                f"Audio features for {youtube_id} already extracted, skipping...")
+                f"Audio features for {youtube_id} already extracted, skipping..."
+            )
             return True
 
         output_path = self.output_dir / f"{youtube_id}.npy"
@@ -114,14 +124,13 @@ class AudioFeatureExtractor:
             # Create temporary directory for audio extraction
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Extract audio from video
-                audio_path = self.extract_audio_from_video(
-                    video_path, temp_dir)
+                audio_path = self.extract_audio_from_video(video_path, temp_dir)
 
                 # Load audio using librosa
                 audio, sr = librosa.load(audio_path, sr=22050)
 
                 # Initialize PANNs model
-                device = 'cuda' if self.check_gpu() else 'cpu'
+                device = "cuda" if self.check_gpu() else "cpu"
                 at = AudioTagging(checkpoint_path=None, device=device)
 
                 # Extract features in chunks (PANNs works with ~10 second chunks)
@@ -129,11 +138,10 @@ class AudioFeatureExtractor:
                 features = []
 
                 for i in range(0, len(audio), chunk_size):
-                    chunk = audio[i:i + chunk_size]
+                    chunk = audio[i : i + chunk_size]
                     if len(chunk) < chunk_size:
                         # Pad the last chunk
-                        chunk = np.pad(
-                            chunk, (0, chunk_size - len(chunk)), 'constant')
+                        chunk = np.pad(chunk, (0, chunk_size - len(chunk)), "constant")
 
                     # Extract features (embeddings)
                     (clipwise_output, embedding) = at.inference(chunk[None, :])
@@ -148,12 +156,14 @@ class AudioFeatureExtractor:
                 self.save_progress()
 
                 self.logger.info(
-                    f"Successfully extracted PANNs features for {youtube_id}, shape: {features.shape}")
+                    f"Successfully extracted PANNs features for {youtube_id}, shape: {features.shape}"
+                )
                 return True
 
         except Exception as e:
             self.logger.error(
-                f"PANNs feature extraction failed for {youtube_id}: {str(e)}")
+                f"PANNs feature extraction failed for {youtube_id}: {str(e)}"
+            )
             return False
 
     def extract_features_librosa(self, video_path: str, youtube_id: str) -> bool:
@@ -169,7 +179,8 @@ class AudioFeatureExtractor:
         """
         if youtube_id in self.processed_videos:
             self.logger.info(
-                f"Audio features for {youtube_id} already extracted, skipping...")
+                f"Audio features for {youtube_id} already extracted, skipping..."
+            )
             return True
 
         output_path = self.output_dir / f"{youtube_id}.npy"
@@ -178,8 +189,7 @@ class AudioFeatureExtractor:
             # Create temporary directory for audio extraction
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Extract audio from video
-                audio_path = self.extract_audio_from_video(
-                    video_path, temp_dir)
+                audio_path = self.extract_audio_from_video(video_path, temp_dir)
 
                 # Load audio using librosa
                 audio, sr = librosa.load(audio_path, sr=22050)
@@ -191,31 +201,36 @@ class AudioFeatureExtractor:
                 features = []
 
                 for i in range(0, len(audio), hop_size):
-                    window = audio[i:i + window_size]
+                    window = audio[i : i + window_size]
                     if len(window) < window_size:
                         # Pad the last window
                         window = np.pad(
-                            window, (0, window_size - len(window)), 'constant')
+                            window, (0, window_size - len(window)), "constant"
+                        )
 
                     # Extract various audio features
                     mfccs = librosa.feature.mfcc(y=window, sr=sr, n_mfcc=13)
                     chroma = librosa.feature.chroma(y=window, sr=sr)
                     spectral_contrast = librosa.feature.spectral_contrast(
-                        y=window, sr=sr)
+                        y=window, sr=sr
+                    )
                     tonnetz = librosa.feature.tonnetz(y=window, sr=sr)
 
                     # Concatenate features
-                    feature_vector = np.concatenate([
-                        np.mean(mfccs, axis=1),
-                        np.mean(chroma, axis=1),
-                        np.mean(spectral_contrast, axis=1),
-                        np.mean(tonnetz, axis=1)
-                    ])
+                    feature_vector = np.concatenate(
+                        [
+                            np.mean(mfccs, axis=1),
+                            np.mean(chroma, axis=1),
+                            np.mean(spectral_contrast, axis=1),
+                            np.mean(tonnetz, axis=1),
+                        ]
+                    )
 
                     # Pad or truncate to match expected dimension (2048)
                     if len(feature_vector) < 2048:
                         feature_vector = np.pad(
-                            feature_vector, (0, 2048 - len(feature_vector)), 'constant')
+                            feature_vector, (0, 2048 - len(feature_vector)), "constant"
+                        )
                     else:
                         feature_vector = feature_vector[:2048]
 
@@ -230,23 +245,28 @@ class AudioFeatureExtractor:
                 self.save_progress()
 
                 self.logger.info(
-                    f"Successfully extracted librosa features for {youtube_id}, shape: {features.shape}")
+                    f"Successfully extracted librosa features for {youtube_id}, shape: {features.shape}"
+                )
                 return True
 
         except Exception as e:
             self.logger.error(
-                f"Librosa feature extraction failed for {youtube_id}: {str(e)}")
+                f"Librosa feature extraction failed for {youtube_id}: {str(e)}"
+            )
             return False
 
     def check_gpu(self) -> bool:
         """Check if GPU is available for processing."""
         try:
             import torch
+
             return torch.cuda.is_available()
         except ImportError:
             return False
 
-    def process_video_directory(self, video_dir: str, max_videos: Optional[int] = None) -> Dict[str, Any]:
+    def process_video_directory(
+        self, video_dir: str, max_videos: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Process all videos in a directory to extract audio features.
 
@@ -268,13 +288,13 @@ class AudioFeatureExtractor:
         failed_extractions = 0
 
         self.logger.info(
-            f"Starting audio feature extraction for {total_videos} videos...")
+            f"Starting audio feature extraction for {total_videos} videos..."
+        )
 
         for i, video_file in enumerate(video_files, 1):
             youtube_id = video_file.stem
 
-            self.logger.info(
-                f"Processing video {i}/{total_videos}: {youtube_id}")
+            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
 
             # Try PANNs first, fallback to librosa
             if not self.extract_features_panns(str(video_file), youtube_id):
@@ -286,18 +306,24 @@ class AudioFeatureExtractor:
                 successful_extractions += 1
 
         stats = {
-            'total_videos': total_videos,
-            'successful_extractions': successful_extractions,
-            'failed_extractions': failed_extractions,
-            'success_rate': successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            "total_videos": total_videos,
+            "successful_extractions": successful_extractions,
+            "failed_extractions": failed_extractions,
+            "success_rate": (
+                successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            ),
         }
 
-        self.logger.info(f"Audio feature extraction complete: {successful_extractions}/{total_videos} successful "
-                         f"({stats['success_rate']:.1f}%)")
+        self.logger.info(
+            f"Audio feature extraction complete: {successful_extractions}/{total_videos} successful "
+            f"({stats['success_rate']:.1f}%)"
+        )
 
         return stats
 
-    def process_from_dataset(self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None) -> Dict[str, Any]:
+    def process_from_dataset(
+        self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Process videos based on dataset JSON file.
 
@@ -309,7 +335,7 @@ class AudioFeatureExtractor:
         Returns:
             Dict containing processing statistics
         """
-        with open(dataset_path, 'r') as f:
+        with open(dataset_path, "r") as f:
             dataset = json.load(f)
 
         if max_videos:
@@ -321,10 +347,11 @@ class AudioFeatureExtractor:
         failed_extractions = 0
 
         self.logger.info(
-            f"Starting audio feature extraction for {total_videos} videos from dataset...")
+            f"Starting audio feature extraction for {total_videos} videos from dataset..."
+        )
 
         for i, video_info in enumerate(dataset, 1):
-            youtube_id = video_info['youtube_id']
+            youtube_id = video_info["youtube_id"]
             video_file = video_dir / f"{youtube_id}.mp4"
 
             if not video_file.exists():
@@ -332,8 +359,7 @@ class AudioFeatureExtractor:
                 failed_extractions += 1
                 continue
 
-            self.logger.info(
-                f"Processing video {i}/{total_videos}: {youtube_id}")
+            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
 
             # Try PANNs first, fallback to librosa
             if not self.extract_features_panns(str(video_file), youtube_id):
@@ -345,30 +371,39 @@ class AudioFeatureExtractor:
                 successful_extractions += 1
 
         stats = {
-            'total_videos': total_videos,
-            'successful_extractions': successful_extractions,
-            'failed_extractions': failed_extractions,
-            'success_rate': successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            "total_videos": total_videos,
+            "successful_extractions": successful_extractions,
+            "failed_extractions": failed_extractions,
+            "success_rate": (
+                successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            ),
         }
 
-        self.logger.info(f"Audio feature extraction complete: {successful_extractions}/{total_videos} successful "
-                         f"({stats['success_rate']:.1f}%)")
+        self.logger.info(
+            f"Audio feature extraction complete: {successful_extractions}/{total_videos} successful "
+            f"({stats['success_rate']:.1f}%)"
+        )
 
         return stats
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Extract audio features from videos")
-    parser.add_argument("--video-dir", required=True,
-                        help="Directory containing video files")
+    parser = argparse.ArgumentParser(description="Extract audio features from videos")
+    parser.add_argument(
+        "--video-dir", required=True, help="Directory containing video files"
+    )
     parser.add_argument("--dataset", help="Path to dataset JSON file")
-    parser.add_argument("--output-dir", default="data/audio_pann_features",
-                        help="Output directory for features")
-    parser.add_argument("--max-videos", type=int,
-                        help="Maximum number of videos to process")
-    parser.add_argument("--log-level", default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--output-dir",
+        default="data/audio_pann_features",
+        help="Output directory for features",
+    )
+    parser.add_argument(
+        "--max-videos", type=int, help="Maximum number of videos to process"
+    )
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
 
     args = parser.parse_args()
 
@@ -377,10 +412,10 @@ def main():
     try:
         if args.dataset:
             stats = extractor.process_from_dataset(
-                args.dataset, args.video_dir, args.max_videos)
+                args.dataset, args.video_dir, args.max_videos
+            )
         else:
-            stats = extractor.process_video_directory(
-                args.video_dir, args.max_videos)
+            stats = extractor.process_video_directory(args.video_dir, args.max_videos)
 
         print(f"\nAudio Feature Extraction Statistics:")
         print(f"Total videos: {stats['total_videos']}")

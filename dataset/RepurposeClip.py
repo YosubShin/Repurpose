@@ -22,26 +22,29 @@ class RepurposeClip(Dataset):
         # Load original labels
         original_labels = json.load(open(label_path))
 
-        self.video_format = os.path.join(video_path, '{}.npy')
-        self.audio_format = os.path.join(audio_path, '{}.npy')
-        self.text_format = os.path.join(text_path, '{}.npy')
+        self.video_format = os.path.join(video_path, "{}.npy")
+        self.audio_format = os.path.join(audio_path, "{}.npy")
+        self.text_format = os.path.join(text_path, "{}.npy")
 
         # Filter labels to only include samples with all three modalities (with caching)
-        self.label = self._filter_available_samples_cached(
-            original_labels, label_path)
+        self.label = self._filter_available_samples_cached(original_labels, label_path)
 
-        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
+        self.video_ids = list(set([k["youtube_id"] for k in self.label]))
 
         for k in self.label:
-            k['labels'] = self.generate_time_status_list(
-                k['timeRangeOffset'], k['segmentsOffset'])
-            k['reg_offset'] = self.generate_regression_offsets(
-                k['timeRangeOffset'], k['segmentsOffset'])
+            k["labels"] = self.generate_time_status_list(
+                k["timeRangeOffset"], k["segmentsOffset"]
+            )
+            k["reg_offset"] = self.generate_regression_offsets(
+                k["timeRangeOffset"], k["segmentsOffset"]
+            )
 
     def _get_cache_path(self, label_path):
         """Generate cache file path based on label file and data paths"""
         # Create a hash of the configuration to detect changes
-        config_str = f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
+        config_str = (
+            f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
+        )
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
         # Get label file modification time for cache invalidation
@@ -58,55 +61,62 @@ class RepurposeClip(Dataset):
         # Try to load from cache
         if os.path.exists(cache_path):
             try:
-                self.logger.info(
-                    f"Loading filtered samples from cache: {cache_path}")
-                with open(cache_path, 'r') as f:
+                self.logger.info(f"Loading filtered samples from cache: {cache_path}")
+                with open(cache_path, "r") as f:
                     cache_data = json.load(f)
 
                 # Verify cache integrity
-                if (cache_data.get('total_original') == len(original_labels) and
-                        cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
+                if (
+                    cache_data.get("total_original") == len(original_labels)
+                    and cache_data.get("config_hash")
+                    == hashlib.md5(
+                        f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()
+                    ).hexdigest()[:8]
+                ):
 
-                    filtered_labels = cache_data['filtered_labels']
+                    filtered_labels = cache_data["filtered_labels"]
                     self.logger.info(
-                        f"Cache loaded successfully: {len(filtered_labels)} samples")
-                    stats = cache_data['stats']
+                        f"Cache loaded successfully: {len(filtered_labels)} samples"
+                    )
+                    stats = cache_data["stats"]
                     self.logger.info(
                         f"Cache summary: total_dropped={stats.get('total_dropped', 0)}, "
                         f"missing_visual={stats.get('missing_visual_count', 0)}, "
                         f"missing_audio={stats.get('missing_audio_count', 0)}, "
                         f"missing_text={stats.get('missing_text_count', 0)}, "
                         f"invalid_data={stats.get('invalid_data_count', 0)}, "
-                        f"keep_rate={stats.get('keep_rate', 0):.2f}%")
+                        f"keep_rate={stats.get('keep_rate', 0):.2f}%"
+                    )
                     return filtered_labels
                 else:
-                    self.logger.warning(
-                        "Cache integrity check failed, will regenerate")
+                    self.logger.warning("Cache integrity check failed, will regenerate")
             except Exception as e:
                 self.logger.warning(f"Failed to load cache {cache_path}: {e}")
 
         # Filter samples and save to cache
         self.logger.info("Filtering samples and creating cache...")
-        filtered_labels, filter_stats = self._filter_available_samples(
-            original_labels)
+        filtered_labels, filter_stats = self._filter_available_samples(original_labels)
 
         # Save to cache
         try:
             cache_data = {
-                'filtered_labels': filtered_labels,
-                'stats': filter_stats,
-                'total_original': len(original_labels),
-                'config_hash': hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8],
-                'timestamp': time.time()
+                "filtered_labels": filtered_labels,
+                "stats": filter_stats,
+                "total_original": len(original_labels),
+                "config_hash": hashlib.md5(
+                    f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()
+                ).hexdigest()[:8],
+                "timestamp": time.time(),
             }
 
-            with open(cache_path, 'w') as f:
+            with open(cache_path, "w") as f:
                 json.dump(cache_data, f, indent=2)
             self.logger.info(f"Filter cache saved to: {cache_path}")
 
             # Clean up old cache files
-            self._cleanup_old_cache_files(os.path.dirname(
-                cache_path), os.path.basename(label_path))
+            self._cleanup_old_cache_files(
+                os.path.dirname(cache_path), os.path.basename(label_path)
+            )
 
         except Exception as e:
             self.logger.warning(f"Failed to save cache {cache_path}: {e}")
@@ -118,15 +128,14 @@ class RepurposeClip(Dataset):
         try:
             label_prefix = f"{os.path.splitext(label_basename)[0]}_filter_cache_"
             for filename in os.listdir(cache_dir):
-                if filename.startswith(label_prefix) and filename.endswith('.json'):
+                if filename.startswith(label_prefix) and filename.endswith(".json"):
                     # Keep only the most recent cache file
                     cache_path = os.path.join(cache_dir, filename)
                     # Older than 1 day
                     if os.path.getmtime(cache_path) < time.time() - 86400:
                         try:
                             os.remove(cache_path)
-                            self.logger.debug(
-                                f"Removed old cache file: {filename}")
+                            self.logger.debug(f"Removed old cache file: {filename}")
                         except:
                             pass
         except Exception as e:
@@ -150,10 +159,13 @@ class RepurposeClip(Dataset):
         skipped_reasons = {}  # Track reasons why samples were skipped
 
         self.logger.info(
-            f"Filtering {len(original_labels)} samples for available data...")
+            f"Filtering {len(original_labels)} samples for available data..."
+        )
 
-        for label_item in tqdm(original_labels, desc="Filtering samples", unit="sample"):
-            video_id = label_item['youtube_id']
+        for label_item in tqdm(
+            original_labels, desc="Filtering samples", unit="sample"
+        ):
+            video_id = label_item["youtube_id"]
 
             # Check if all three modality files exist
             visual_path = self.video_format.format(video_id)
@@ -168,29 +180,29 @@ class RepurposeClip(Dataset):
                 # Additional validation: check if data is valid
                 try:
                     is_valid = self._validate_sample_data(
-                        label_item, visual_path, audio_path, text_path)
+                        label_item, visual_path, audio_path, text_path
+                    )
                     if is_valid:
                         filtered_labels.append(label_item)
                     else:
                         invalid_data.append(video_id)
-                        skipped_reasons[video_id] = ['invalid_data']
+                        skipped_reasons[video_id] = ["invalid_data"]
                 except Exception as e:
-                    self.logger.warning(
-                        f"Validation failed for {video_id}: {e}")
+                    self.logger.warning(f"Validation failed for {video_id}: {e}")
                     invalid_data.append(video_id)
-                    skipped_reasons[video_id] = ['validation_error']
+                    skipped_reasons[video_id] = ["validation_error"]
             else:
                 # Track what's missing for detailed logging
                 skip_reasons = []
                 if not visual_exists:
                     missing_visual.append(video_id)
-                    skip_reasons.append('visual_missing')
+                    skip_reasons.append("visual_missing")
                 if not audio_exists:
                     missing_audio.append(video_id)
-                    skip_reasons.append('audio_missing')
+                    skip_reasons.append("audio_missing")
                 if not text_exists:
                     missing_text.append(video_id)
-                    skip_reasons.append('text_missing')
+                    skip_reasons.append("text_missing")
                 skipped_reasons[video_id] = skip_reasons
 
         # Log statistics
@@ -206,37 +218,32 @@ class RepurposeClip(Dataset):
 
         if total_dropped > 0:
             self.logger.info(f"Missing/invalid breakdown:")
-            self.logger.info(
-                f"  Missing visual: {len(missing_visual)} samples")
+            self.logger.info(f"  Missing visual: {len(missing_visual)} samples")
             self.logger.info(f"  Missing audio: {len(missing_audio)} samples")
             self.logger.info(f"  Missing text: {len(missing_text)} samples")
             self.logger.info(f"  Invalid data: {len(invalid_data)} samples")
 
             # Log some example missing IDs (first 5)
             if missing_visual:
-                self.logger.debug(
-                    f"  Example missing visual: {missing_visual[:5]}")
+                self.logger.debug(f"  Example missing visual: {missing_visual[:5]}")
             if missing_audio:
-                self.logger.debug(
-                    f"  Example missing audio: {missing_audio[:5]}")
+                self.logger.debug(f"  Example missing audio: {missing_audio[:5]}")
             if missing_text:
-                self.logger.debug(
-                    f"  Example missing text: {missing_text[:5]}")
+                self.logger.debug(f"  Example missing text: {missing_text[:5]}")
             if invalid_data:
-                self.logger.debug(
-                    f"  Example invalid data: {invalid_data[:5]}")
+                self.logger.debug(f"  Example invalid data: {invalid_data[:5]}")
 
         # Create detailed statistics for cache
         filter_stats = {
-            'total_original': total_original,
-            'total_kept': total_kept,
-            'total_dropped': total_dropped,
-            'missing_visual_count': len(missing_visual),
-            'missing_audio_count': len(missing_audio),
-            'missing_text_count': len(missing_text),
-            'invalid_data_count': len(invalid_data),
-            'skipped_reasons': skipped_reasons,
-            'keep_rate': total_kept/total_original*100 if total_original > 0 else 0
+            "total_original": total_original,
+            "total_kept": total_kept,
+            "total_dropped": total_dropped,
+            "missing_visual_count": len(missing_visual),
+            "missing_audio_count": len(missing_audio),
+            "missing_text_count": len(missing_text),
+            "invalid_data_count": len(invalid_data),
+            "skipped_reasons": skipped_reasons,
+            "keep_rate": total_kept / total_original * 100 if total_original > 0 else 0,
         }
 
         return filtered_labels, filter_stats
@@ -248,7 +255,7 @@ class RepurposeClip(Dataset):
         Args:
             label_item: Label dictionary for the sample
             visual_path: Path to visual features
-            audio_path: Path to audio features  
+            audio_path: Path to audio features
             text_path: Path to text features
 
         Returns:
@@ -261,62 +268,86 @@ class RepurposeClip(Dataset):
             text_feats = np.load(text_path, allow_pickle=True)
 
             # Check basic shape requirements
-            if len(visual_feats.shape) != 2 or len(audio_feats.shape) != 2 or len(text_feats.shape) != 2:
-                self.logger.debug(f"Invalid feature shapes for {label_item['youtube_id']}: "
-                                  f"visual={visual_feats.shape}, audio={audio_feats.shape}, text={text_feats.shape}")
+            if (
+                len(visual_feats.shape) != 2
+                or len(audio_feats.shape) != 2
+                or len(text_feats.shape) != 2
+            ):
+                self.logger.debug(
+                    f"Invalid feature shapes for {label_item['youtube_id']}: "
+                    f"visual={visual_feats.shape}, audio={audio_feats.shape}, text={text_feats.shape}"
+                )
                 return False
 
             # Check for empty features
-            if visual_feats.shape[0] == 0 or audio_feats.shape[0] == 0 or text_feats.shape[0] == 0:
-                self.logger.debug(f"Empty features for {label_item['youtube_id']}: "
-                                  f"visual={visual_feats.shape[0]}, audio={audio_feats.shape[0]}, text={text_feats.shape[0]}")
+            if (
+                visual_feats.shape[0] == 0
+                or audio_feats.shape[0] == 0
+                or text_feats.shape[0] == 0
+            ):
+                self.logger.debug(
+                    f"Empty features for {label_item['youtube_id']}: "
+                    f"visual={visual_feats.shape[0]}, audio={audio_feats.shape[0]}, text={text_feats.shape[0]}"
+                )
                 return False
 
             # Generate labels and regression offsets to check for validity
             labels = self.generate_time_status_list(
-                label_item['timeRangeOffset'], label_item['segmentsOffset'])
+                label_item["timeRangeOffset"], label_item["segmentsOffset"]
+            )
             reg_offsets = self.generate_regression_offsets(
-                label_item['timeRangeOffset'], label_item['segmentsOffset'])
+                label_item["timeRangeOffset"], label_item["segmentsOffset"]
+            )
 
             # Check that we have valid labels and offsets
             if len(labels) == 0 or len(reg_offsets) == 0:
-                self.logger.debug(f"Empty labels or offsets for {label_item['youtube_id']}: "
-                                  f"labels={len(labels)}, offsets={len(reg_offsets)}")
+                self.logger.debug(
+                    f"Empty labels or offsets for {label_item['youtube_id']}: "
+                    f"labels={len(labels)}, offsets={len(reg_offsets)}"
+                )
                 return False
 
             # Check that regression offsets have proper shape
             if not isinstance(reg_offsets, list) or len(reg_offsets) > 0:
-                if isinstance(reg_offsets[0], (list, tuple)) and len(reg_offsets[0]) != 2:
-                    self.logger.debug(f"Invalid regression offset shape for {label_item['youtube_id']}: "
-                                      f"expected 2D tuples, got {type(reg_offsets[0])}")
+                if (
+                    isinstance(reg_offsets[0], (list, tuple))
+                    and len(reg_offsets[0]) != 2
+                ):
+                    self.logger.debug(
+                        f"Invalid regression offset shape for {label_item['youtube_id']}: "
+                        f"expected 2D tuples, got {type(reg_offsets[0])}"
+                    )
                     return False
 
             # Apply time range filtering to check final lengths
-            timeRange = label_item['timeRange']
+            timeRange = label_item["timeRange"]
             if timeRange[0] != 0:
-                visual_slice = visual_feats[int(
-                    timeRange[0]):int(timeRange[1]), :]
-                audio_slice = audio_feats[int(
-                    timeRange[0]):int(timeRange[1]), :]
-                text_slice = text_feats[int(timeRange[0]):int(timeRange[1]), :]
+                visual_slice = visual_feats[int(timeRange[0]) : int(timeRange[1]), :]
+                audio_slice = audio_feats[int(timeRange[0]) : int(timeRange[1]), :]
+                text_slice = text_feats[int(timeRange[0]) : int(timeRange[1]), :]
             else:
                 visual_slice = visual_feats
                 audio_slice = audio_feats
                 text_slice = text_feats
 
             # Check minimum length after slicing
-            min_len = min(visual_slice.shape[0], audio_slice.shape[0], text_slice.shape[0], len(
-                labels), len(reg_offsets))
+            min_len = min(
+                visual_slice.shape[0],
+                audio_slice.shape[0],
+                text_slice.shape[0],
+                len(labels),
+                len(reg_offsets),
+            )
             if min_len <= 0:
                 self.logger.debug(
-                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}")
+                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}"
+                )
                 return False
 
             return True
 
         except Exception as e:
-            self.logger.debug(
-                f"Validation error for {label_item['youtube_id']}: {e}")
+            self.logger.debug(f"Validation error for {label_item['youtube_id']}: {e}")
             return False
 
     def generate_time_status_list(self, time_range, segments):
@@ -346,7 +377,7 @@ class RepurposeClip(Dataset):
         """
         Generate regression offsets for each second in the time range.
         Each offset is a tuple (left_offset, right_offset) representing the distance
-        to the segment's start and end if the second is within a segment. If a second is outside 
+        to the segment's start and end if the second is within a segment. If a second is outside
         any segments, offsets are set to a default value (e.g., float('inf')).
 
         :param time_range: A list [begin, end] representing the overall time range.
@@ -355,21 +386,21 @@ class RepurposeClip(Dataset):
         """
         # Handle edge cases
         if not time_range or len(time_range) != 2:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(f"Invalid time_range: {time_range}")
             return [(0.0, 0.0)]  # Return minimal valid data
 
         if time_range[1] <= time_range[0]:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(
-                    f"Invalid time_range: end ({time_range[1]}) <= start ({time_range[0]})")
+                    f"Invalid time_range: end ({time_range[1]}) <= start ({time_range[0]})"
+                )
             return [(0.0, 0.0)]
 
         total_seconds = int(time_range[1] - time_range[0]) + 1
         if total_seconds <= 0:
-            if hasattr(self, 'logger'):
-                self.logger.warning(
-                    f"Non-positive total_seconds: {total_seconds}")
+            if hasattr(self, "logger"):
+                self.logger.warning(f"Non-positive total_seconds: {total_seconds}")
             return [(0.0, 0.0)]
 
         regression_offsets = [(0.0, 0.0)] * total_seconds
@@ -413,36 +444,44 @@ class RepurposeClip(Dataset):
         return len(self.label)
 
     def __getitem__(self, idx):
-        video_id = self.label[idx]['youtube_id']
-        timeRange = self.label[idx]['timeRange']
+        video_id = self.label[idx]["youtube_id"]
+        timeRange = self.label[idx]["timeRange"]
 
         feats_visual = self.load_data(self.video_format.format(video_id))
         feats_audio = self.load_data(self.audio_format.format(video_id))
         feats_text = self.load_data(self.text_format.format(video_id))
 
         if timeRange[0] != 0:
-            feats_visual = feats_visual[int(timeRange[0]):int(timeRange[1]), :]
-            feats_audio = feats_audio[int(timeRange[0]):int(timeRange[1]), :]
-            feats_text = feats_text[int(timeRange[0]):int(timeRange[1]), :]
+            feats_visual = feats_visual[int(timeRange[0]) : int(timeRange[1]), :]
+            feats_audio = feats_audio[int(timeRange[0]) : int(timeRange[1]), :]
+            feats_text = feats_text[int(timeRange[0]) : int(timeRange[1]), :]
 
-        saliency_score = self.label[idx]['labels']
-        reg_offset = self.label[idx]['reg_offset']
+        saliency_score = self.label[idx]["labels"]
+        reg_offset = self.label[idx]["reg_offset"]
 
         # avoid audio and visual features have different lengths
-        min_len = min(feats_visual.shape[0], feats_audio.shape[0], len(
-            saliency_score), len(reg_offset))
-        feats = {'visual': feats_visual[:min_len],
-                 'audio': feats_audio[:min_len], 'text': feats_text[:min_len]}
+        min_len = min(
+            feats_visual.shape[0],
+            feats_audio.shape[0],
+            len(saliency_score),
+            len(reg_offset),
+        )
+        feats = {
+            "visual": feats_visual[:min_len],
+            "audio": feats_audio[:min_len],
+            "text": feats_text[:min_len],
+        }
         saliency_score = saliency_score[:min_len]
         reg_offset = reg_offset[:min_len]
 
         # return a data dict
-        data_dict = {'video_id': video_id,
-                     'feats': feats,      # seq_len, feature_dim
-                     'segments': reg_offset,   # seq_len x 2
-                     'labels': saliency_score,     # seq_len
-                     'duration': min_len,
-                     }
+        data_dict = {
+            "video_id": video_id,
+            "feats": feats,  # seq_len, feature_dim
+            "segments": reg_offset,  # seq_len x 2
+            "labels": saliency_score,  # seq_len
+            "duration": min_len,
+        }
         return data_dict
 
 
@@ -455,8 +494,7 @@ def preprocessing(vis_feats, aud_feats, text_feats, labels, segments, padding_va
     feats_audio = aud_feats
     feats_text = text_feats
 
-    feats_lens = torch.as_tensor([feat_visual.shape[0]
-                                 for feat_visual in feats_visual])
+    feats_lens = torch.as_tensor([feat_visual.shape[0] for feat_visual in feats_visual])
     max_len = feats_lens.max().item()
 
     # Handle edge case where max_len is 0
@@ -464,21 +502,24 @@ def preprocessing(vis_feats, aud_feats, text_feats, labels, segments, padding_va
         raise ValueError("All sequences in the batch have zero length")
 
     batch_shape_visual = torch.full(
-        (len(feats_visual), max_len, feats_visual[0].shape[1]), padding_val)
+        (len(feats_visual), max_len, feats_visual[0].shape[1]), padding_val
+    )
     for i, seq in enumerate(feats_visual):
         length = seq.shape[0]
         if length > 0:
             batch_shape_visual[i, :length, ...] = seq
 
     batch_shape_audio = torch.full(
-        (len(feats_audio), max_len, feats_audio[0].shape[1]), padding_val)
+        (len(feats_audio), max_len, feats_audio[0].shape[1]), padding_val
+    )
     for i, seq in enumerate(feats_audio):
         length = seq.shape[0]
         if length > 0:
             batch_shape_audio[i, :length, ...] = seq
 
     batch_shape_text = torch.full(
-        (len(feats_text), max_len, feats_text[0].shape[1]), padding_val)
+        (len(feats_text), max_len, feats_text[0].shape[1]), padding_val
+    )
     for i, seq in enumerate(feats_text):
         length = seq.shape[0]
         if length > 0:
@@ -510,8 +551,7 @@ def preprocessing(vis_feats, aud_feats, text_feats, labels, segments, padding_va
     if seg_dim is None:
         raise ValueError("Could not determine segment dimensions")
 
-    batch_shape_segments = torch.full(
-        (len(segments), max_len, seg_dim), padding_val)
+    batch_shape_segments = torch.full((len(segments), max_len, seg_dim), padding_val)
 
     for i, seq in enumerate(segments):
         length = seq.shape[0]
@@ -521,27 +561,36 @@ def preprocessing(vis_feats, aud_feats, text_feats, labels, segments, padding_va
                 seq = seq.unsqueeze(1)  # Add dimension if needed
             elif seq.shape[1] != seg_dim:
                 logging.warning(
-                    f"Segment {i} has unexpected shape: {seq.shape}, expected dim {seg_dim}")
+                    f"Segment {i} has unexpected shape: {seq.shape}, expected dim {seg_dim}"
+                )
                 continue
             batch_shape_segments[i, :length, ...] = seq
 
     batched_masks = torch.arange(max_len).expand(
-        len(feats_lens), max_len) < feats_lens.unsqueeze(1)
+        len(feats_lens), max_len
+    ) < feats_lens.unsqueeze(1)
 
     batched_masks = batched_masks.unsqueeze(1)
 
-    return batch_shape_visual, batch_shape_audio, batch_shape_text, batched_masks, batch_shape_labels, batch_shape_segments
+    return (
+        batch_shape_visual,
+        batch_shape_audio,
+        batch_shape_text,
+        batched_masks,
+        batch_shape_labels,
+        batch_shape_segments,
+    )
 
 
 def collate_fn(batch):
     try:
-        vis_feats = [torch.tensor(item['feats']['visual']) for item in batch]
-        aud_feats = [torch.tensor(item['feats']['audio']) for item in batch]
-        text_feats = [torch.tensor(item['feats']['text']) for item in batch]
-        labels = [torch.tensor(item['labels']) for item in batch]
-        segments = [torch.tensor(item['segments']) for item in batch]
-        video_ids = [item['video_id'] for item in batch]
-        durations = [item['duration'] for item in batch]
+        vis_feats = [torch.tensor(item["feats"]["visual"]) for item in batch]
+        aud_feats = [torch.tensor(item["feats"]["audio"]) for item in batch]
+        text_feats = [torch.tensor(item["feats"]["text"]) for item in batch]
+        labels = [torch.tensor(item["labels"]) for item in batch]
+        segments = [torch.tensor(item["segments"]) for item in batch]
+        video_ids = [item["video_id"] for item in batch]
+        durations = [item["duration"] for item in batch]
 
         # Debug logging for tensor shapes
         logger = logging.getLogger(__name__)
@@ -553,25 +602,33 @@ def collate_fn(batch):
         logger.debug(f"Segment shapes: {[s.shape for s in segments]}")
         logger.debug(f"Video IDs: {video_ids}")
 
-        batched_inputs_visual, batched_inputs_audio, batched_inputs_text, batched_masks, batched_labels, batched_segments = preprocessing(
-            vis_feats, aud_feats, text_feats, labels, segments)
+        (
+            batched_inputs_visual,
+            batched_inputs_audio,
+            batched_inputs_text,
+            batched_masks,
+            batched_labels,
+            batched_segments,
+        ) = preprocessing(vis_feats, aud_feats, text_feats, labels, segments)
         return {
-            'video_id': video_ids,
-            'duration': durations,
-            'visual_feats': batched_inputs_visual,
-            'audio_feats': batched_inputs_audio,
-            'text_feats': batched_inputs_text,
-            'masks': batched_masks,
-            'labels': batched_labels,
-            'segments': batched_segments,
+            "video_id": video_ids,
+            "duration": durations,
+            "visual_feats": batched_inputs_visual,
+            "audio_feats": batched_inputs_audio,
+            "text_feats": batched_inputs_text,
+            "masks": batched_masks,
+            "labels": batched_labels,
+            "segments": batched_segments,
         }
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error in collate_fn: {e}")
         logger.error(
-            f"Batch video IDs: {[item.get('video_id', 'unknown') for item in batch]}")
+            f"Batch video IDs: {[item.get('video_id', 'unknown') for item in batch]}"
+        )
         logger.error(
-            f"Batch sizes: {[(item.get('video_id', 'unknown'), item.get('duration', 'unknown')) for item in batch]}")
+            f"Batch sizes: {[(item.get('video_id', 'unknown'), item.get('duration', 'unknown')) for item in batch]}"
+        )
         raise
 
 
@@ -588,26 +645,29 @@ class RepurposeClipTest(Dataset):
         # Load original labels
         original_labels = json.load(open(label_path))
 
-        self.video_format = os.path.join(video_path, '{}.npy')
-        self.audio_format = os.path.join(audio_path, '{}.npy')
-        self.text_format = os.path.join(text_path, '{}.npy')
+        self.video_format = os.path.join(video_path, "{}.npy")
+        self.audio_format = os.path.join(audio_path, "{}.npy")
+        self.text_format = os.path.join(text_path, "{}.npy")
 
         # Filter labels to only include samples with all three modalities (with caching)
-        self.label = self._filter_available_samples_cached(
-            original_labels, label_path)
+        self.label = self._filter_available_samples_cached(original_labels, label_path)
 
-        self.video_ids = list(set([k['youtube_id'] for k in self.label]))
+        self.video_ids = list(set([k["youtube_id"] for k in self.label]))
 
         for k in self.label:
-            k['labels'] = self.generate_time_status_list(
-                k['timeRangeOffset'], k['segmentsOffset'])
-            k['reg_offset'] = self.generate_regression_offsets(
-                k['timeRangeOffset'], k['segmentsOffset'])
+            k["labels"] = self.generate_time_status_list(
+                k["timeRangeOffset"], k["segmentsOffset"]
+            )
+            k["reg_offset"] = self.generate_regression_offsets(
+                k["timeRangeOffset"], k["segmentsOffset"]
+            )
 
     def _get_cache_path(self, label_path):
         """Generate cache file path based on label file and data paths"""
         # Create a hash of the configuration to detect changes
-        config_str = f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
+        config_str = (
+            f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}"
+        )
         config_hash = hashlib.md5(config_str.encode()).hexdigest()[:8]
 
         # Get label file modification time for cache invalidation
@@ -625,54 +685,64 @@ class RepurposeClipTest(Dataset):
         if os.path.exists(cache_path):
             try:
                 self.logger.info(
-                    f"Loading filtered test samples from cache: {cache_path}")
-                with open(cache_path, 'r') as f:
+                    f"Loading filtered test samples from cache: {cache_path}"
+                )
+                with open(cache_path, "r") as f:
                     cache_data = json.load(f)
 
                 # Verify cache integrity
-                if (cache_data.get('total_original') == len(original_labels) and
-                        cache_data.get('config_hash') == hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8]):
+                if (
+                    cache_data.get("total_original") == len(original_labels)
+                    and cache_data.get("config_hash")
+                    == hashlib.md5(
+                        f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()
+                    ).hexdigest()[:8]
+                ):
 
-                    filtered_labels = cache_data['filtered_labels']
+                    filtered_labels = cache_data["filtered_labels"]
                     self.logger.info(
-                        f"Test cache loaded successfully: {len(filtered_labels)} samples")
-                    stats = cache_data['stats']
+                        f"Test cache loaded successfully: {len(filtered_labels)} samples"
+                    )
+                    stats = cache_data["stats"]
                     self.logger.info(
                         f"Test cache summary: total_dropped={stats.get('total_dropped', 0)}, "
                         f"missing_visual={stats.get('missing_visual_count', 0)}, "
                         f"missing_audio={stats.get('missing_audio_count', 0)}, "
                         f"missing_text={stats.get('missing_text_count', 0)}, "
-                        f"keep_rate={stats.get('keep_rate', 0):.2f}%")
+                        f"keep_rate={stats.get('keep_rate', 0):.2f}%"
+                    )
                     return filtered_labels
                 else:
                     self.logger.warning(
-                        "Test cache integrity check failed, will regenerate")
+                        "Test cache integrity check failed, will regenerate"
+                    )
             except Exception as e:
-                self.logger.warning(
-                    f"Failed to load test cache {cache_path}: {e}")
+                self.logger.warning(f"Failed to load test cache {cache_path}: {e}")
 
         # Filter samples and save to cache
         self.logger.info("Filtering test samples and creating cache...")
-        filtered_labels, filter_stats = self._filter_available_samples(
-            original_labels)
+        filtered_labels, filter_stats = self._filter_available_samples(original_labels)
 
         # Save to cache
         try:
             cache_data = {
-                'filtered_labels': filtered_labels,
-                'stats': filter_stats,
-                'total_original': len(original_labels),
-                'config_hash': hashlib.md5(f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()).hexdigest()[:8],
-                'timestamp': time.time()
+                "filtered_labels": filtered_labels,
+                "stats": filter_stats,
+                "total_original": len(original_labels),
+                "config_hash": hashlib.md5(
+                    f"{label_path}_{self.video_path}_{self.audio_path}_{self.text_path}".encode()
+                ).hexdigest()[:8],
+                "timestamp": time.time(),
             }
 
-            with open(cache_path, 'w') as f:
+            with open(cache_path, "w") as f:
                 json.dump(cache_data, f, indent=2)
             self.logger.info(f"Test filter cache saved to: {cache_path}")
 
             # Clean up old cache files
-            self._cleanup_old_cache_files(os.path.dirname(
-                cache_path), os.path.basename(label_path))
+            self._cleanup_old_cache_files(
+                os.path.dirname(cache_path), os.path.basename(label_path)
+            )
 
         except Exception as e:
             self.logger.warning(f"Failed to save test cache {cache_path}: {e}")
@@ -684,7 +754,7 @@ class RepurposeClipTest(Dataset):
         try:
             label_prefix = f"{os.path.splitext(label_basename)[0]}_test_filter_cache_"
             for filename in os.listdir(cache_dir):
-                if filename.startswith(label_prefix) and filename.endswith('.json'):
+                if filename.startswith(label_prefix) and filename.endswith(".json"):
                     # Keep only the most recent cache file
                     cache_path = os.path.join(cache_dir, filename)
                     # Older than 1 day
@@ -692,7 +762,8 @@ class RepurposeClipTest(Dataset):
                         try:
                             os.remove(cache_path)
                             self.logger.debug(
-                                f"Removed old test cache file: {filename}")
+                                f"Removed old test cache file: {filename}"
+                            )
                         except:
                             pass
         except Exception as e:
@@ -714,11 +785,12 @@ class RepurposeClipTest(Dataset):
         missing_text = []
         skipped_reasons = {}  # Track reasons why samples were skipped
 
-        print(
-            f"Filtering {len(original_labels)} test samples for available data...")
+        print(f"Filtering {len(original_labels)} test samples for available data...")
 
-        for label_item in tqdm(original_labels, desc="Filtering test samples", unit="sample"):
-            video_id = label_item['youtube_id']
+        for label_item in tqdm(
+            original_labels, desc="Filtering test samples", unit="sample"
+        ):
+            video_id = label_item["youtube_id"]
 
             # Check if all three modality files exist
             visual_path = self.video_format.format(video_id)
@@ -736,13 +808,13 @@ class RepurposeClipTest(Dataset):
                 skip_reasons = []
                 if not visual_exists:
                     missing_visual.append(video_id)
-                    skip_reasons.append('visual_missing')
+                    skip_reasons.append("visual_missing")
                 if not audio_exists:
                     missing_audio.append(video_id)
-                    skip_reasons.append('audio_missing')
+                    skip_reasons.append("audio_missing")
                 if not text_exists:
                     missing_text.append(video_id)
-                    skip_reasons.append('text_missing')
+                    skip_reasons.append("text_missing")
                 skipped_reasons[video_id] = skip_reasons
 
         # Log statistics
@@ -758,32 +830,28 @@ class RepurposeClipTest(Dataset):
 
         if total_dropped > 0:
             self.logger.info(f"Missing modality breakdown:")
-            self.logger.info(
-                f"  Missing visual: {len(missing_visual)} samples")
+            self.logger.info(f"  Missing visual: {len(missing_visual)} samples")
             self.logger.info(f"  Missing audio: {len(missing_audio)} samples")
             self.logger.info(f"  Missing text: {len(missing_text)} samples")
 
             # Log some example missing IDs (first 5)
             if missing_visual:
-                self.logger.debug(
-                    f"  Example missing visual: {missing_visual[:5]}")
+                self.logger.debug(f"  Example missing visual: {missing_visual[:5]}")
             if missing_audio:
-                self.logger.debug(
-                    f"  Example missing audio: {missing_audio[:5]}")
+                self.logger.debug(f"  Example missing audio: {missing_audio[:5]}")
             if missing_text:
-                self.logger.debug(
-                    f"  Example missing text: {missing_text[:5]}")
+                self.logger.debug(f"  Example missing text: {missing_text[:5]}")
 
         # Create detailed statistics for cache
         filter_stats = {
-            'total_original': total_original,
-            'total_kept': total_kept,
-            'total_dropped': total_dropped,
-            'missing_visual_count': len(missing_visual),
-            'missing_audio_count': len(missing_audio),
-            'missing_text_count': len(missing_text),
-            'skipped_reasons': skipped_reasons,
-            'keep_rate': total_kept/total_original*100 if total_original > 0 else 0
+            "total_original": total_original,
+            "total_kept": total_kept,
+            "total_dropped": total_dropped,
+            "missing_visual_count": len(missing_visual),
+            "missing_audio_count": len(missing_audio),
+            "missing_text_count": len(missing_text),
+            "skipped_reasons": skipped_reasons,
+            "keep_rate": total_kept / total_original * 100 if total_original > 0 else 0,
         }
 
         return filtered_labels, filter_stats
@@ -795,7 +863,7 @@ class RepurposeClipTest(Dataset):
         Args:
             label_item: Label dictionary for the sample
             visual_path: Path to visual features
-            audio_path: Path to audio features  
+            audio_path: Path to audio features
             text_path: Path to text features
 
         Returns:
@@ -808,62 +876,86 @@ class RepurposeClipTest(Dataset):
             text_feats = np.load(text_path, allow_pickle=True)
 
             # Check basic shape requirements
-            if len(visual_feats.shape) != 2 or len(audio_feats.shape) != 2 or len(text_feats.shape) != 2:
-                self.logger.debug(f"Invalid feature shapes for {label_item['youtube_id']}: "
-                                  f"visual={visual_feats.shape}, audio={audio_feats.shape}, text={text_feats.shape}")
+            if (
+                len(visual_feats.shape) != 2
+                or len(audio_feats.shape) != 2
+                or len(text_feats.shape) != 2
+            ):
+                self.logger.debug(
+                    f"Invalid feature shapes for {label_item['youtube_id']}: "
+                    f"visual={visual_feats.shape}, audio={audio_feats.shape}, text={text_feats.shape}"
+                )
                 return False
 
             # Check for empty features
-            if visual_feats.shape[0] == 0 or audio_feats.shape[0] == 0 or text_feats.shape[0] == 0:
-                self.logger.debug(f"Empty features for {label_item['youtube_id']}: "
-                                  f"visual={visual_feats.shape[0]}, audio={audio_feats.shape[0]}, text={text_feats.shape[0]}")
+            if (
+                visual_feats.shape[0] == 0
+                or audio_feats.shape[0] == 0
+                or text_feats.shape[0] == 0
+            ):
+                self.logger.debug(
+                    f"Empty features for {label_item['youtube_id']}: "
+                    f"visual={visual_feats.shape[0]}, audio={audio_feats.shape[0]}, text={text_feats.shape[0]}"
+                )
                 return False
 
             # Generate labels and regression offsets to check for validity
             labels = self.generate_time_status_list(
-                label_item['timeRangeOffset'], label_item['segmentsOffset'])
+                label_item["timeRangeOffset"], label_item["segmentsOffset"]
+            )
             reg_offsets = self.generate_regression_offsets(
-                label_item['timeRangeOffset'], label_item['segmentsOffset'])
+                label_item["timeRangeOffset"], label_item["segmentsOffset"]
+            )
 
             # Check that we have valid labels and offsets
             if len(labels) == 0 or len(reg_offsets) == 0:
-                self.logger.debug(f"Empty labels or offsets for {label_item['youtube_id']}: "
-                                  f"labels={len(labels)}, offsets={len(reg_offsets)}")
+                self.logger.debug(
+                    f"Empty labels or offsets for {label_item['youtube_id']}: "
+                    f"labels={len(labels)}, offsets={len(reg_offsets)}"
+                )
                 return False
 
             # Check that regression offsets have proper shape
             if not isinstance(reg_offsets, list) or len(reg_offsets) > 0:
-                if isinstance(reg_offsets[0], (list, tuple)) and len(reg_offsets[0]) != 2:
-                    self.logger.debug(f"Invalid regression offset shape for {label_item['youtube_id']}: "
-                                      f"expected 2D tuples, got {type(reg_offsets[0])}")
+                if (
+                    isinstance(reg_offsets[0], (list, tuple))
+                    and len(reg_offsets[0]) != 2
+                ):
+                    self.logger.debug(
+                        f"Invalid regression offset shape for {label_item['youtube_id']}: "
+                        f"expected 2D tuples, got {type(reg_offsets[0])}"
+                    )
                     return False
 
             # Apply time range filtering to check final lengths
-            timeRange = label_item['timeRange']
+            timeRange = label_item["timeRange"]
             if timeRange[0] != 0:
-                visual_slice = visual_feats[int(
-                    timeRange[0]):int(timeRange[1]), :]
-                audio_slice = audio_feats[int(
-                    timeRange[0]):int(timeRange[1]), :]
-                text_slice = text_feats[int(timeRange[0]):int(timeRange[1]), :]
+                visual_slice = visual_feats[int(timeRange[0]) : int(timeRange[1]), :]
+                audio_slice = audio_feats[int(timeRange[0]) : int(timeRange[1]), :]
+                text_slice = text_feats[int(timeRange[0]) : int(timeRange[1]), :]
             else:
                 visual_slice = visual_feats
                 audio_slice = audio_feats
                 text_slice = text_feats
 
             # Check minimum length after slicing
-            min_len = min(visual_slice.shape[0], audio_slice.shape[0], text_slice.shape[0], len(
-                labels), len(reg_offsets))
+            min_len = min(
+                visual_slice.shape[0],
+                audio_slice.shape[0],
+                text_slice.shape[0],
+                len(labels),
+                len(reg_offsets),
+            )
             if min_len <= 0:
                 self.logger.info(
-                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}, visual_slice.shape={visual_slice.shape}, audio_slice.shape={audio_slice.shape}, text_slice.shape={text_slice.shape}, labels={len(labels)}, reg_offsets={len(reg_offsets)}")
+                    f"Zero length after processing for {label_item['youtube_id']}: min_len={min_len}, visual_slice.shape={visual_slice.shape}, audio_slice.shape={audio_slice.shape}, text_slice.shape={text_slice.shape}, labels={len(labels)}, reg_offsets={len(reg_offsets)}"
+                )
                 return False
 
             return True
 
         except Exception as e:
-            self.logger.debug(
-                f"Validation error for {label_item['youtube_id']}: {e}")
+            self.logger.debug(f"Validation error for {label_item['youtube_id']}: {e}")
             return False
 
     def generate_time_status_list(self, time_range, segments):
@@ -893,7 +985,7 @@ class RepurposeClipTest(Dataset):
         """
         Generate regression offsets for each second in the time range.
         Each offset is a tuple (left_offset, right_offset) representing the distance
-        to the segment's start and end if the second is within a segment. If a second is outside 
+        to the segment's start and end if the second is within a segment. If a second is outside
         any segments, offsets are set to a default value (e.g., float('inf')).
 
         :param time_range: A list [begin, end] representing the overall time range.
@@ -902,21 +994,21 @@ class RepurposeClipTest(Dataset):
         """
         # Handle edge cases
         if not time_range or len(time_range) != 2:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(f"Invalid time_range: {time_range}")
             return [(0.0, 0.0)]  # Return minimal valid data
 
         if time_range[1] <= time_range[0]:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(
-                    f"Invalid time_range: end ({time_range[1]}) <= start ({time_range[0]})")
+                    f"Invalid time_range: end ({time_range[1]}) <= start ({time_range[0]})"
+                )
             return [(0.0, 0.0)]
 
         total_seconds = int(time_range[1] - time_range[0]) + 1
         if total_seconds <= 0:
-            if hasattr(self, 'logger'):
-                self.logger.warning(
-                    f"Non-positive total_seconds: {total_seconds}")
+            if hasattr(self, "logger"):
+                self.logger.warning(f"Non-positive total_seconds: {total_seconds}")
             return [(0.0, 0.0)]
 
         regression_offsets = [(0.0, 0.0)] * total_seconds
@@ -960,50 +1052,58 @@ class RepurposeClipTest(Dataset):
         return len(self.label)
 
     def __getitem__(self, idx):
-        video_id = self.label[idx]['youtube_id']
-        timeRange = self.label[idx]['timeRange']
+        video_id = self.label[idx]["youtube_id"]
+        timeRange = self.label[idx]["timeRange"]
 
         feats_visual = self.load_data(self.video_format.format(video_id))
         feats_audio = self.load_data(self.audio_format.format(video_id))
         feats_text = self.load_data(self.text_format.format(video_id))
 
         if timeRange[0] != 0:
-            feats_visual = feats_visual[int(timeRange[0]):int(timeRange[1]), :]
-            feats_audio = feats_audio[int(timeRange[0]):int(timeRange[1]), :]
-            feats_text = feats_text[int(timeRange[0]):int(timeRange[1]), :]
+            feats_visual = feats_visual[int(timeRange[0]) : int(timeRange[1]), :]
+            feats_audio = feats_audio[int(timeRange[0]) : int(timeRange[1]), :]
+            feats_text = feats_text[int(timeRange[0]) : int(timeRange[1]), :]
 
-        saliency_score = self.label[idx]['labels']
-        reg_offset = self.label[idx]['reg_offset']
+        saliency_score = self.label[idx]["labels"]
+        reg_offset = self.label[idx]["reg_offset"]
 
         # avoid audio and visual features have different lengths
-        min_len = min(feats_visual.shape[0], feats_audio.shape[0], len(
-            saliency_score), len(reg_offset))
-        feats = {'visual': feats_visual[:min_len],
-                 'audio': feats_audio[:min_len], 'text': feats_text[:min_len]}
+        min_len = min(
+            feats_visual.shape[0],
+            feats_audio.shape[0],
+            len(saliency_score),
+            len(reg_offset),
+        )
+        feats = {
+            "visual": feats_visual[:min_len],
+            "audio": feats_audio[:min_len],
+            "text": feats_text[:min_len],
+        }
         saliency_score = saliency_score[:min_len]
         reg_offset = reg_offset[:min_len]
 
         # return a data dict
-        data_dict = {'video_id': video_id,
-                     'feats': feats,      # seq_len, feature_dim
-                     'segments': reg_offset,   # seq_len x 2
-                     'labels': saliency_score,     # seq_len
-                     'duration': min_len,
-                     'gt_segments': self.label[idx]['segmentsOffset'],
-                     }
+        data_dict = {
+            "video_id": video_id,
+            "feats": feats,  # seq_len, feature_dim
+            "segments": reg_offset,  # seq_len x 2
+            "labels": saliency_score,  # seq_len
+            "duration": min_len,
+            "gt_segments": self.label[idx]["segmentsOffset"],
+        }
         return data_dict
 
 
 def collate_fn_test(batch):
     try:
-        vis_feats = [torch.tensor(item['feats']['visual']) for item in batch]
-        aud_feats = [torch.tensor(item['feats']['audio']) for item in batch]
-        text_feats = [torch.tensor(item['feats']['text']) for item in batch]
-        labels = [torch.tensor(item['labels']) for item in batch]
-        segments = [torch.tensor(item['segments']) for item in batch]
-        video_ids = [item['video_id'] for item in batch]
-        durations = [item['duration'] for item in batch]
-        gt_segments = [item['gt_segments'] for item in batch]
+        vis_feats = [torch.tensor(item["feats"]["visual"]) for item in batch]
+        aud_feats = [torch.tensor(item["feats"]["audio"]) for item in batch]
+        text_feats = [torch.tensor(item["feats"]["text"]) for item in batch]
+        labels = [torch.tensor(item["labels"]) for item in batch]
+        segments = [torch.tensor(item["segments"]) for item in batch]
+        video_ids = [item["video_id"] for item in batch]
+        durations = [item["duration"] for item in batch]
+        gt_segments = [item["gt_segments"] for item in batch]
 
         # Debug logging for tensor shapes
         logger = logging.getLogger(__name__)
@@ -1015,24 +1115,32 @@ def collate_fn_test(batch):
         logger.debug(f"Test segment shapes: {[s.shape for s in segments]}")
         logger.debug(f"Test video IDs: {video_ids}")
 
-        batched_inputs_visual, batched_inputs_audio, batched_inputs_text, batched_masks, batched_labels, batched_segments = preprocessing(
-            vis_feats, aud_feats, text_feats, labels, segments)
+        (
+            batched_inputs_visual,
+            batched_inputs_audio,
+            batched_inputs_text,
+            batched_masks,
+            batched_labels,
+            batched_segments,
+        ) = preprocessing(vis_feats, aud_feats, text_feats, labels, segments)
         return {
-            'video_id': video_ids,
-            'duration': durations,
-            'visual_feats': batched_inputs_visual,
-            'audio_feats': batched_inputs_audio,
-            'text_feats': batched_inputs_text,
-            'masks': batched_masks,
-            'labels': batched_labels,
-            'segments': batched_segments,
-            'gt_segments': gt_segments,
+            "video_id": video_ids,
+            "duration": durations,
+            "visual_feats": batched_inputs_visual,
+            "audio_feats": batched_inputs_audio,
+            "text_feats": batched_inputs_text,
+            "masks": batched_masks,
+            "labels": batched_labels,
+            "segments": batched_segments,
+            "gt_segments": gt_segments,
         }
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error in collate_fn_test: {e}")
         logger.error(
-            f"Test batch video IDs: {[item.get('video_id', 'unknown') for item in batch]}")
+            f"Test batch video IDs: {[item.get('video_id', 'unknown') for item in batch]}"
+        )
         logger.error(
-            f"Test batch sizes: {[(item.get('video_id', 'unknown'), item.get('duration', 'unknown')) for item in batch]}")
+            f"Test batch sizes: {[(item.get('video_id', 'unknown'), item.get('duration', 'unknown')) for item in batch]}"
+        )
         raise

@@ -7,11 +7,11 @@ from .text_feature_extractor import TextFeatureExtractor
 from .main_preprocessing import PreprocessingPipeline
 
 __all__ = [
-    'VideoDownloader',
-    'VisualFeatureExtractorCLIP', 
-    'AudioFeatureExtractor',
-    'TextFeatureExtractor',
-    'PreprocessingPipeline'
+    "VideoDownloader",
+    "VisualFeatureExtractorCLIP",
+    "AudioFeatureExtractor",
+    "TextFeatureExtractor",
+    "PreprocessingPipeline",
 ]
 
 __version__ = "1.0.0"

@@ -11,7 +11,12 @@ import torch
 import argparse
 import yaml
 import logging
-from utils.distributed import MultiGPUStrategy, is_main_process, get_rank, get_world_size
+from utils.distributed import (
+    MultiGPUStrategy,
+    is_main_process,
+    get_rank,
+    get_world_size,
+)
 
 
 def load_config(config_file):
@@ -27,14 +32,14 @@ def test_model_initialization():
 
         # Create a simple model config for testing
         model_config = {
-            'vis_dim': 512,
-            'aud_dim': 2048,
-            'text_dim': 384,
-            'd_model': 512,
-            'self_num_layers': 2,  # Reduced for testing
-            'text_num_layers': 2,
-            'cross_num_layers': 2,
-            'num_heads': 8,
+            "vis_dim": 512,
+            "aud_dim": 2048,
+            "text_dim": 384,
+            "d_model": 512,
+            "self_num_layers": 2,  # Reduced for testing
+            "text_num_layers": 2,
+            "cross_num_layers": 2,
+            "num_heads": 8,
         }
 
         model = MMCTransformer(**model_config)
@@ -51,10 +56,10 @@ def test_data_loading():
 
         # Check if data paths exist
         data_paths = {
-            'label_path': 'data/train.json',
-            'video_path': '/home/yosubs/koa_scratch/repurpose/data/video_clip_features',
-            'audio_path': '/home/yosubs/koa_scratch/repurpose/data/audio_pann_features',
-            'text_path': '/home/yosubs/koa_scratch/repurpose/data/caption_features',
+            "label_path": "data/train.json",
+            "video_path": "/home/yosubs/koa_scratch/repurpose/data/video_clip_features",
+            "audio_path": "/home/yosubs/koa_scratch/repurpose/data/audio_pann_features",
+            "text_path": "/home/yosubs/koa_scratch/repurpose/data/caption_features",
         }
 
         # Check if paths exist
@@ -71,8 +76,7 @@ def test_data_loading():
 
         # Try to create dataset
         dataset = RepurposeClip(**data_paths)
-        logging.info(
-            f"Dataset created successfully with {len(dataset)} samples")
+        logging.info(f"Dataset created successfully with {len(dataset)} samples")
         return dataset, True
 
     except Exception as e:
@@ -83,35 +87,35 @@ def test_data_loading():
 def test_multi_gpu_functionality(multi_gpu, model=None):
     """Test multi-GPU specific functionality."""
     results = {
-        'strategy': multi_gpu.strategy,
-        'world_size': multi_gpu.world_size,
-        'rank': multi_gpu.rank,
-        'device': str(multi_gpu.device),
-        'model_wrapping': False,
-        'tensor_operations': False,
-        'loss_reduction': False
+        "strategy": multi_gpu.strategy,
+        "world_size": multi_gpu.world_size,
+        "rank": multi_gpu.rank,
+        "device": str(multi_gpu.device),
+        "model_wrapping": False,
+        "tensor_operations": False,
+        "loss_reduction": False,
     }
 
     try:
         # Test model wrapping
         if model is not None:
             wrapped_model = multi_gpu.wrap_model(model)
-            results['model_wrapping'] = True
-            logging.info(
-                f"Model wrapped successfully for {multi_gpu.strategy}")
+            results["model_wrapping"] = True
+            logging.info(f"Model wrapped successfully for {multi_gpu.strategy}")
 
         # Test tensor operations
         test_tensor = torch.randn(4, 8, device=multi_gpu.device)
         result_tensor = test_tensor * 2
-        results['tensor_operations'] = True
+        results["tensor_operations"] = True
         logging.info(f"Tensor operations successful on {multi_gpu.device}")
 
         # Test loss reduction
         dummy_loss = torch.tensor(1.5, device=multi_gpu.device)
         reduced_loss = multi_gpu.reduce_tensor(dummy_loss)
-        results['loss_reduction'] = True
+        results["loss_reduction"] = True
         logging.info(
-            f"Loss reduction successful: {dummy_loss.item()} -> {reduced_loss.item()}")
+            f"Loss reduction successful: {dummy_loss.item()} -> {reduced_loss.item()}"
+        )
 
         # Test barrier
         multi_gpu.barrier()
@@ -135,39 +139,40 @@ def test_dataloader_creation(multi_gpu, dataset=None):
                 def __getitem__(self, idx):
                     # Return data in the format expected by RepurposeClip
                     return {
-                        'video_id': f'test_{idx}',
-                        'feats': {
-                            'visual': torch.randn(50, 512),  # Fixed size for testing
-                            'audio': torch.randn(50, 2048),
-                            'text': torch.randn(50, 384)
+                        "video_id": f"test_{idx}",
+                        "feats": {
+                            "visual": torch.randn(50, 512),  # Fixed size for testing
+                            "audio": torch.randn(50, 2048),
+                            "text": torch.randn(50, 384),
                         },
-                        'segments': torch.randn(50, 2),
-                        'labels': torch.randint(0, 2, (50,)),
-                        'duration': 50,
+                        "segments": torch.randn(50, 2),
+                        "labels": torch.randint(0, 2, (50,)),
+                        "duration": 50,
                     }
 
             dataset = DummyDataset()
-            
+
             # Import the collate function
             from dataset.RepurposeClip import collate_fn
-            
+
             # Test DataLoader creation with proper collate function
             dataloader = multi_gpu.create_dataloader(
                 dataset,
                 batch_size=2,
                 shuffle=True,
                 num_workers=0,  # Use 0 workers for testing
-                collate_fn=collate_fn
+                collate_fn=collate_fn,
             )
         else:
             # Use the real dataset with proper collate function
             from dataset.RepurposeClip import collate_fn
+
             dataloader = multi_gpu.create_dataloader(
                 dataset,
                 batch_size=2,
                 shuffle=True,
                 num_workers=0,  # Use 0 workers for testing
-                collate_fn=collate_fn
+                collate_fn=collate_fn,
             )
 
         # Test iteration
@@ -185,22 +190,26 @@ def test_dataloader_creation(multi_gpu, dataset=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Test multi-GPU training setup")
-    parser.add_argument("--config-path", type=str, default="configs/Repurpose.yaml",
-                        help="Path to configuration file")
-    parser.add_argument("--strategy", type=str, choices=['auto', 'single', 'dp', 'ddp'],
-                        default='auto', help="Multi-GPU strategy to test")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Enable verbose logging")
+    parser = argparse.ArgumentParser(description="Test multi-GPU training setup")
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default="configs/Repurpose.yaml",
+        help="Path to configuration file",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        choices=["auto", "single", "dp", "ddp"],
+        default="auto",
+        help="Multi-GPU strategy to test",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
     # Set up logging
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s")
 
     logger = logging.getLogger(__name__)
 
@@ -218,14 +227,14 @@ def main():
         return 1
 
     # Override strategy if specified
-    if args.strategy != 'auto':
-        if 'distributed' not in cfg:
-            cfg['distributed'] = {}
-        cfg['distributed']['strategy'] = args.strategy
+    if args.strategy != "auto":
+        if "distributed" not in cfg:
+            cfg["distributed"] = {}
+        cfg["distributed"]["strategy"] = args.strategy
 
     # Initialize multi-GPU strategy
     try:
-        gpu_strategy = cfg.get('distributed', {}).get('strategy', 'auto')
+        gpu_strategy = cfg.get("distributed", {}).get("strategy", "auto")
         multi_gpu = MultiGPUStrategy(strategy=gpu_strategy)
 
         # Setup distributed training
@@ -242,11 +251,11 @@ def main():
 
     # Run tests
     test_results = {
-        'multi_gpu_setup': True,
-        'model_init': False,
-        'data_loading': False,
-        'multi_gpu_ops': False,
-        'dataloader': False
+        "multi_gpu_setup": True,
+        "model_init": False,
+        "data_loading": False,
+        "multi_gpu_ops": False,
+        "dataloader": False,
     }
 
     # Test model initialization
@@ -255,7 +264,7 @@ def main():
         logger.info("Testing model initialization...")
 
     model, model_success = test_model_initialization()
-    test_results['model_init'] = model_success
+    test_results["model_init"] = model_success
 
     # Test multi-GPU functionality
     if is_main_process():
@@ -263,7 +272,7 @@ def main():
         logger.info("Testing multi-GPU functionality...")
 
     gpu_results = test_multi_gpu_functionality(multi_gpu, model)
-    test_results['multi_gpu_ops'] = gpu_results.get('model_wrapping', False)
+    test_results["multi_gpu_ops"] = gpu_results.get("model_wrapping", False)
 
     # Test data loading
     if is_main_process():
@@ -271,7 +280,7 @@ def main():
         logger.info("Testing data loading...")
 
     dataset, data_success = test_data_loading()
-    test_results['data_loading'] = data_success
+    test_results["data_loading"] = data_success
 
     # Test DataLoader creation
     if is_main_process():
@@ -279,7 +288,7 @@ def main():
         logger.info("Testing DataLoader creation...")
 
     dataloader_success = test_dataloader_creation(multi_gpu, dataset)
-    test_results['dataloader'] = dataloader_success
+    test_results["dataloader"] = dataloader_success
 
     # Print summary
     if is_main_process():
@@ -295,14 +304,14 @@ def main():
         logger.info("\n" + "=" * 60)
 
         if all_passed:
-            logger.info(
-                "🎉 ALL TESTS PASSED! Multi-GPU setup is ready for training.")
+            logger.info("🎉 ALL TESTS PASSED! Multi-GPU setup is ready for training.")
             logger.info(f"Strategy: {multi_gpu.strategy.upper()}")
             logger.info(f"World Size: {multi_gpu.world_size}")
             logger.info(f"Device: {multi_gpu.device}")
         else:
-            failed_tests = [name for name,
-                            success in test_results.items() if not success]
+            failed_tests = [
+                name for name, success in test_results.items() if not success
+            ]
             logger.warning(f"⚠️  Some tests failed: {', '.join(failed_tests)}")
             logger.warning("Please check the error messages above.")
 

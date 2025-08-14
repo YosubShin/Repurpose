@@ -11,7 +11,18 @@ class SimpleMCTransformer(nn.Module):
     This should be able to overfit on 4 samples easily.
     """
 
-    def __init__(self, vis_dim, aud_dim, text_dim, d_model, self_num_layers, text_num_layers, cross_num_layers, num_heads, d_ff=2048):
+    def __init__(
+        self,
+        vis_dim,
+        aud_dim,
+        text_dim,
+        d_model,
+        self_num_layers,
+        text_num_layers,
+        cross_num_layers,
+        num_heads,
+        d_ff=2048,
+    ):
         super(SimpleMCTransformer, self).__init__()
 
         # Concatenated feature dimension
@@ -30,8 +41,7 @@ class SimpleMCTransformer(nn.Module):
         # Direct prediction heads - no fancy stuff
         self.cls_head = nn.Linear(128, 1)  # Binary classification
         self.reg_head = nn.Sequential(
-            nn.Linear(128, 2),
-            nn.ReLU()  # Ensure positive offsets
+            nn.Linear(128, 2), nn.ReLU()  # Ensure positive offsets
         )
 
         # Initialize weights
@@ -53,24 +63,24 @@ class SimpleMCTransformer(nn.Module):
                         nn.init.constant_(m.bias, 0)
 
     def forward(self, batch):
-        visual_feats = batch['visual_feats']
-        audio_feats = batch['audio_feats']
-        text_feats = batch['text_feats']
-        masks = batch['masks']
-        gt_cls_labels = batch['labels']
-        gt_offsets = batch['segments']
+        visual_feats = batch["visual_feats"]
+        audio_feats = batch["audio_feats"]
+        text_feats = batch["text_feats"]
+        masks = batch["masks"]
+        gt_cls_labels = batch["labels"]
+        gt_offsets = batch["segments"]
 
         # Print shapes for debugging
-        if not hasattr(self, '_printed_shapes'):
+        if not hasattr(self, "_printed_shapes"):
             print(
-                f"Input shapes - visual: {visual_feats.shape}, audio: {audio_feats.shape}, text: {text_feats.shape}")
+                f"Input shapes - visual: {visual_feats.shape}, audio: {audio_feats.shape}, text: {text_feats.shape}"
+            )
             print(f"Masks shape: {masks.shape}")
             print(f"Labels shape: {gt_cls_labels.shape}")
             self._printed_shapes = True
 
         # Concatenate all modalities
-        concatenated_feats = torch.cat(
-            [visual_feats, audio_feats, text_feats], dim=-1)
+        concatenated_feats = torch.cat([visual_feats, audio_feats, text_feats], dim=-1)
 
         # Apply simple layers
         feats = self.layers(concatenated_feats)
@@ -85,7 +95,9 @@ class SimpleMCTransformer(nn.Module):
     def device(self):
         return list(set(p.device for p in self.parameters()))[0]
 
-    def losses(self, masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats):
+    def losses(
+        self, masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats
+    ):
         # Ensure correct shapes
         if gt_cls_labels.dim() == 2:
             gt_cls_labels = gt_cls_labels.unsqueeze(-1)
@@ -93,7 +105,8 @@ class SimpleMCTransformer(nn.Module):
         # Simple focal loss for classification
         # Try alpha=0.25 to give more weight to positive examples
         cls_loss = sigmoid_focal_loss(
-            out_cls_logits, gt_cls_labels, alpha=0.25, reduction='none')
+            out_cls_logits, gt_cls_labels, alpha=0.25, reduction="none"
+        )
 
         # Alternative: Try standard BCE if focal loss doesn't work
         # cls_loss = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -109,14 +122,15 @@ class SimpleMCTransformer(nn.Module):
         cls_loss = cls_loss * masks
 
         # Debug prints
-        if not hasattr(self, '_printed_loss_info'):
+        if not hasattr(self, "_printed_loss_info"):
             print(
-                f"Loss computation - cls_loss shape: {cls_loss.shape}, masks shape: {masks.shape}")
-            print(
-                f"Number of positive labels: {(gt_cls_labels > 0.5).sum().item()}")
+                f"Loss computation - cls_loss shape: {cls_loss.shape}, masks shape: {masks.shape}"
+            )
+            print(f"Number of positive labels: {(gt_cls_labels > 0.5).sum().item()}")
             print(f"Number of valid positions (mask=1): {masks.sum().item()}")
             print(
-                f"Mean cls_loss before masking: {sigmoid_focal_loss(out_cls_logits, gt_cls_labels, reduction='mean').item():.4f}")
+                f"Mean cls_loss before masking: {sigmoid_focal_loss(out_cls_logits, gt_cls_labels, reduction='mean').item():.4f}"
+            )
             self._printed_loss_info = True
 
         # Average over all valid positions
@@ -126,10 +140,12 @@ class SimpleMCTransformer(nn.Module):
         else:
             cls_loss = cls_loss.sum()
 
-        return {'cls_loss': cls_loss}
+        return {"cls_loss": cls_loss}
 
     @torch.no_grad()
-    def inference_single_video(self, masks, out_cls_logits, out_offsets, inference_settings):
+    def inference_single_video(
+        self, masks, out_cls_logits, out_offsets, inference_settings
+    ):
         segs_all = []
         scores_all = []
         cls_idxs_all = []
@@ -139,14 +155,14 @@ class SimpleMCTransformer(nn.Module):
 
         # Apply filtering to make NMS faster
         # 1. Keep seg with confidence score > a threshold
-        keep_idxs = (pred_prob > inference_settings['pre_nms_thresh'])
+        keep_idxs = pred_prob > inference_settings["pre_nms_thresh"]
 
         pred_prob = pred_prob[keep_idxs]
 
         topk_idxs = keep_idxs.nonzero(as_tuple=True)[0]
 
         # 2. Keep top k top scoring boxes only
-        num_topk = min(inference_settings['pre_nms_topk'], topk_idxs.size(0))
+        num_topk = min(inference_settings["pre_nms_topk"], topk_idxs.size(0))
         pred_prob, idxs = pred_prob.sort(descending=True)
         pred_prob = pred_prob[:num_topk].clone()
         topk_idxs = topk_idxs[idxs[:num_topk]].clone()
@@ -159,8 +175,8 @@ class SimpleMCTransformer(nn.Module):
 
         # 4. Keep seg with duration > a threshold
         seg_durations = seg_right - seg_left
-        keep_idxs2 = seg_durations > inference_settings['duration_thresh']
-        keep_idxs3 = seg_durations < inference_settings['duration_thresh_max']
+        keep_idxs2 = seg_durations > inference_settings["duration_thresh"]
+        keep_idxs3 = seg_durations < inference_settings["duration_thresh_max"]
 
         keep_idxs2 = keep_idxs2 & keep_idxs3
 
@@ -173,15 +189,14 @@ class SimpleMCTransformer(nn.Module):
         segs_all, scores_all, cls_idxs_all = [
             torch.cat(x) for x in [segs_all, scores_all, cls_idxs_all]
         ]
-        results = {'segments': segs_all,
-                   'scores': scores_all,
-                   'labels': cls_idxs_all}
+        results = {"segments": segs_all, "scores": scores_all, "labels": cls_idxs_all}
         return results
 
     @torch.no_grad()
     def inference_(self, batch, inference_settings):
-        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = self.forward(
-            batch)
+        masks, out_cls_logits, out_offsets, gt_cls_labels, gt_offsets, feats = (
+            self.forward(batch)
+        )
 
         # batch seq_len
         pred_prob = out_cls_logits.squeeze(-1)
@@ -189,8 +204,8 @@ class SimpleMCTransformer(nn.Module):
         results = []
 
         # 1: gather video meta information
-        vid_idxs = batch['video_id']
-        vid_lens = batch['duration']
+        vid_idxs = batch["video_id"]
+        vid_lens = batch["duration"]
 
         # 2: inference on each single video and gather the results
         for idx, (vidx, vlen) in enumerate(zip(vid_idxs, vid_lens)):
@@ -199,26 +214,32 @@ class SimpleMCTransformer(nn.Module):
             offsets_per_vid = out_offsets[idx]
             masks_per_vid = masks[idx]
             mins = vlen // 60
-            max_seg_num = mins * inference_settings['max_seg_per_min']
+            max_seg_num = mins * inference_settings["max_seg_per_min"]
             max_seg_num = int(np.ceil(max_seg_num))
 
             # inference on a single video (should always be the case)
             results_per_vid = self.inference_single_video(
-                masks_per_vid,
-                cls_logits_per_vid, offsets_per_vid, inference_settings
+                masks_per_vid, cls_logits_per_vid, offsets_per_vid, inference_settings
             )
             results_per_vid_nms_idx = soft_nms_intervals_cpu(
-                results_per_vid['scores'], results_per_vid['segments'],
-                sigma=inference_settings['nms_sigma'],
-                thresh=inference_settings['min_score'],
-                max_seg_num=max_seg_num
+                results_per_vid["scores"],
+                results_per_vid["segments"],
+                sigma=inference_settings["nms_sigma"],
+                thresh=inference_settings["min_score"],
+                max_seg_num=max_seg_num,
             )
-            results_per_vid['segments'] = results_per_vid['segments'][results_per_vid_nms_idx]
-            results_per_vid['scores'] = results_per_vid['scores'][results_per_vid_nms_idx]
-            results_per_vid['labels'] = results_per_vid['labels'][results_per_vid_nms_idx]
+            results_per_vid["segments"] = results_per_vid["segments"][
+                results_per_vid_nms_idx
+            ]
+            results_per_vid["scores"] = results_per_vid["scores"][
+                results_per_vid_nms_idx
+            ]
+            results_per_vid["labels"] = results_per_vid["labels"][
+                results_per_vid_nms_idx
+            ]
             # pass through video meta info
-            results_per_vid['video_id'] = vidx
-            results_per_vid['duration'] = vlen
+            results_per_vid["video_id"] = vidx
+            results_per_vid["duration"] = vlen
             results.append(results_per_vid)
 
         return results

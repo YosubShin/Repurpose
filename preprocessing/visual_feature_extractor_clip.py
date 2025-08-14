@@ -10,13 +10,20 @@ import clip
 
 try:
     import av
+
     PYAV_AVAILABLE = True
 except ImportError:
     PYAV_AVAILABLE = False
 
 
 class VisualFeatureExtractorCLIP:
-    def __init__(self, output_dir: str = "data/video_clip_features", log_level: str = "INFO", inject_hints: bool = False, use_black_white: bool = False):
+    def __init__(
+        self,
+        output_dir: str = "data/video_clip_features",
+        log_level: str = "INFO",
+        inject_hints: bool = False,
+        use_black_white: bool = False,
+    ):
         self.inject_hints = inject_hints
         self.use_black_white = use_black_white
         self.output_dir = Path(output_dir)
@@ -25,7 +32,7 @@ class VisualFeatureExtractorCLIP:
         # Setup logging
         logging.basicConfig(
             level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(levelname)s - %(message)s",
         )
         self.logger = logging.getLogger(__name__)
 
@@ -43,32 +50,36 @@ class VisualFeatureExtractorCLIP:
         self.logger.info("Loaded CLIP ViT-B/32 model")
         if self.inject_hints:
             self.logger.info(
-                "HINT INJECTION ENABLED: Red dots will be added to highlight frames")
+                "HINT INJECTION ENABLED: Red dots will be added to highlight frames"
+            )
         if self.use_black_white:
             self.logger.info(
-                "BLACK/WHITE MODE ENABLED: Using synthetic frames (white for highlights, black for non-highlights)")
+                "BLACK/WHITE MODE ENABLED: Using synthetic frames (white for highlights, black for non-highlights)"
+            )
 
     def load_progress(self) -> Dict[str, bool]:
         """Load extraction progress from file."""
         if self.progress_file.exists():
-            with open(self.progress_file, 'r') as f:
+            with open(self.progress_file, "r") as f:
                 return json.load(f)
         return {}
 
     def save_progress(self):
         """Save extraction progress to file."""
-        with open(self.progress_file, 'w') as f:
+        with open(self.progress_file, "w") as f:
             json.dump(self.processed_videos, f, indent=2)
 
-    def create_black_white_frame(self, is_highlight: bool, width: int = 224, height: int = 224) -> np.ndarray:
+    def create_black_white_frame(
+        self, is_highlight: bool, width: int = 224, height: int = 224
+    ) -> np.ndarray:
         """
         Create a black or white frame for testing.
-        
+
         Args:
             is_highlight: True for white frame (highlight), False for black frame
             width: Frame width
             height: Frame height
-            
+
         Returns:
             numpy array of shape (H, W, 3) with black or white pixels
         """
@@ -79,7 +90,7 @@ class VisualFeatureExtractorCLIP:
             # Black frame for non-highlights
             frame = np.zeros((height, width, 3), dtype=np.uint8)
         return frame
-    
+
     def add_red_dot_to_frame(self, frame: np.ndarray) -> np.ndarray:
         """
         Add a red dot in the center of the frame as a visual hint.
@@ -101,11 +112,13 @@ class VisualFeatureExtractorCLIP:
         # Draw a large red circle in the center (radius = 10 pixels)
         radius = 10
         draw.ellipse(
-            [(center_x - radius, center_y - radius),
-             (center_x + radius, center_y + radius)],
-            fill='red',
-            outline='darkred',
-            width=2
+            [
+                (center_x - radius, center_y - radius),
+                (center_x + radius, center_y + radius),
+            ],
+            fill="red",
+            outline="darkred",
+            width=2,
         )
 
         # Convert back to numpy array
@@ -127,8 +140,12 @@ class VisualFeatureExtractorCLIP:
                 return True
         return False
 
-    def extract_frames_pyav(self, video_path: str, max_duration: Optional[float] = None,
-                            segments: Optional[List[List[float]]] = None) -> List[Tuple[float, np.ndarray]]:
+    def extract_frames_pyav(
+        self,
+        video_path: str,
+        max_duration: Optional[float] = None,
+        segments: Optional[List[List[float]]] = None,
+    ) -> List[Tuple[float, np.ndarray]]:
         """
         Extract frames from video using PyAV with precise timestamp seeking.
         Optionally inject red dots for highlighted frames if inject_hints is enabled.
@@ -142,8 +159,7 @@ class VisualFeatureExtractorCLIP:
             List of (timestamp, frame) tuples
         """
         if not PYAV_AVAILABLE:
-            raise ImportError(
-                "PyAV is not available. Install with: pip install av")
+            raise ImportError("PyAV is not available. Install with: pip install av")
 
         frames = []
         container = av.open(video_path)
@@ -153,11 +169,13 @@ class VisualFeatureExtractorCLIP:
         if max_duration is None:
             duration = float(video_stream.duration * video_stream.time_base)
         else:
-            duration = min(max_duration, float(
-                video_stream.duration * video_stream.time_base))
+            duration = min(
+                max_duration, float(video_stream.duration * video_stream.time_base)
+            )
 
         self.logger.debug(
-            f"Video duration: {duration:.2f}s, using PyAV timestamp seeking")
+            f"Video duration: {duration:.2f}s, using PyAV timestamp seeking"
+        )
 
         # Extract one frame per second using precise seeking
         for second in range(int(duration)):
@@ -166,7 +184,8 @@ class VisualFeatureExtractorCLIP:
             try:
                 # Seek to the exact timestamp
                 container.seek(
-                    int(timestamp / video_stream.time_base), stream=video_stream)
+                    int(timestamp / video_stream.time_base), stream=video_stream
+                )
 
                 # Get the next frame after seeking
                 for frame in container.decode(video_stream):
@@ -176,31 +195,38 @@ class VisualFeatureExtractorCLIP:
                     if abs(frame_time - timestamp) < 0.5:  # Within 0.5 seconds
                         # Use black/white frames if enabled
                         if self.use_black_white:
-                            is_highlight = segments and self.is_highlight_frame(timestamp, segments)
+                            is_highlight = segments and self.is_highlight_frame(
+                                timestamp, segments
+                            )
                             frame_rgb = self.create_black_white_frame(is_highlight)
                             if is_highlight:
-                                self.logger.debug(f"Created WHITE frame at {timestamp}s (highlight)")
+                                self.logger.debug(
+                                    f"Created WHITE frame at {timestamp}s (highlight)"
+                                )
                             else:
-                                self.logger.debug(f"Created BLACK frame at {timestamp}s (non-highlight)")
+                                self.logger.debug(
+                                    f"Created BLACK frame at {timestamp}s (non-highlight)"
+                                )
                         else:
                             # Convert to numpy array
                             frame_rgb = frame.to_rgb().to_ndarray()
 
                         # Optionally add red dot for highlighted frames
-                        if self.inject_hints and segments and self.is_highlight_frame(timestamp, segments):
+                        if (
+                            self.inject_hints
+                            and segments
+                            and self.is_highlight_frame(timestamp, segments)
+                        ):
                             frame_rgb = self.add_red_dot_to_frame(frame_rgb)
-                            self.logger.debug(
-                                f"Added red dot to frame at {timestamp}s")
+                            self.logger.debug(f"Added red dot to frame at {timestamp}s")
 
                         frames.append((timestamp, frame_rgb))
                         break
 
             except Exception as e:
-                self.logger.warning(
-                    f"Failed to extract frame at {timestamp}s: {e}")
+                self.logger.warning(f"Failed to extract frame at {timestamp}s: {e}")
                 # Add a zero frame as placeholder
-                frames.append((timestamp, np.zeros(
-                    (240, 320, 3), dtype=np.uint8)))
+                frames.append((timestamp, np.zeros((240, 320, 3), dtype=np.uint8)))
 
         container.close()
         return frames
@@ -224,106 +250,126 @@ class VisualFeatureExtractorCLIP:
                     frame = Image.fromarray(frame)
 
                 # Preprocess and extract features
-                image_input = self.preprocess(
-                    frame).unsqueeze(0).to(self.device)
+                image_input = self.preprocess(frame).unsqueeze(0).to(self.device)
                 image_features = self.model.encode_image(image_input)
 
                 # Normalize features
-                image_features = image_features / \
-                    image_features.norm(dim=-1, keepdim=True)
+                image_features = image_features / image_features.norm(
+                    dim=-1, keepdim=True
+                )
 
                 # Convert to numpy and squeeze batch dimension
                 features.append(image_features.cpu().numpy().squeeze())
 
         return np.array(features)
 
-    def extract_black_white_features(self, video_path: str, youtube_id: str,
-                                     segments: Optional[List[List[float]]] = None) -> bool:
+    def extract_black_white_features(
+        self,
+        video_path: str,
+        youtube_id: str,
+        segments: Optional[List[List[float]]] = None,
+    ) -> bool:
         """
         Extract features using black/white frames efficiently.
         Computes CLIP embeddings once for black and white, then reuses them.
-        
+
         Args:
             video_path: Path to video (used to get duration)
             youtube_id: YouTube video ID for naming output file
             segments: List of [start, end] pairs for highlight segments
-            
+
         Returns:
             bool: True if successful
         """
         if youtube_id in self.processed_videos:
-            self.logger.info(f"Features for {youtube_id} already extracted, skipping...")
+            self.logger.info(
+                f"Features for {youtube_id} already extracted, skipping..."
+            )
             return True
-            
+
         output_path = self.output_dir / f"{youtube_id}.npy"
-        
+
         try:
             self.logger.info(f"Extracting BLACK/WHITE features for {youtube_id}...")
-            
+
             # Get video duration
             container = av.open(video_path)
             video_stream = container.streams.video[0]
             duration = float(video_stream.duration * video_stream.time_base)
             container.close()
-            
+
             num_frames = int(duration)
-            self.logger.info(f"  Video duration: {duration:.1f}s, creating {num_frames} feature vectors")
-            
+            self.logger.info(
+                f"  Video duration: {duration:.1f}s, creating {num_frames} feature vectors"
+            )
+
             # Compute CLIP embeddings once for black and white frames
             black_frame = self.create_black_white_frame(is_highlight=False)
             white_frame = self.create_black_white_frame(is_highlight=True)
-            
+
             with torch.no_grad():
                 # Process black frame
                 black_img = Image.fromarray(black_frame)
                 black_input = self.preprocess(black_img).unsqueeze(0).to(self.device)
                 black_features = self.model.encode_image(black_input)
-                black_features = black_features / black_features.norm(dim=-1, keepdim=True)
+                black_features = black_features / black_features.norm(
+                    dim=-1, keepdim=True
+                )
                 black_vec = black_features.cpu().numpy().squeeze()
-                
+
                 # Process white frame
                 white_img = Image.fromarray(white_frame)
                 white_input = self.preprocess(white_img).unsqueeze(0).to(self.device)
                 white_features = self.model.encode_image(white_input)
-                white_features = white_features / white_features.norm(dim=-1, keepdim=True)
+                white_features = white_features / white_features.norm(
+                    dim=-1, keepdim=True
+                )
                 white_vec = white_features.cpu().numpy().squeeze()
-            
+
             self.logger.info("  Computed CLIP embeddings for black and white frames")
-            
+
             # Create feature array by checking each timestamp
             features = []
             highlight_count = 0
-            
+
             for second in range(num_frames):
                 timestamp = float(second)
                 is_highlight = segments and self.is_highlight_frame(timestamp, segments)
-                
+
                 if is_highlight:
                     features.append(white_vec)
                     highlight_count += 1
                 else:
                     features.append(black_vec)
-            
+
             features = np.array(features)
-            
-            self.logger.info(f"  Created {len(features)} vectors: {highlight_count} white (highlight), {len(features)-highlight_count} black")
-            
+
+            self.logger.info(
+                f"  Created {len(features)} vectors: {highlight_count} white (highlight), {len(features)-highlight_count} black"
+            )
+
             # Save features
             np.save(output_path, features)
-            
+
             self.processed_videos[youtube_id] = True
             self.save_progress()
-            
-            self.logger.info(f"Successfully extracted features for {youtube_id}, shape: {features.shape}")
+
+            self.logger.info(
+                f"Successfully extracted features for {youtube_id}, shape: {features.shape}"
+            )
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Feature extraction failed for {youtube_id}: {str(e)}")
             return False
-    
-    def extract_features_from_video(self, video_path: str, youtube_id: str,
-                                    video_duration: Optional[float] = None,
-                                    segments: Optional[List[List[float]]] = None) -> bool:
+
+    def extract_features_from_video(
+        self,
+        video_path: str,
+        youtube_id: str,
+        video_duration: Optional[float] = None,
+        segments: Optional[List[List[float]]] = None,
+    ) -> bool:
         """
         Extract visual features from a video file using CLIP.
         Note: video_duration parameter is ignored - features are extracted for the entire video.
@@ -340,10 +386,11 @@ class VisualFeatureExtractorCLIP:
         # Use optimized black/white extraction if enabled
         if self.use_black_white:
             return self.extract_black_white_features(video_path, youtube_id, segments)
-        
+
         if youtube_id in self.processed_videos:
             self.logger.info(
-                f"Features for {youtube_id} already extracted, skipping...")
+                f"Features for {youtube_id} already extracted, skipping..."
+            )
             return True
 
         output_path = self.output_dir / f"{youtube_id}.npy"
@@ -352,21 +399,23 @@ class VisualFeatureExtractorCLIP:
             self.logger.info(f"Extracting visual features for {youtube_id}...")
             if self.inject_hints and segments:
                 self.logger.info(
-                    f"  Hint injection enabled: {len(segments)} highlight segments")
+                    f"  Hint injection enabled: {len(segments)} highlight segments"
+                )
 
             # Use PyAV only (no FFmpeg fallback)
             frames = None
 
             if not PYAV_AVAILABLE:
                 self.logger.error(
-                    "PyAV is required but not installed. Install with: pip install av")
+                    "PyAV is required but not installed. Install with: pip install av"
+                )
                 return False
 
             try:
                 frames = self.extract_frames_pyav(
-                    video_path, max_duration=None, segments=segments)
-                self.logger.debug(
-                    f"Extracted {len(frames)} frames using PyAV")
+                    video_path, max_duration=None, segments=segments
+                )
+                self.logger.debug(f"Extracted {len(frames)} frames using PyAV")
             except Exception as e:
                 self.logger.error(f"PyAV extraction failed: {e}")
 
@@ -387,15 +436,17 @@ class VisualFeatureExtractorCLIP:
             self.save_progress()
 
             self.logger.info(
-                f"Successfully extracted features for {youtube_id}, shape: {features.shape}")
+                f"Successfully extracted features for {youtube_id}, shape: {features.shape}"
+            )
             return True
 
         except Exception as e:
-            self.logger.error(
-                f"Feature extraction failed for {youtube_id}: {str(e)}")
+            self.logger.error(f"Feature extraction failed for {youtube_id}: {str(e)}")
             return False
 
-    def process_video_directory(self, video_dir: str, max_videos: Optional[int] = None) -> Dict[str, Any]:
+    def process_video_directory(
+        self, video_dir: str, max_videos: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Process all videos in a directory to extract features.
 
@@ -416,14 +467,12 @@ class VisualFeatureExtractorCLIP:
         successful_extractions = 0
         failed_extractions = 0
 
-        self.logger.info(
-            f"Starting feature extraction for {total_videos} videos...")
+        self.logger.info(f"Starting feature extraction for {total_videos} videos...")
 
         for i, video_file in enumerate(video_files, 1):
             youtube_id = video_file.stem
 
-            self.logger.info(
-                f"Processing video {i}/{total_videos}: {youtube_id}")
+            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
 
             if self.extract_features_from_video(str(video_file), youtube_id):
                 successful_extractions += 1
@@ -431,18 +480,24 @@ class VisualFeatureExtractorCLIP:
                 failed_extractions += 1
 
         stats = {
-            'total_videos': total_videos,
-            'successful_extractions': successful_extractions,
-            'failed_extractions': failed_extractions,
-            'success_rate': successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            "total_videos": total_videos,
+            "successful_extractions": successful_extractions,
+            "failed_extractions": failed_extractions,
+            "success_rate": (
+                successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            ),
         }
 
-        self.logger.info(f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
-                         f"({stats['success_rate']:.1f}%)")
+        self.logger.info(
+            f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
+            f"({stats['success_rate']:.1f}%)"
+        )
 
         return stats
 
-    def process_from_dataset(self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None) -> Dict[str, Any]:
+    def process_from_dataset(
+        self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Process videos based on dataset JSON file.
         Uses two-pass approach to aggregate segments for videos split into multiple pieces.
@@ -455,7 +510,7 @@ class VisualFeatureExtractorCLIP:
         Returns:
             Dict containing processing statistics
         """
-        with open(dataset_path, 'r') as f:
+        with open(dataset_path, "r") as f:
             dataset = json.load(f)
 
         # First pass: Aggregate segments by youtube_id
@@ -464,10 +519,10 @@ class VisualFeatureExtractorCLIP:
 
         self.logger.info("First pass: Aggregating segments by video ID...")
         for video_info in dataset:
-            youtube_id = video_info['youtube_id']
+            youtube_id = video_info["youtube_id"]
 
             # Use 'segments' (absolute timestamps) not 'segmentsOffset' (relative to timeRange)
-            segments = video_info.get('segments', [])
+            segments = video_info.get("segments", [])
 
             if youtube_id not in video_segments:
                 video_segments[youtube_id] = []
@@ -482,8 +537,7 @@ class VisualFeatureExtractorCLIP:
                 # Sort by start time for consistency
                 segments.sort(key=lambda x: x[0])
                 video_segments[youtube_id] = segments
-                self.logger.info(
-                    f"  {youtube_id}: {len(segments)} highlight segments")
+                self.logger.info(f"  {youtube_id}: {len(segments)} highlight segments")
 
         # Apply max_videos limit if specified
         if max_videos:
@@ -496,7 +550,8 @@ class VisualFeatureExtractorCLIP:
         failed_extractions = 0
 
         self.logger.info(
-            f"Second pass: Extracting features for {total_videos} unique videos...")
+            f"Second pass: Extracting features for {total_videos} unique videos..."
+        )
 
         for i, (youtube_id, segments) in enumerate(video_segments.items(), 1):
             video_file = video_dir / f"{youtube_id}.mp4"
@@ -506,71 +561,94 @@ class VisualFeatureExtractorCLIP:
                 failed_extractions += 1
                 continue
 
-            self.logger.info(
-                f"Processing video {i}/{total_videos}: {youtube_id}")
+            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
 
             # Get segments for hint injection if enabled
             segments_for_hints = None
             if self.inject_hints and segments:
                 segments_for_hints = segments
                 # Calculate total highlight duration
-                total_highlight_duration = sum(
-                    end - start for start, end in segments)
-                self.logger.info(f"  Will inject hints for {len(segments_for_hints)} segments, "
-                                 f"total highlight duration: {total_highlight_duration:.1f}s")
+                total_highlight_duration = sum(end - start for start, end in segments)
+                self.logger.info(
+                    f"  Will inject hints for {len(segments_for_hints)} segments, "
+                    f"total highlight duration: {total_highlight_duration:.1f}s"
+                )
                 # Log first few segments for debugging
                 if segments_for_hints:
                     preview = segments_for_hints[:3]
                     self.logger.debug(f"  First segments: {preview}")
 
             # Extract features for the entire video
-            if self.extract_features_from_video(str(video_file), youtube_id, segments=segments_for_hints):
+            if self.extract_features_from_video(
+                str(video_file), youtube_id, segments=segments_for_hints
+            ):
                 successful_extractions += 1
             else:
                 failed_extractions += 1
 
         stats = {
-            'total_videos': total_videos,
-            'successful_extractions': successful_extractions,
-            'failed_extractions': failed_extractions,
-            'success_rate': successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            "total_videos": total_videos,
+            "successful_extractions": successful_extractions,
+            "failed_extractions": failed_extractions,
+            "success_rate": (
+                successful_extractions / total_videos * 100 if total_videos > 0 else 0
+            ),
         }
 
-        self.logger.info(f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
-                         f"({stats['success_rate']:.1f}%)")
+        self.logger.info(
+            f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
+            f"({stats['success_rate']:.1f}%)"
+        )
 
         return stats
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract visual features from videos using CLIP")
-    parser.add_argument("--video-dir", required=True,
-                        help="Directory containing video files")
+        description="Extract visual features from videos using CLIP"
+    )
+    parser.add_argument(
+        "--video-dir", required=True, help="Directory containing video files"
+    )
     parser.add_argument("--dataset", help="Path to dataset JSON file")
-    parser.add_argument("--output-dir", default="data/video_clip_features",
-                        help="Output directory for features")
-    parser.add_argument("--max-videos", type=int,
-                        help="Maximum number of videos to process")
-    parser.add_argument("--inject-hints", action="store_true",
-                        help="Inject red dots into highlight frames (for debugging)")
-    parser.add_argument("--use-black-white", action="store_true",
-                        help="Use black/white synthetic frames instead of actual video (white=highlight, black=non-highlight)")
-    parser.add_argument("--log-level", default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--output-dir",
+        default="data/video_clip_features",
+        help="Output directory for features",
+    )
+    parser.add_argument(
+        "--max-videos", type=int, help="Maximum number of videos to process"
+    )
+    parser.add_argument(
+        "--inject-hints",
+        action="store_true",
+        help="Inject red dots into highlight frames (for debugging)",
+    )
+    parser.add_argument(
+        "--use-black-white",
+        action="store_true",
+        help="Use black/white synthetic frames instead of actual video (white=highlight, black=non-highlight)",
+    )
+    parser.add_argument(
+        "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+    )
 
     args = parser.parse_args()
 
     extractor = VisualFeatureExtractorCLIP(
-        args.output_dir, args.log_level, inject_hints=args.inject_hints, use_black_white=args.use_black_white)
+        args.output_dir,
+        args.log_level,
+        inject_hints=args.inject_hints,
+        use_black_white=args.use_black_white,
+    )
 
     try:
         if args.dataset:
             stats = extractor.process_from_dataset(
-                args.dataset, args.video_dir, args.max_videos)
+                args.dataset, args.video_dir, args.max_videos
+            )
         else:
-            stats = extractor.process_video_directory(
-                args.video_dir, args.max_videos)
+            stats = extractor.process_video_directory(args.video_dir, args.max_videos)
 
         print(f"\nFeature Extraction Statistics:")
         print(f"Total videos: {stats['total_videos']}")

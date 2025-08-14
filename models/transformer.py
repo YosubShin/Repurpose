@@ -3,19 +3,22 @@ import torch.nn as nn
 import math
 import torch.nn.functional as F
 
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
+        x = x + self.pe[: x.size(0), :]
         return x
 
 
@@ -32,6 +35,7 @@ class MLP(nn.Module):
         x = self.fc2(x)
         return x
 
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
         super().__init__()
@@ -45,7 +49,9 @@ class MultiHeadAttention(nn.Module):
         self.out = nn.Linear(d_model, d_model)
 
         # Register scale as a buffer (no gradients needed)
-        self.register_buffer('scale', torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32)))
+        self.register_buffer(
+            "scale", torch.sqrt(torch.tensor(self.d_k, dtype=torch.float32))
+        )
 
     def forward(self, q, k, v, mask=None):
         bs = q.size(0)
@@ -80,7 +86,8 @@ class MultiHeadAttention(nn.Module):
         x = x.transpose(1, 2).contiguous().view(bs, -1, self.d_model)
 
         return self.out(x)
-    
+
+
 class EncoderLayer(nn.Module):
     def __init__(self, d_model, num_heads, d_ff=2048, dropout=0.0):
         super().__init__()
@@ -102,6 +109,7 @@ class EncoderLayer(nn.Module):
         x2 = self.norm_2(x)
         x = x + self.dropout_2(self.ff(x2))
         return x
+
 
 class CrossAttentionEncoderLayer(nn.Module):
     def __init__(self, d_model, num_heads, d_ff=2048, dropout=0.0):
@@ -149,7 +157,7 @@ class CrossSelfEncoderLayer(nn.Module):
             nn.Linear(d_model, d_ff),
             nn.ReLU(),
             nn.Dropout(dropout),  # You should have dropout here as well
-            nn.Linear(d_ff, d_model)
+            nn.Linear(d_ff, d_model),
         )
 
         self.dropout_1 = nn.Dropout(dropout)
@@ -161,7 +169,9 @@ class CrossSelfEncoderLayer(nn.Module):
 
         # Normalize and perform self-attention
         x = self.norm_1(x)
-        x2 = self.self_attention(x, x, x, mask)  # Self-attention uses x as query, key, value
+        x2 = self.self_attention(
+            x, x, x, mask
+        )  # Self-attention uses x as query, key, value
         x = orig_x + self.dropout_1(x2)  # Apply residual connection and dropout
 
         # Normalize and perform cross-attention using the output of self-attention as query
@@ -173,7 +183,7 @@ class CrossSelfEncoderLayer(nn.Module):
         x = self.norm_3(x)
         x2 = self.ff(x)
         x = x + self.dropout_2(x2)  # Final residual connection and dropout
-        
+
         return x
 
 
@@ -182,7 +192,9 @@ class UniModalEncoder(nn.Module):
         super(UniModalEncoder, self).__init__()
         self.mlp = MLP(input_dim, d_ff, d_model)
         self.positional_encoding = PositionalEncoding(d_model)
-        self.layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [EncoderLayer(d_model, num_heads, d_ff) for _ in range(num_layers)]
+        )
 
     def forward(self, x, mask=None):
         x = self.mlp(x)

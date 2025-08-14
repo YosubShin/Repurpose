@@ -12,8 +12,10 @@ def calculate_ap(segments, labels):
     # Set labels to 1 for predictions that fall within any segment
     for segment in segments:
         # Find the index range for the segment
-        start_index = int(segment[0]) if int(segment[0])>=0 else 0
-        end_index = int(segment[1]) if int(segment[1])<len(labels) else len(labels)-1
+        start_index = int(segment[0]) if int(segment[0]) >= 0 else 0
+        end_index = (
+            int(segment[1]) if int(segment[1]) < len(labels) else len(labels) - 1
+        )
 
         # Update labels within the segment range
         if start_index is not None and end_index is not None:
@@ -55,7 +57,9 @@ def calculate_recall(segments, labels):
     for segment in segments:
         # Find the index range for the segment
         start_index = int(segment[0]) if int(segment[0]) >= 0 else 0
-        end_index = int(segment[1]) if int(segment[1]) < len(labels) else len(labels) - 1
+        end_index = (
+            int(segment[1]) if int(segment[1]) < len(labels) else len(labels) - 1
+        )
 
         # Update labels within the segment range
         if start_index is not None and end_index is not None:
@@ -79,6 +83,7 @@ def calculate_recall(segments, labels):
     recall = tp / total_positives
     return recall
 
+
 def calculate_tiou(reference_segments, predicted_segments, tiou_thresholds=[0.5]):
     """
     Calculate the temporal Intersection over Union (tIoU) for given reference and predicted segments, considering a list of thresholds.
@@ -88,6 +93,7 @@ def calculate_tiou(reference_segments, predicted_segments, tiou_thresholds=[0.5]
     :param tiou_thresholds: A list of threshold values for tIoU above which a prediction is considered valid.
     :return: A dictionary where keys are the tIoU thresholds and the values are the precision values for each threshold.
     """
+
     def calculate_iou(segment1, segment2):
         start_max = max(segment1[0], segment2[0])
         end_min = min(segment1[1], segment2[1])
@@ -96,16 +102,28 @@ def calculate_tiou(reference_segments, predicted_segments, tiou_thresholds=[0.5]
         union = (segment1[1] - segment1[0]) + (segment2[1] - segment2[0]) - intersection
 
         return intersection / union if union != 0 else 0
-    
+
     # Calculate the maximum tIoU for each predicted segment
-    max_tiou_scores = [max([calculate_iou(predicted_segment, ref_segment) for ref_segment in reference_segments], default=0) 
-                       for predicted_segment in predicted_segments]
-    
+    max_tiou_scores = [
+        max(
+            [
+                calculate_iou(predicted_segment, ref_segment)
+                for ref_segment in reference_segments
+            ],
+            default=0,
+        )
+        for predicted_segment in predicted_segments
+    ]
+
     # Calculate precision for each threshold
     precision_per_threshold = {}
     for threshold in tiou_thresholds:
         valid_predictions = sum(score >= threshold for score in max_tiou_scores)
-        precision = valid_predictions / len(predicted_segments) if len(predicted_segments) > 0 else 0
+        precision = (
+            valid_predictions / len(predicted_segments)
+            if len(predicted_segments) > 0
+            else 0
+        )
         precision_per_threshold[threshold] = precision
-    
+
     return precision_per_threshold
