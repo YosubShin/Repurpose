@@ -239,6 +239,10 @@ class RepurposeModel(pl.LightningModule):
 
     def forward(self, audio: torch.Tensor, visual: torch.Tensor, caption: torch.Tensor, mask: torch.Tensor):
         """Forward pass with cross-attention between modalities."""
+        # TEMPORARY: Zero out audio and caption for testing
+        audio = torch.zeros_like(audio)
+        caption = torch.zeros_like(caption)
+        
         # Project to shared dimension
         a = self.proj_a(audio)
         v = self.proj_v(visual)
