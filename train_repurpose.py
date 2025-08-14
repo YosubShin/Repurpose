@@ -442,7 +442,7 @@ class RepurposeModel(pl.LightningModule):
         combined_mask = seq_mask * cls_mask
 
         # Apply combined mask and sum (following original pattern)
-        reg_loss_f = (reg_loss_f_all * combined_mask).sum()
+        reg_loss_f = (reg_loss_f_all * combined_mask).sum() / combined_mask.sum()
 
         # Debug: Save loss details for first batch
         if batch_idx == 0 and self.current_epoch == 0:
