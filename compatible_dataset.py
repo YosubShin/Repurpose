@@ -225,12 +225,32 @@ class SequenceVideoDataset(Dataset):
             indices = slice(
                 0, min(min_length, self.max_seq_length), self.stride)
 
+        # Generate labels and regression offsets FIRST
+        time_range = ann.get('timeRangeOffset', [0, 0])
+        target_seq_length = int(time_range[1] - time_range[0])
+        labels = self._get_labels(ann, target_seq_length)
+        offsets = self._get_regression_offsets(ann, target_seq_length)
+
+        # HACK FOR TESTING: Replace visual features with binary label encoding
+        # Create a feature vector that's just the label repeated across feature dimension
+        USE_TRIVIAL_FEATURES = True  # Toggle this to enable/disable the hack
+
         # Process features
         output_features = {}
         feature_masks = {}
 
         for modality in self.feature_dirs.keys():
-            if features[modality] is not None:
+            if modality == 'visual' and USE_TRIVIAL_FEATURES:
+                # Replace visual features with trivial encoding
+                feat_dim = self._get_feature_dim(modality)
+                # Create feature where all dimensions are set to the label value
+                # Shape: [target_seq_length, feat_dim]
+                trivial_features = np.repeat(
+                    labels[:, np.newaxis], feat_dim, axis=1)
+                output_features[modality] = torch.from_numpy(
+                    trivial_features.astype(np.float32))
+                feature_masks[modality] = True
+            elif features[modality] is not None:
                 # Always apply timeRange slicing to cap memory usage
                 feat_data = features[modality]
                 start_idx = int(time_range[0])
@@ -251,10 +271,6 @@ class SequenceVideoDataset(Dataset):
                 )
                 feature_masks[modality] = False
 
-        # Generate labels and regression offsets based on timeRangeOffset
-        time_range = ann.get('timeRangeOffset', [0, 0])
-        target_seq_length = int(time_range[1] - time_range[0])
-
         # Adjust features to match target sequence length (handle ±1 duration differences)
         for modality in output_features:
             current_length = output_features[modality].shape[0]
@@ -269,9 +285,6 @@ class SequenceVideoDataset(Dataset):
                     (pad_length, feat_dim), dtype=output_features[modality].dtype)
                 output_features[modality] = torch.cat(
                     [output_features[modality], padding], dim=0)
-
-        labels = self._get_labels(ann, target_seq_length)
-        offsets = self._get_regression_offsets(ann, target_seq_length)
 
         return {
             'video_id': video_id,
