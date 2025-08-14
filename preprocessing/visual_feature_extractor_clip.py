@@ -16,8 +16,9 @@ except ImportError:
 
 
 class VisualFeatureExtractorCLIP:
-    def __init__(self, output_dir: str = "data/video_clip_features", log_level: str = "INFO", inject_hints: bool = False):
+    def __init__(self, output_dir: str = "data/video_clip_features", log_level: str = "INFO", inject_hints: bool = False, use_black_white: bool = False):
         self.inject_hints = inject_hints
+        self.use_black_white = use_black_white
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,6 +44,9 @@ class VisualFeatureExtractorCLIP:
         if self.inject_hints:
             self.logger.info(
                 "HINT INJECTION ENABLED: Red dots will be added to highlight frames")
+        if self.use_black_white:
+            self.logger.info(
+                "BLACK/WHITE MODE ENABLED: Using synthetic frames (white for highlights, black for non-highlights)")
 
     def load_progress(self) -> Dict[str, bool]:
         """Load extraction progress from file."""
@@ -56,6 +60,26 @@ class VisualFeatureExtractorCLIP:
         with open(self.progress_file, 'w') as f:
             json.dump(self.processed_videos, f, indent=2)
 
+    def create_black_white_frame(self, is_highlight: bool, width: int = 224, height: int = 224) -> np.ndarray:
+        """
+        Create a black or white frame for testing.
+        
+        Args:
+            is_highlight: True for white frame (highlight), False for black frame
+            width: Frame width
+            height: Frame height
+            
+        Returns:
+            numpy array of shape (H, W, 3) with black or white pixels
+        """
+        if is_highlight:
+            # White frame for highlights
+            frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+        else:
+            # Black frame for non-highlights
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+        return frame
+    
     def add_red_dot_to_frame(self, frame: np.ndarray) -> np.ndarray:
         """
         Add a red dot in the center of the frame as a visual hint.
@@ -150,8 +174,17 @@ class VisualFeatureExtractorCLIP:
 
                     # Check if this frame is close enough to our target timestamp
                     if abs(frame_time - timestamp) < 0.5:  # Within 0.5 seconds
-                        # Convert to numpy array
-                        frame_rgb = frame.to_rgb().to_ndarray()
+                        # Use black/white frames if enabled
+                        if self.use_black_white:
+                            is_highlight = segments and self.is_highlight_frame(timestamp, segments)
+                            frame_rgb = self.create_black_white_frame(is_highlight)
+                            if is_highlight:
+                                self.logger.debug(f"Created WHITE frame at {timestamp}s (highlight)")
+                            else:
+                                self.logger.debug(f"Created BLACK frame at {timestamp}s (non-highlight)")
+                        else:
+                            # Convert to numpy array
+                            frame_rgb = frame.to_rgb().to_ndarray()
 
                         # Optionally add red dot for highlighted frames
                         if self.inject_hints and segments and self.is_highlight_frame(timestamp, segments):
@@ -204,6 +237,90 @@ class VisualFeatureExtractorCLIP:
 
         return np.array(features)
 
+    def extract_black_white_features(self, video_path: str, youtube_id: str,
+                                     segments: Optional[List[List[float]]] = None) -> bool:
+        """
+        Extract features using black/white frames efficiently.
+        Computes CLIP embeddings once for black and white, then reuses them.
+        
+        Args:
+            video_path: Path to video (used to get duration)
+            youtube_id: YouTube video ID for naming output file
+            segments: List of [start, end] pairs for highlight segments
+            
+        Returns:
+            bool: True if successful
+        """
+        if youtube_id in self.processed_videos:
+            self.logger.info(f"Features for {youtube_id} already extracted, skipping...")
+            return True
+            
+        output_path = self.output_dir / f"{youtube_id}.npy"
+        
+        try:
+            self.logger.info(f"Extracting BLACK/WHITE features for {youtube_id}...")
+            
+            # Get video duration
+            container = av.open(video_path)
+            video_stream = container.streams.video[0]
+            duration = float(video_stream.duration * video_stream.time_base)
+            container.close()
+            
+            num_frames = int(duration)
+            self.logger.info(f"  Video duration: {duration:.1f}s, creating {num_frames} feature vectors")
+            
+            # Compute CLIP embeddings once for black and white frames
+            black_frame = self.create_black_white_frame(is_highlight=False)
+            white_frame = self.create_black_white_frame(is_highlight=True)
+            
+            with torch.no_grad():
+                # Process black frame
+                black_img = Image.fromarray(black_frame)
+                black_input = self.preprocess(black_img).unsqueeze(0).to(self.device)
+                black_features = self.model.encode_image(black_input)
+                black_features = black_features / black_features.norm(dim=-1, keepdim=True)
+                black_vec = black_features.cpu().numpy().squeeze()
+                
+                # Process white frame
+                white_img = Image.fromarray(white_frame)
+                white_input = self.preprocess(white_img).unsqueeze(0).to(self.device)
+                white_features = self.model.encode_image(white_input)
+                white_features = white_features / white_features.norm(dim=-1, keepdim=True)
+                white_vec = white_features.cpu().numpy().squeeze()
+            
+            self.logger.info("  Computed CLIP embeddings for black and white frames")
+            
+            # Create feature array by checking each timestamp
+            features = []
+            highlight_count = 0
+            
+            for second in range(num_frames):
+                timestamp = float(second)
+                is_highlight = segments and self.is_highlight_frame(timestamp, segments)
+                
+                if is_highlight:
+                    features.append(white_vec)
+                    highlight_count += 1
+                else:
+                    features.append(black_vec)
+            
+            features = np.array(features)
+            
+            self.logger.info(f"  Created {len(features)} vectors: {highlight_count} white (highlight), {len(features)-highlight_count} black")
+            
+            # Save features
+            np.save(output_path, features)
+            
+            self.processed_videos[youtube_id] = True
+            self.save_progress()
+            
+            self.logger.info(f"Successfully extracted features for {youtube_id}, shape: {features.shape}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Feature extraction failed for {youtube_id}: {str(e)}")
+            return False
+    
     def extract_features_from_video(self, video_path: str, youtube_id: str,
                                     video_duration: Optional[float] = None,
                                     segments: Optional[List[List[float]]] = None) -> bool:
@@ -220,6 +337,10 @@ class VisualFeatureExtractorCLIP:
         Returns:
             bool: True if successful, False otherwise
         """
+        # Use optimized black/white extraction if enabled
+        if self.use_black_white:
+            return self.extract_black_white_features(video_path, youtube_id, segments)
+        
         if youtube_id in self.processed_videos:
             self.logger.info(
                 f"Features for {youtube_id} already extracted, skipping...")
@@ -433,13 +554,15 @@ def main():
                         help="Maximum number of videos to process")
     parser.add_argument("--inject-hints", action="store_true",
                         help="Inject red dots into highlight frames (for debugging)")
+    parser.add_argument("--use-black-white", action="store_true",
+                        help="Use black/white synthetic frames instead of actual video (white=highlight, black=non-highlight)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
 
     args = parser.parse_args()
 
     extractor = VisualFeatureExtractorCLIP(
-        args.output_dir, args.log_level, inject_hints=args.inject_hints)
+        args.output_dir, args.log_level, inject_hints=args.inject_hints, use_black_white=args.use_black_white)
 
     try:
         if args.dataset:
