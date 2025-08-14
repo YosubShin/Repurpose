@@ -288,13 +288,9 @@ class RepurposeModel(pl.LightningModule):
         x = self.simple_input_proj(visual)
         x = x + self.simple_pos_embed[:, :seq_len, :]
 
-        # Apply transformer with mask if provided
-        if mask is not None:
-            # Convert mask to attention mask (True = ignore)
-            attn_mask = ~mask.bool()
-            x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
-        else:
-            x = self.simple_encoder(x)
+        # Convert mask to attention mask (True = ignore)
+        attn_mask = ~mask.bool()
+        x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
 
         # Get offset predictions
         offset_f = self.simple_output(x)  # [B, T, 2]
@@ -444,10 +440,16 @@ class RepurposeModel(pl.LightningModule):
         # Apply combined mask and sum (following original pattern)
         reg_loss_f = (reg_loss_f_all * combined_mask).sum() / combined_mask.sum()
 
-        # Debug: Save loss details for first batch
-        if batch_idx == 0 and self.current_epoch == 0:
+        # Debug: Save loss details for first batch of each epoch
+        if batch_idx == 0:
             self._save_loss_debug_csv(
-                reg_loss_f_all, cls_mask, combined_mask, reg_loss_f, offset_f, offsets
+                reg_loss_f_all,
+                cls_mask,
+                combined_mask,
+                reg_loss_f,
+                offset_f,
+                offsets,
+                epoch=self.current_epoch,
             )
 
         # Alignment losses (KL divergence) - apply to valid positions only
@@ -911,7 +913,14 @@ class RepurposeModel(pl.LightningModule):
         self.logger_instance.info(f"Saved batch statistics to {stats_path}")
 
     def _save_loss_debug_csv(
-        self, reg_loss_f_all, cls_mask, combined_mask, reg_loss_f, offset_f, offsets
+        self,
+        reg_loss_f_all,
+        cls_mask,
+        combined_mask,
+        reg_loss_f,
+        offset_f,
+        offsets,
+        epoch=0,
     ):
         """Save loss calculation details to CSV for debugging."""
         import pandas as pd
@@ -932,8 +941,9 @@ class RepurposeModel(pl.LightningModule):
         )  # Add some buffer to see non-positive positions too
         valid_len = min(valid_len, seq_len)
 
-        # Prepare loss data
+        # Prepare loss data - include epoch information
         loss_data = {
+            "epoch": [epoch] * valid_len,
             "time_step": list(range(valid_len)),
             "cls_mask": cls_mask[sample_idx, :valid_len].detach().cpu().numpy(),
             "combined_mask": combined_mask[sample_idx, :valid_len]
@@ -965,12 +975,16 @@ class RepurposeModel(pl.LightningModule):
         )
 
         df = pd.DataFrame(loss_data)
-        csv_path = os.path.join(debug_dir, "batch_0_sample_0_losses.csv")
+        # Save with epoch in filename
+        csv_path = os.path.join(
+            debug_dir, f"epoch_{epoch:03d}_batch_0_sample_0_losses.csv"
+        )
         df.to_csv(csv_path, index=False, float_format="%.6f")
         self.logger_instance.info(f"Saved loss debug data to {csv_path}")
 
-        # Save aggregate metrics
+        # Save aggregate metrics with epoch information
         metrics = {
+            "epoch": [epoch] * 7,
             "metric": [
                 "total_loss",
                 "num_active_positions",
@@ -995,9 +1009,25 @@ class RepurposeModel(pl.LightningModule):
             ],
         }
         metrics_df = pd.DataFrame(metrics)
-        metrics_path = os.path.join(debug_dir, "batch_0_sample_0_metrics.csv")
-        metrics_df.to_csv(metrics_path, index=False)
-        self.logger_instance.info(f"Saved loss metrics to {metrics_path}")
+
+        # Save with epoch in filename
+        metrics_path = os.path.join(
+            debug_dir, f"epoch_{epoch:03d}_batch_0_sample_0_metrics.csv"
+        )
+        metrics_df.to_csv(metrics_path, index=False, float_format="%.6f")
+        self.logger_instance.info(f"Saved aggregate metrics to {metrics_path}")
+
+        # Also append to a master CSV that tracks all epochs
+        master_csv_path = os.path.join(debug_dir, "all_epochs_metrics.csv")
+        if os.path.exists(master_csv_path):
+            # Append to existing file
+            existing_df = pd.read_csv(master_csv_path)
+            updated_df = pd.concat([existing_df, metrics_df], ignore_index=True)
+            updated_df.to_csv(master_csv_path, index=False, float_format="%.6f")
+        else:
+            # Create new file
+            metrics_df.to_csv(master_csv_path, index=False, float_format="%.6f")
+        self.logger_instance.info(f"Updated master metrics file: {master_csv_path}")
 
     def on_train_start(self):
         """Set warmup and total steps based on actual training configuration."""
