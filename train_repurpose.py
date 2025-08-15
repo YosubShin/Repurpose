@@ -801,8 +801,8 @@ class RepurposeModel(pl.LightningModule):
 
         # We need to create a custom scheduler that combines warmup and cosine decay
         # The actual warmup_steps will be set in on_train_start when we know the dataloader size
-        self.warmup_steps = 100  # Default, will be updated
-        self.total_steps = 1000  # Default, will be updated
+        # self.warmup_steps = 100  # Default, will be updated
+        # self.total_steps = 1000  # Default, will be updated
 
         # Create a combined scheduler
         def lr_lambda(current_step):
@@ -1032,15 +1032,15 @@ class RepurposeModel(pl.LightningModule):
     def on_train_start(self):
         """Set warmup and total steps based on actual training configuration."""
         # Get the actual number of training steps
-        if self.trainer.max_epochs:
-            steps_per_epoch = len(self.trainer.train_dataloader)
-            self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
-            self.total_steps = self.trainer.max_epochs * steps_per_epoch
+        # if self.trainer.max_epochs:
+        #     steps_per_epoch = len(self.trainer.train_dataloader)
+        #     self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
+        #     self.total_steps = self.trainer.max_epochs * steps_per_epoch
 
-            self.logger_instance.info(
-                f"Learning rate schedule configured: warmup_steps={self.warmup_steps}, "
-                f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
-            )
+        #     self.logger_instance.info(
+        #         f"Learning rate schedule configured: warmup_steps={self.warmup_steps}, "
+        #         f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
+        #     )
 
     def on_before_backward(self, loss):
         """Apply gradient clipping before backward pass."""
