@@ -799,32 +799,9 @@ class RepurposeModel(pl.LightningModule):
             # weight_decay=self.hparams.weight_decay,
         )
 
-        # We need to create a custom scheduler that combines warmup and cosine decay
-        # The actual warmup_steps will be set in on_train_start when we know the dataloader size
-        # self.warmup_steps = 100  # Default, will be updated
-        # self.total_steps = 1000  # Default, will be updated
-
-        # Create a combined scheduler
-        def lr_lambda(current_step):
-            # Warmup phase
-            if current_step < self.warmup_steps:
-                return float(current_step) / float(max(1, self.warmup_steps))
-            # Cosine decay phase
-            else:
-                progress = float(current_step - self.warmup_steps) / float(
-                    max(1, self.total_steps - self.warmup_steps)
-                )
-                return 0.5 * (1.0 + np.cos(np.pi * progress))
-
-        scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-
+        # Using simple Adam optimizer without learning rate scheduling for now
         return {
             "optimizer": optimizer,
-            # "lr_scheduler": {
-            #     "scheduler": scheduler,
-            #     "interval": "step",  # Step every batch, not epoch
-            #     "frequency": 1,
-            # },
         }
 
     def _save_batch_debug_csv(self, batch, labels, offsets, seq_mask):
