@@ -234,6 +234,7 @@ class SequenceVideoDataset(Dataset):
         # HACK FOR TESTING: Replace visual features with binary label encoding
         # Create a feature vector that's just the label repeated across feature dimension
         USE_TRIVIAL_FEATURES = True  # Toggle this to enable/disable the hack
+        USE_1D_FEATURES = True  # Use 1-dimensional features for even simpler testing
 
         # Process features
         output_features = {}
@@ -242,7 +243,12 @@ class SequenceVideoDataset(Dataset):
         for modality in self.feature_dirs.keys():
             if modality == "visual" and USE_TRIVIAL_FEATURES:
                 # Replace visual features with trivial encoding
-                feat_dim = self._get_feature_dim(modality)
+                if USE_1D_FEATURES:
+                    # Use 1-dimensional features - just the label value itself
+                    feat_dim = 1
+                else:
+                    # Original: repeat across all 512 dimensions
+                    feat_dim = self._get_feature_dim(modality)
                 # Create feature where all dimensions are set to the label value
                 # Shape: [target_seq_length, feat_dim]
                 trivial_features = np.repeat(labels[:, np.newaxis], feat_dim, axis=1)
