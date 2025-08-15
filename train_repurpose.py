@@ -125,6 +125,8 @@ class RepurposeModel(pl.LightningModule):
         n_fusion_layers: int = 3,  # Audio-Visual fusion layers
         lr: float = 1e-4,
         weight_decay: float = 1e-4,  # Weight decay for optimizer
+        beta1: float = 0.9,  # Beta1 for AdamW
+        beta2: float = 0.98,  # Beta2 for AdamW (lower than default for faster adaptation)
         warmup_epochs: int = 1,
         lambda1: float = 0.1,
         lambda2: float = 0.3,
@@ -793,13 +795,14 @@ class RepurposeModel(pl.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer with warmup and cosine decay scheduling."""
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.lr,
-            # weight_decay=self.hparams.weight_decay,
+            weight_decay=self.hparams.weight_decay,
+            betas=(self.hparams.beta1, self.hparams.beta2),
         )
 
-        # Using simple Adam optimizer without learning rate scheduling for now
+        # Using AdamW optimizer with weight decay
         return {
             "optimizer": optimizer,
         }
@@ -1779,6 +1782,8 @@ def main(args):
         n_fusion_layers=args.n_fusion_layers,
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
+        beta1=args.beta1,
+        beta2=args.beta2,
         warmup_epochs=args.warmup_epochs,
         lambda1=args.lambda1,
         lambda2=args.lambda2,
@@ -2031,6 +2036,18 @@ if __name__ == "__main__":
         type=float,
         default=1e-4,
         help="Weight decay for optimizer regularization",
+    )
+    parser.add_argument(
+        "--beta1",
+        type=float,
+        default=0.9,
+        help="Beta1 for AdamW optimizer",
+    )
+    parser.add_argument(
+        "--beta2",
+        type=float,
+        default=0.98,
+        help="Beta2 for AdamW optimizer (default 0.98, lower than standard 0.999 for faster adaptation)",
     )
     parser.add_argument(
         "--warmup_epochs",
