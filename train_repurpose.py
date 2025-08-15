@@ -1842,7 +1842,7 @@ def main(args):
         accelerator=args.accelerator,
         devices=args.devices,
         precision=args.precision,
-        gradient_clip_val=args.gradient_clip,
+        # gradient_clip_val=args.gradient_clip,
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=callbacks,
         logger=wandb_logger,
