@@ -820,11 +820,11 @@ class RepurposeModel(pl.LightningModule):
 
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",  # Step every batch, not epoch
-                "frequency": 1,
-            },
+            # "lr_scheduler": {
+            #     "scheduler": scheduler,
+            #     "interval": "step",  # Step every batch, not epoch
+            #     "frequency": 1,
+            # },
         }
 
     def _save_batch_debug_csv(self, batch, labels, offsets, seq_mask):
