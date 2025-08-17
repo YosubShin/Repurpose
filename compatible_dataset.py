@@ -234,7 +234,17 @@ class SequenceVideoDataset(Dataset):
         # HACK FOR TESTING: Replace visual features with binary label encoding
         # Create a feature vector that's just the label repeated across feature dimension
         USE_TRIVIAL_FEATURES = True  # Toggle this to enable/disable the hack
-        USE_1D_FEATURES = True  # Use 1-dimensional features for even simpler testing
+
+        # Read feature dimension from environment variable (for dimension testing)
+        import os
+
+        FEATURE_DIM_OVERRIDE = os.environ.get("FEATURE_DIM", None)
+        if FEATURE_DIM_OVERRIDE:
+            USE_CUSTOM_DIM = True
+            CUSTOM_FEATURE_DIM = int(FEATURE_DIM_OVERRIDE)
+        else:
+            USE_CUSTOM_DIM = False
+            USE_1D_FEATURES = True  # Default to 1D if not overridden
 
         # Process features
         output_features = {}
@@ -242,20 +252,95 @@ class SequenceVideoDataset(Dataset):
 
         for modality in self.feature_dirs.keys():
             if modality == "visual" and USE_TRIVIAL_FEATURES:
-                # Replace visual features with trivial encoding
-                if USE_1D_FEATURES:
-                    # Use 1-dimensional features - just the label value itself
-                    feat_dim = 1
-                else:
-                    # Original: repeat across all 512 dimensions
-                    feat_dim = self._get_feature_dim(modality)
-                # Create feature where all dimensions are set to the label value
-                # Shape: [target_seq_length, feat_dim]
-                trivial_features = np.repeat(labels[:, np.newaxis], feat_dim, axis=1)
-                output_features[modality] = torch.from_numpy(
-                    trivial_features.astype(np.float32)
-                )
-                feature_masks[modality] = True
+                # Choose feature strategy based on environment variable
+                FEATURE_STRATEGY = os.environ.get("FEATURE_STRATEGY", "repeat_label")
+
+                if FEATURE_STRATEGY == "real_with_signal":
+                    # Use real visual features with class signal injection
+                    if features[modality] is not None:
+                        # Load actual visual features
+                        feat_data = features[modality]
+                        start_idx = int(time_range[0])
+                        end_idx = int(time_range[1])
+                        real_features = feat_data[start_idx:end_idx][indices].astype(
+                            np.float32
+                        )
+
+                        # Determine how many dimensions to use
+                        if USE_CUSTOM_DIM:
+                            feat_dim = min(CUSTOM_FEATURE_DIM, real_features.shape[1])
+                            real_features = real_features[:, :feat_dim]
+                        else:
+                            feat_dim = real_features.shape[1]
+
+                        # Inject class signal into the features
+                        SIGNAL_STRENGTH = float(
+                            os.environ.get("SIGNAL_STRENGTH", "1.0")
+                        )
+                        SIGNAL_MODE = os.environ.get(
+                            "SIGNAL_MODE", "additive"
+                        )  # additive, multiplicative, or partial
+
+                        # Expand labels to match feature dimensions
+                        labels_expanded = np.repeat(
+                            labels[:, np.newaxis], feat_dim, axis=1
+                        )
+
+                        if SIGNAL_MODE == "additive":
+                            # Add signal to all dimensions
+                            modified_features = real_features + (
+                                labels_expanded * SIGNAL_STRENGTH
+                            )
+                        elif SIGNAL_MODE == "multiplicative":
+                            # Multiply features by (1 + signal) to preserve but amplify
+                            modified_features = real_features * (
+                                1 + labels_expanded * SIGNAL_STRENGTH
+                            )
+                        elif SIGNAL_MODE == "partial":
+                            # Add signal only to first N dimensions
+                            signal_dims = min(
+                                32, feat_dim
+                            )  # Add signal to first 32 dims
+                            modified_features = real_features.copy()
+                            modified_features[:, :signal_dims] += (
+                                labels_expanded[:, :signal_dims] * SIGNAL_STRENGTH
+                            )
+                        else:
+                            modified_features = real_features
+
+                        output_features[modality] = torch.from_numpy(modified_features)
+                        feature_masks[modality] = True
+                    else:
+                        # Fallback to trivial if no real features available
+                        FEATURE_STRATEGY = "repeat_label"
+
+                if (
+                    FEATURE_STRATEGY == "repeat_label"
+                    or modality not in output_features
+                ):
+                    # Original strategy: repeat label across dimensions
+                    if USE_CUSTOM_DIM:
+                        feat_dim = CUSTOM_FEATURE_DIM
+                    elif USE_1D_FEATURES:
+                        feat_dim = 1
+                    else:
+                        feat_dim = self._get_feature_dim(modality)
+
+                    trivial_features = np.repeat(
+                        labels[:, np.newaxis], feat_dim, axis=1
+                    )
+
+                    # Add small noise to break symmetry
+                    ADD_NOISE = os.environ.get("ADD_NOISE", "true").lower() == "true"
+                    if ADD_NOISE and feat_dim > 1:
+                        noise_scale = float(os.environ.get("NOISE_SCALE", "0.01"))
+                        noise = np.random.randn(*trivial_features.shape) * noise_scale
+                        trivial_features = trivial_features + noise
+
+                    output_features[modality] = torch.from_numpy(
+                        trivial_features.astype(np.float32)
+                    )
+                    feature_masks[modality] = True
             elif features[modality] is not None:
                 # Always apply timeRange slicing to cap memory usage
                 feat_data = features[modality]

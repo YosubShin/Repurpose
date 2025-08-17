@@ -257,7 +257,29 @@ class RepurposeModel(pl.LightningModule):
         simple_d_model = 32
         simple_nhead = 4
         simple_num_layers = 2
-        self.simple_input_proj = nn.Linear(dim_visual, simple_d_model)
+
+        # Read feature dimension from environment variable (for dimension testing)
+        import os
+
+        feature_dim_override = os.environ.get("FEATURE_DIM", None)
+        if feature_dim_override:
+            input_dim = int(feature_dim_override)
+            self.logger_instance.info(f"Using custom feature dimension: {input_dim}")
+        else:
+            input_dim = dim_visual
+
+        self.simple_input_proj = nn.Linear(input_dim, simple_d_model)
+
+        # Use smaller initialization for higher dimensional inputs to prevent gradient issues
+        if feature_dim_override and input_dim > 1:
+            with torch.no_grad():
+                # Scale down initialization based on input dimension
+                scale_factor = 1.0 / np.sqrt(input_dim)
+                self.simple_input_proj.weight.data *= scale_factor
+                self.logger_instance.info(
+                    f"Scaled input projection weights by {scale_factor:.4f}"
+                )
+
         self.simple_pos_embed = nn.Parameter(
             torch.randn(1, 2000, simple_d_model) * 0.01
         )
