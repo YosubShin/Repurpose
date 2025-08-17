@@ -231,12 +231,32 @@ class SequenceVideoDataset(Dataset):
         labels = self._get_labels(ann, target_seq_length)
         offsets = self._get_regression_offsets(ann, target_seq_length)
 
+        # HACK FOR TESTING: Replace visual features with binary label encoding
+        # Create a feature vector that's just the label repeated across feature dimension
+        USE_TRIVIAL_FEATURES = True  # Toggle this to enable/disable the hack
+        USE_1D_FEATURES = True  # Use 1-dimensional features for even simpler testing
+
         # Process features
         output_features = {}
         feature_masks = {}
 
         for modality in self.feature_dirs.keys():
-            if features[modality] is not None:
+            if modality == "visual" and USE_TRIVIAL_FEATURES:
+                # Replace visual features with trivial encoding
+                if USE_1D_FEATURES:
+                    # Use 1-dimensional features - just the label value itself
+                    feat_dim = 1
+                else:
+                    # Original: repeat across all 512 dimensions
+                    feat_dim = self._get_feature_dim(modality)
+                # Create feature where all dimensions are set to the label value
+                # Shape: [target_seq_length, feat_dim]
+                trivial_features = np.repeat(labels[:, np.newaxis], feat_dim, axis=1)
+                output_features[modality] = torch.from_numpy(
+                    trivial_features.astype(np.float32)
+                )
+                feature_masks[modality] = True
+            elif features[modality] is not None:
                 # Always apply timeRange slicing to cap memory usage
                 feat_data = features[modality]
                 start_idx = int(time_range[0])
