@@ -21,10 +21,10 @@ LAMBDA4=5.0
 
 # Base directories - adjust these to match your setup
 AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
-VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
+VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features_hint"
 CAPTION_DIR="/home/yosubs/koa_scratch/repurpose/data/caption_features"
-TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test.json"
-VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
+TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test_train.json"
+VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/test_val.json"
 
 # Output directory
 OUTPUT_BASE="dimension_tests"
@@ -116,6 +116,14 @@ for DIM in "${DIMENSIONS[@]}"; do
         --weight_decay $WEIGHT_DECAY \
         --beta1 0.9 \
         --beta2 $BETA2 \
+        --d_model 128 \
+        --n_head 4 \
+        --n_self_attn_layers 1 \
+        --n_cross_attn_layers 1 \
+        --n_fusion_layers 0 \
+        --lambda1 0 \
+        --lambda2 0 \
+        --lambda3 0 \
         --lambda4 $LAMBDA4 \
         --gradient_clip 1.0 \
         --log_interval 10 \
@@ -127,11 +135,8 @@ for DIM in "${DIMENSIONS[@]}"; do
         --wandb_run_name "dim_${DIM}" \
         --wandb_group "dimension_test" \
         --wandb_tags "dimension_test,dim_${DIM}" \
-        --early_stopping_patience 3 \
+        --early_stopping_patience 10 \
         --precision "16-mixed" \
-        --enable_checkpointing \
-        --limit_train_batches 50 \
-        --limit_val_batches 10 \
         > "$LOG_FILE" 2>&1
     
     TRAINING_EXIT_CODE=$?

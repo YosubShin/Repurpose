@@ -12,12 +12,12 @@ NC='\033[0m' # No Color
 
 # Configuration
 DIMENSIONS=(4 16 64 256 512)
-MAX_EPOCHS=10
-BATCH_SIZE=4
-LEARNING_RATE=5e-3
-WEIGHT_DECAY=1e-5
+MAX_EPOCHS=100
+BATCH_SIZE=16
+LEARNING_RATE=3e-3
+WEIGHT_DECAY=1e-4
 BETA2=0.98
-LAMBDA4=5.0
+LAMBDA4=1.0
 
 # Strategies to test
 STRATEGIES=("repeat_label" "real_with_signal")
@@ -26,10 +26,10 @@ SIGNAL_STRENGTHS=(0.5 1.0 2.0)
 
 # Base directories - adjust these to match your setup
 AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
-VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
+VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features_hint"
 CAPTION_DIR="/home/yosubs/koa_scratch/repurpose/data/caption_features"
-TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test.json"
-VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
+TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test_train.json"
+VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/test_val.json"
 
 # Output directory
 OUTPUT_BASE="feature_strategy_tests"
@@ -89,6 +89,14 @@ run_test() {
         --weight_decay $WEIGHT_DECAY \
         --beta1 0.9 \
         --beta2 $BETA2 \
+        --d_model 128 \
+        --n_head 4 \
+        --n_self_attn_layers 1 \
+        --n_cross_attn_layers 1 \
+        --n_fusion_layers 0 \
+        --lambda1 0 \
+        --lambda2 0 \
+        --lambda3 0 \
         --lambda4 $LAMBDA4 \
         --gradient_clip 1.0 \
         --checkpoint_dir "$TEST_DIR/checkpoints" \
@@ -99,10 +107,8 @@ run_test() {
         --wandb_run_name "$TEST_NAME" \
         --wandb_group "strategy_comparison" \
         --wandb_tags "strategy_test,$STRATEGY,dim_${DIM}" \
-        --early_stopping_patience 3 \
+        --early_stopping_patience 10 \
         --precision "16-mixed" \
-        --limit_train_batches 50 \
-        --limit_val_batches 10 \
         > "$LOG_FILE" 2>&1
     
     # Extract metrics
