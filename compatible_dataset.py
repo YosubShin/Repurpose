@@ -262,9 +262,12 @@ class SequenceVideoDataset(Dataset):
                         feat_data = features[modality]
                         start_idx = int(time_range[0])
                         end_idx = int(time_range[1])
-                        real_features = feat_data[start_idx:end_idx][indices].astype(
-                            np.float32
-                        )
+                        # First extract the time range, then apply indices
+                        sliced_features = feat_data[start_idx:end_idx]
+                        real_features = sliced_features[indices].astype(np.float32)
+
+                        # Use labels as-is for signal injection (length will be handled later)
+                        labels_for_signal = labels
 
                         # Determine how many dimensions to use
                         if USE_CUSTOM_DIM:
@@ -281,19 +284,24 @@ class SequenceVideoDataset(Dataset):
                             "SIGNAL_MODE", "additive"
                         )  # additive, multiplicative, or partial
 
+                        # Handle length mismatch between features and labels
+                        min_len = min(len(real_features), len(labels_for_signal))
+                        real_features_trimmed = real_features[:min_len]
+                        labels_for_signal_trimmed = labels_for_signal[:min_len]
+
                         # Expand labels to match feature dimensions
                         labels_expanded = np.repeat(
-                            labels[:, np.newaxis], feat_dim, axis=1
+                            labels_for_signal_trimmed[:, np.newaxis], feat_dim, axis=1
                         )
 
                         if SIGNAL_MODE == "additive":
                             # Add signal to all dimensions
-                            modified_features = real_features + (
+                            modified_features = real_features_trimmed + (
                                 labels_expanded * SIGNAL_STRENGTH
                             )
                         elif SIGNAL_MODE == "multiplicative":
                             # Multiply features by (1 + signal) to preserve but amplify
-                            modified_features = real_features * (
+                            modified_features = real_features_trimmed * (
                                 1 + labels_expanded * SIGNAL_STRENGTH
                             )
                         elif SIGNAL_MODE == "partial":
@@ -301,12 +309,12 @@ class SequenceVideoDataset(Dataset):
                             signal_dims = min(
                                 32, feat_dim
                             )  # Add signal to first 32 dims
-                            modified_features = real_features.copy()
+                            modified_features = real_features_trimmed.copy()
                             modified_features[:, :signal_dims] += (
                                 labels_expanded[:, :signal_dims] * SIGNAL_STRENGTH
                             )
                         else:
-                            modified_features = real_features
+                            modified_features = real_features_trimmed
 
                         output_features[modality] = torch.from_numpy(modified_features)
                         feature_masks[modality] = True
@@ -379,6 +387,23 @@ class SequenceVideoDataset(Dataset):
                 output_features[modality] = torch.cat(
                     [output_features[modality], padding], dim=0
                 )
+
+        # Final consistency check: ensure labels and offsets match the actual feature lengths
+        # This handles cases where real_with_signal created shorter features than expected
+        actual_length = output_features[list(output_features.keys())[0]].shape[0]
+        if len(labels) != actual_length:
+            if len(labels) > actual_length:
+                # Trim labels and offsets to match features
+                labels = labels[:actual_length]
+                offsets = offsets[:actual_length]
+            else:
+                # Pad labels and offsets to match features
+                pad_len = actual_length - len(labels)
+                labels = np.concatenate([labels, np.zeros(pad_len, dtype=labels.dtype)])
+                offsets = np.concatenate(
+                    [offsets, np.zeros((pad_len, 2), dtype=offsets.dtype)]
+                )
+            target_seq_length = actual_length
 
         return {
             "video_id": video_id,
