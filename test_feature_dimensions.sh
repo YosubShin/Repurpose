@@ -12,12 +12,12 @@ NC='\033[0m' # No Color
 
 # Configuration
 DIMENSIONS=(1 4 16 64 256 512)
-MAX_EPOCHS=10
-BATCH_SIZE=4
-LEARNING_RATE=5e-3
-WEIGHT_DECAY=1e-5
+MAX_EPOCHS=100
+BATCH_SIZE=16
+LEARNING_RATE=3e-3
+WEIGHT_DECAY=1e-4
 BETA2=0.98
-LAMBDA4=5.0
+LAMBDA4=1.0
 
 # Base directories - adjust these to match your setup
 AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
