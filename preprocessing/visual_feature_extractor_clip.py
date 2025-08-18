@@ -7,11 +7,9 @@ import argparse
 import torch
 from PIL import Image, ImageDraw
 import clip
-import multiprocessing as mp
 import threading
 import queue
 import time
-from dataclasses import dataclass
 
 try:
     import av
@@ -19,26 +17,6 @@ try:
     PYAV_AVAILABLE = True
 except ImportError:
     PYAV_AVAILABLE = False
-
-
-@dataclass
-class FrameTask:
-    """Task for frame processing"""
-
-    video_id: str
-    timestamp: float
-    frame: np.ndarray
-    task_id: int = 0
-
-
-@dataclass
-class FeatureResult:
-    """Result of CLIP feature extraction"""
-
-    video_id: str
-    timestamp: float
-    features: np.ndarray
-    task_id: int = 0
 
 
 class VisualFeatureExtractorCLIP:
@@ -404,123 +382,9 @@ class VisualFeatureExtractorCLIP:
                 return True
         return False
 
-    def clip_inference_worker(
-        self,
-        frame_queue: mp.Queue,
-        result_queue: mp.Queue,
-        worker_id: int,
-        stop_event: threading.Event,
-    ):
-        """
-        Worker thread for CLIP inference.
-        Handles GPU-bound operations: batch CLIP feature extraction.
-        """
-        self.logger.info(f"Starting CLIP inference worker {worker_id}")
-
-        processed_count = 0
-        batch_buffer = []
-
-        try:
-            while not stop_event.is_set():
-                try:
-                    # Try to get a frame with timeout
-                    frame_task = frame_queue.get(timeout=1.0)
-                    batch_buffer.append(frame_task)
-
-                    # Process batch when full or when no more frames coming
-                    if len(batch_buffer) >= self.batch_size or (
-                        len(batch_buffer) > 0 and frame_queue.empty()
-                    ):
-                        self._process_frame_batch(batch_buffer, result_queue)
-                        processed_count += len(batch_buffer)
-                        self.logger.debug(
-                            f"CLIP worker {worker_id} processed batch of {len(batch_buffer)}, "
-                            f"total: {processed_count}"
-                        )
-                        batch_buffer = []
-
-                except queue.Empty:
-                    # Process any remaining frames in buffer
-                    if len(batch_buffer) > 0:
-                        self._process_frame_batch(batch_buffer, result_queue)
-                        processed_count += len(batch_buffer)
-                        batch_buffer = []
-                    continue
-                except Exception as e:
-                    self.logger.error(f"CLIP worker {worker_id} error: {e}")
-                    continue
-
-        except KeyboardInterrupt:
-            self.logger.info(f"CLIP worker {worker_id} interrupted")
-        finally:
-            # Process any remaining frames
-            if len(batch_buffer) > 0:
-                self._process_frame_batch(batch_buffer, result_queue)
-                processed_count += len(batch_buffer)
-            self.logger.info(
-                f"CLIP worker {worker_id} finished, processed {processed_count} frames"
-            )
-
-    def _process_frame_batch(
-        self, batch_buffer: List[FrameTask], result_queue: mp.Queue
-    ):
-        """Process a batch of frames through CLIP"""
-        if not batch_buffer:
-            return
-
-        try:
-            # Prepare batch of images
-            images = []
-            for frame_task in batch_buffer:
-                # Convert numpy array to PIL Image if needed
-                if isinstance(frame_task.frame, np.ndarray):
-                    frame = Image.fromarray(frame_task.frame)
-                else:
-                    frame = frame_task.frame
-                images.append(frame)
-
-            # Batch preprocess
-            image_inputs = torch.stack([self.preprocess(img) for img in images]).to(
-                self.device
-            )
-
-            # Batch CLIP inference
-            with torch.no_grad():
-                image_features = self.model.encode_image(image_inputs)
-
-                # Normalize features
-                image_features = image_features / image_features.norm(
-                    dim=-1, keepdim=True
-                )
-
-                # Convert to numpy
-                features_np = image_features.cpu().numpy()
-
-            # Create results
-            for i, frame_task in enumerate(batch_buffer):
-                result = FeatureResult(
-                    video_id=frame_task.video_id,
-                    timestamp=frame_task.timestamp,
-                    features=features_np[i],
-                    task_id=frame_task.task_id,
-                )
-                result_queue.put(result)
-
-        except Exception as e:
-            self.logger.error(f"Error processing frame batch: {e}")
-            # Put error placeholders
-            for frame_task in batch_buffer:
-                result = FeatureResult(
-                    video_id=frame_task.video_id,
-                    timestamp=frame_task.timestamp,
-                    features=np.zeros(512, dtype=np.float32),  # CLIP feature size
-                    task_id=frame_task.task_id,
-                )
-                result_queue.put(result)
-
     def extract_clip_features(self, frames: List[Tuple[float, Any]]) -> np.ndarray:
         """
-        Extract CLIP features from frames.
+        Extract CLIP features from frames using proper batching.
 
         Args:
             frames: List of (timestamp, frame) tuples where frame can be numpy array or PIL Image
@@ -531,22 +395,36 @@ class VisualFeatureExtractorCLIP:
         features = []
 
         with torch.no_grad():
-            for timestamp, frame in frames:
-                # Convert numpy array to PIL Image if needed
-                if isinstance(frame, np.ndarray):
-                    frame = Image.fromarray(frame)
+            # Process frames in batches for better GPU utilization
+            for i in range(0, len(frames), self.batch_size):
+                batch_frames = frames[i : i + self.batch_size]
+                actual_batch_size = len(batch_frames)
 
-                # Preprocess and extract features
-                image_input = self.preprocess(frame).unsqueeze(0).to(self.device)
-                image_features = self.model.encode_image(image_input)
+                self.logger.debug(
+                    f"Processing batch {i//self.batch_size + 1}: {actual_batch_size} frames"
+                )
+
+                # Prepare batch of images
+                images = []
+                for timestamp, frame in batch_frames:
+                    # Convert numpy array to PIL Image if needed
+                    if isinstance(frame, np.ndarray):
+                        frame = Image.fromarray(frame)
+                    images.append(frame)
+
+                # Batch preprocess and inference
+                image_inputs = torch.stack([self.preprocess(img) for img in images]).to(
+                    self.device
+                )
+                image_features = self.model.encode_image(image_inputs)
 
                 # Normalize features
                 image_features = image_features / image_features.norm(
                     dim=-1, keepdim=True
                 )
 
-                # Convert to numpy and squeeze batch dimension
-                features.append(image_features.cpu().numpy().squeeze())
+                # Add to results
+                features.extend(image_features.cpu().numpy())
 
         return np.array(features)
 
@@ -730,57 +608,6 @@ class VisualFeatureExtractorCLIP:
         except Exception as e:
             self.logger.error(f"Feature extraction failed for {youtube_id}: {str(e)}")
             return False
-
-    def process_video_directory(
-        self, video_dir: str, max_videos: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """
-        Process all videos in a directory to extract features.
-
-        Args:
-            video_dir: Directory containing video files
-            max_videos: Maximum number of videos to process
-
-        Returns:
-            Dict containing processing statistics
-        """
-        video_dir = Path(video_dir)
-        video_files = list(video_dir.glob("*.mp4"))
-
-        if max_videos:
-            video_files = video_files[:max_videos]
-
-        total_videos = len(video_files)
-        successful_extractions = 0
-        failed_extractions = 0
-
-        self.logger.info(f"Starting feature extraction for {total_videos} videos...")
-
-        for i, video_file in enumerate(video_files, 1):
-            youtube_id = video_file.stem
-
-            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
-
-            if self.extract_features_from_video(str(video_file), youtube_id):
-                successful_extractions += 1
-            else:
-                failed_extractions += 1
-
-        stats = {
-            "total_videos": total_videos,
-            "successful_extractions": successful_extractions,
-            "failed_extractions": failed_extractions,
-            "success_rate": (
-                successful_extractions / total_videos * 100 if total_videos > 0 else 0
-            ),
-        }
-
-        self.logger.info(
-            f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
-            f"({stats['success_rate']:.1f}%)"
-        )
-
-        return stats
 
     def extract_features_producer_consumer(
         self,
@@ -1016,7 +843,7 @@ class VisualFeatureExtractorCLIP:
                             continue
 
                         self.logger.info(
-                            f"GPU processing {len(frames)} frames for {video_id}"
+                            f"GPU processing {len(frames)} frames for {video_id} (batch_size={self.batch_size})"
                         )
 
                         # Process frames through CLIP in batches
@@ -1047,163 +874,6 @@ class VisualFeatureExtractorCLIP:
 
         finally:
             self.logger.info(f"CLIP consumer finished, processed {processed} videos")
-
-    def extract_features_batched(
-        self,
-        video_segments: Dict[str, List[List[float]]],
-        video_dir: str,
-        max_videos: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        Extract features using safe sequential processing with GPU batching.
-        Avoids threading/multiprocessing issues with CUDA.
-        """
-        # Apply max_videos limit if specified
-        if max_videos:
-            video_ids = list(video_segments.keys())[:max_videos]
-            video_segments = {k: video_segments[k] for k in video_ids}
-
-        video_dir = Path(video_dir)
-        total_videos = len(video_segments)
-
-        self.logger.info(f"Starting batched extraction for {total_videos} videos...")
-        self.logger.info(f"Using batch size: {self.batch_size} for GPU efficiency")
-
-        # Create work queue for threading
-        work_queue = queue.Queue(maxsize=self.queue_size)
-        successful_extractions = 0
-        failed_extractions = 0
-
-        # Performance monitoring
-        start_time = time.time()
-
-        try:
-            # Start threaded workers
-            video_workers = []
-            for i in range(self.num_workers):
-                self.logger.info(f"Starting thread {i}...")
-                worker = threading.Thread(
-                    target=self._threaded_video_worker,
-                    args=(
-                        work_queue,
-                        i,
-                    ),
-                )
-                worker.start()
-                video_workers.append(worker)
-                self.logger.info(f"Thread {i} started")
-
-            self.logger.info(f"All {self.num_workers} threads started")
-
-            # Give threads a moment to initialize
-            time.sleep(1)
-
-            # Check if threads are still alive after startup
-            alive_workers = [i for i, w in enumerate(video_workers) if w.is_alive()]
-            self.logger.info(f"Threads alive after 1s: {alive_workers}")
-            if len(alive_workers) != self.num_workers:
-                dead_workers = [
-                    i for i, w in enumerate(video_workers) if not w.is_alive()
-                ]
-                self.logger.warning(f"Threads died during startup: {dead_workers}")
-
-            # Submit work
-            submitted_videos = 0
-            for youtube_id, segments in video_segments.items():
-                # Try different video extensions
-                video_file = video_dir / f"{youtube_id}.mp4"
-                if not video_file.exists():
-                    video_file = video_dir / f"{youtube_id}.mkv"
-                if not video_file.exists():
-                    video_file = video_dir / f"{youtube_id}.webm"
-
-                if not video_file.exists():
-                    self.logger.warning(f"Video file not found for {youtube_id}")
-                    failed_extractions += 1
-                    continue
-
-                # Skip if already processed (workers also check this)
-                output_path = self.output_dir / f"{youtube_id}.npy"
-                if output_path.exists():
-                    self.logger.info(
-                        f"Features for {youtube_id} already exist, skipping..."
-                    )
-                    successful_extractions += 1
-                    continue
-
-                segments_for_hints = segments if self.inject_hints else None
-                try:
-                    work_queue.put(
-                        (str(video_file), youtube_id, segments_for_hints), timeout=1
-                    )
-                    submitted_videos += 1
-                except queue.Full:
-                    self.logger.warning(f"Work queue full, skipping {youtube_id}")
-                    break
-
-            self.logger.info(f"Submitted {submitted_videos} videos for processing")
-
-            # Add sentinel values to stop threads
-            for _ in range(self.num_workers):
-                work_queue.put(None)
-            self.logger.info(f"Added {self.num_workers} shutdown signals to queue")
-
-            # Wait for all threads to complete
-            self.logger.info("Waiting for threads to complete...")
-            for i, worker in enumerate(video_workers):
-                self.logger.info(f"Waiting for thread {i} to finish...")
-                worker.join(timeout=60)  # 60 second timeout per thread
-                if worker.is_alive():
-                    self.logger.warning(f"Thread {i} still running after 60s timeout")
-                else:
-                    self.logger.info(f"Thread {i} completed successfully")
-
-            self.logger.info("All threads finished")
-
-            # Count successful extractions by checking output files
-            successful_extractions = 0
-            for youtube_id, segments in video_segments.items():
-                output_path = self.output_dir / f"{youtube_id}.npy"
-                if output_path.exists():
-                    successful_extractions += 1
-                    self.processed_videos[youtube_id] = True
-
-            # Save progress
-            self.save_progress()
-
-            # Performance metrics
-            end_time = time.time()
-            total_time = end_time - start_time
-            videos_per_sec = (
-                successful_extractions / total_time if total_time > 0 else 0
-            )
-
-            self.logger.info(f"Performance metrics:")
-            self.logger.info(f"  Total time: {total_time:.1f}s")
-            self.logger.info(f"  Videos/sec: {videos_per_sec:.2f}")
-
-            stats = {
-                "total_videos": total_videos,
-                "successful_extractions": successful_extractions,
-                "failed_extractions": total_videos - successful_extractions,
-                "success_rate": (
-                    successful_extractions / total_videos * 100
-                    if total_videos > 0
-                    else 0
-                ),
-            }
-
-            self.logger.info(
-                f"Simplified extraction complete: {successful_extractions}/{total_videos} successful "
-                f"({stats['success_rate']:.1f}%)"
-            )
-
-            return stats
-
-        except Exception as e:
-            self.logger.error(f"Threaded extraction failed: {e}")
-            # No need to terminate threads, they will finish naturally
-            raise
 
     def process_from_multiple_datasets(
         self, dataset_paths: List[str], video_dir: str, max_videos: Optional[int] = None
