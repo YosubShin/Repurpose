@@ -416,6 +416,9 @@ class VisualFeatureExtractorCLIP:
                         )
 
                 except queue.Empty:
+                    logger.info(
+                        f"Worker {worker_id} timeout waiting for work, continuing..."
+                    )
                     continue
                 except Exception as e:
                     logger.error(
