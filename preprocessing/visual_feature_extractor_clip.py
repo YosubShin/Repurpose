@@ -295,12 +295,17 @@ class VisualFeatureExtractorCLIP:
 
         # Load CLIP model once per worker
         try:
+            logger.info(f"Worker {worker_id} checking CUDA availability...")
             device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Worker {worker_id} using device: {device}")
+            logger.info(f"Worker {worker_id} loading CLIP model...")
             model, preprocess = clip.load("ViT-B/32", device=device)
             model.eval()
             logger.info(f"Worker {worker_id} loaded CLIP model on {device}")
         except Exception as e:
-            logger.error(f"Worker {worker_id} failed to load CLIP model: {e}")
+            logger.error(
+                f"Worker {worker_id} failed to load CLIP model: {e}", exc_info=True
+            )
             return
 
         processed_count = 0
