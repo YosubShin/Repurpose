@@ -293,6 +293,19 @@ class VisualFeatureExtractorCLIP:
         logger = logging.getLogger(f"VideoWorker-{worker_id}")
         logger.info(f"Starting complete video worker {worker_id}")
 
+        # Test basic functionality
+        import sys
+
+        logger.info(f"Worker {worker_id} Python version: {sys.version}")
+        logger.info(f"Worker {worker_id} about to import torch...")
+        import torch
+
+        logger.info(f"Worker {worker_id} torch imported successfully")
+        logger.info(f"Worker {worker_id} about to import clip...")
+        import clip
+
+        logger.info(f"Worker {worker_id} clip imported successfully")
+
         # Load CLIP model once per worker
         try:
             logger.info(f"Worker {worker_id} checking CUDA availability...")
