@@ -495,50 +495,99 @@ class VisualFeatureExtractorCLIP:
 
         return stats
 
-    def process_from_dataset(
-        self, dataset_path: str, video_dir: str, max_videos: Optional[int] = None
+    def process_from_multiple_datasets(
+        self, dataset_paths: List[str], video_dir: str, max_videos: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Process videos based on dataset JSON file.
-        Uses two-pass approach to aggregate segments for videos split into multiple pieces.
+        Process videos from multiple dataset JSON files (train/val/test).
+        Merges segments from all splits to avoid data leakage with hint injection.
 
         Args:
-            dataset_path: Path to dataset JSON file
+            dataset_paths: List of paths to dataset JSON files
             video_dir: Directory containing video files
             max_videos: Maximum number of videos to process
 
         Returns:
             Dict containing processing statistics
         """
-        with open(dataset_path, "r") as f:
-            dataset = json.load(f)
+        # First, aggregate all segments from all dataset files
+        video_segments = {}  # youtube_id -> list of all segments
+        split_membership = {}  # youtube_id -> list of splits it appears in
 
-        # First pass: Aggregate segments by youtube_id
-        # Videos longer than 1800 seconds are split into multiple entries
-        video_segments = {}  # youtube_id -> list of all segments for that video
+        for dataset_path in dataset_paths:
+            if not Path(dataset_path).exists():
+                self.logger.warning(
+                    f"Dataset file not found: {dataset_path}, skipping..."
+                )
+                continue
 
-        self.logger.info("First pass: Aggregating segments by video ID...")
-        for video_info in dataset:
-            youtube_id = video_info["youtube_id"]
+            split_name = Path(dataset_path).stem  # e.g., 'train', 'val', 'test'
+            self.logger.info(f"Loading segments from {split_name} split...")
 
-            # Use 'segments' (absolute timestamps) not 'segmentsOffset' (relative to timeRange)
-            segments = video_info.get("segments", [])
+            with open(dataset_path, "r") as f:
+                dataset = json.load(f)
 
-            if youtube_id not in video_segments:
-                video_segments[youtube_id] = []
+            for video_info in dataset:
+                youtube_id = video_info["youtube_id"]
 
-            # Add all segments for this video
-            video_segments[youtube_id].extend(segments)
+                # Track which splits this video appears in
+                if youtube_id not in split_membership:
+                    split_membership[youtube_id] = []
+                split_membership[youtube_id].append(split_name)
 
-        # Sort segments for each video (no merging needed as splits don't overlap)
+                # Use 'segments' (absolute timestamps) not 'segmentsOffset' (relative)
+                segments = video_info.get("segments", [])
+
+                if youtube_id not in video_segments:
+                    video_segments[youtube_id] = []
+
+                # Add all segments for this video
+                video_segments[youtube_id].extend(segments)
+
+        # Remove duplicates and sort segments for each video
         for youtube_id in video_segments:
             segments = video_segments[youtube_id]
             if segments:
-                # Sort by start time for consistency
-                segments.sort(key=lambda x: x[0])
-                video_segments[youtube_id] = segments
-                self.logger.info(f"  {youtube_id}: {len(segments)} highlight segments")
+                # Remove duplicate segments (same start and end)
+                unique_segments = []
+                seen = set()
+                for seg in segments:
+                    seg_tuple = tuple(seg)
+                    if seg_tuple not in seen:
+                        seen.add(seg_tuple)
+                        unique_segments.append(seg)
 
+                # Sort by start time
+                unique_segments.sort(key=lambda x: x[0])
+                video_segments[youtube_id] = unique_segments
+
+                # Log videos that appear in multiple splits
+                if len(split_membership[youtube_id]) > 1:
+                    self.logger.info(
+                        f"  {youtube_id}: appears in {split_membership[youtube_id]}, "
+                        f"merged to {len(unique_segments)} unique segments"
+                    )
+
+        # Now process videos with merged segments
+        return self._process_videos_with_segments(video_segments, video_dir, max_videos)
+
+    def _process_videos_with_segments(
+        self,
+        video_segments: Dict[str, List[List[float]]],
+        video_dir: str,
+        max_videos: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Helper method to process videos with their segments.
+
+        Args:
+            video_segments: Dict mapping youtube_id to list of segments
+            video_dir: Directory containing video files
+            max_videos: Maximum number of videos to process
+
+        Returns:
+            Dict containing processing statistics
+        """
         # Apply max_videos limit if specified
         if max_videos:
             video_ids = list(video_segments.keys())[:max_videos]
@@ -549,15 +598,18 @@ class VisualFeatureExtractorCLIP:
         successful_extractions = 0
         failed_extractions = 0
 
-        self.logger.info(
-            f"Second pass: Extracting features for {total_videos} unique videos..."
-        )
+        self.logger.info(f"Extracting features for {total_videos} unique videos...")
 
         for i, (youtube_id, segments) in enumerate(video_segments.items(), 1):
+            # Try different video extensions
             video_file = video_dir / f"{youtube_id}.mp4"
+            if not video_file.exists():
+                video_file = video_dir / f"{youtube_id}.mkv"
+            if not video_file.exists():
+                video_file = video_dir / f"{youtube_id}.webm"
 
             if not video_file.exists():
-                self.logger.warning(f"Video file not found: {video_file}")
+                self.logger.warning(f"Video file not found for {youtube_id}")
                 failed_extractions += 1
                 continue
 
@@ -610,7 +662,12 @@ def main():
     parser.add_argument(
         "--video-dir", required=True, help="Directory containing video files"
     )
-    parser.add_argument("--dataset", help="Path to dataset JSON file")
+    parser.add_argument(
+        "--datasets",
+        nargs="+",
+        required=True,
+        help="Dataset JSON files (multiple files will merge segments across splits)",
+    )
     parser.add_argument(
         "--output-dir",
         default="data/video_clip_features",
@@ -643,12 +700,16 @@ def main():
     )
 
     try:
-        if args.dataset:
-            stats = extractor.process_from_dataset(
-                args.dataset, args.video_dir, args.max_videos
+        # Process datasets with merged segments
+        print(f"Processing {len(args.datasets)} dataset files with merged segments...")
+        if args.inject_hints:
+            print(
+                "WARNING: Hint injection enabled - segments will be merged across all splits"
             )
-        else:
-            stats = extractor.process_video_directory(args.video_dir, args.max_videos)
+            print("         to prevent data leakage!")
+        stats = extractor.process_from_multiple_datasets(
+            args.datasets, args.video_dir, args.max_videos
+        )
 
         print(f"\nFeature Extraction Statistics:")
         print(f"Total videos: {stats['total_videos']}")
