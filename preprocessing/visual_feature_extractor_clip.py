@@ -284,7 +284,12 @@ class VisualFeatureExtractorCLIP:
         Handles entire pipeline: decode → CLIP inference → save to disk.
         Each worker loads CLIP model once and processes multiple videos.
         """
-        logging.basicConfig(level=logging.INFO)
+        # Configure logging for multiprocessing - force to console
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            force=True,  # Override existing config
+        )
         logger = logging.getLogger(f"VideoWorker-{worker_id}")
         logger.info(f"Starting complete video worker {worker_id}")
 
