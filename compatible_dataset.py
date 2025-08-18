@@ -233,7 +233,7 @@ class SequenceVideoDataset(Dataset):
 
         # HACK FOR TESTING: Replace visual features with binary label encoding
         # Create a feature vector that's just the label repeated across feature dimension
-        USE_TRIVIAL_FEATURES = True  # Toggle this to enable/disable the hack
+        USE_TRIVIAL_FEATURES = False  # Toggle this to enable/disable the hack
 
         # Read feature dimension from environment variable (for dimension testing)
         import os
