@@ -271,191 +271,6 @@ class VisualFeatureExtractorCLIP:
         return frames
 
     @staticmethod
-    def complete_video_worker(
-        work_queue: mp.Queue,
-        worker_id: int,
-        output_dir: str,
-        inject_hints: bool,
-        use_black_white: bool,
-        batch_size: int,
-    ):
-        """
-        Complete video processing worker.
-        Handles entire pipeline: decode → CLIP inference → save to disk.
-        Each worker loads CLIP model once and processes multiple videos.
-        """
-        # Configure logging for multiprocessing - force to console
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            force=True,  # Override existing config
-        )
-        logger = logging.getLogger(f"VideoWorker-{worker_id}")
-        logger.info(f"Starting complete video worker {worker_id}")
-
-        # Test basic functionality
-        import sys
-
-        logger.info(f"Worker {worker_id} Python version: {sys.version}")
-        logger.info(f"Worker {worker_id} about to import torch...")
-        import torch
-
-        logger.info(f"Worker {worker_id} torch imported successfully")
-        logger.info(f"Worker {worker_id} about to import clip...")
-        import clip
-
-        logger.info(f"Worker {worker_id} clip imported successfully")
-
-        # Load CLIP model once per worker
-        try:
-            logger.info(f"Worker {worker_id} checking CUDA availability...")
-
-            # Force CPU for multiprocessing to avoid CUDA deadlocks
-            device = "cpu"
-            logger.info(
-                f"Worker {worker_id} using device: {device} (forced CPU for multiprocessing)"
-            )
-            logger.info(f"Worker {worker_id} loading CLIP model...")
-            model, preprocess = clip.load("ViT-B/32", device=device)
-            model.eval()
-            logger.info(f"Worker {worker_id} loaded CLIP model on {device}")
-        except Exception as e:
-            logger.error(
-                f"Worker {worker_id} failed to load CLIP model: {e}", exc_info=True
-            )
-            return
-
-        processed_count = 0
-        output_dir = Path(output_dir)
-        debug_first_video = True  # Debug flag for first video per worker
-
-        try:
-            while True:
-                try:
-                    # Get work item with timeout
-                    if debug_first_video:
-                        logger.info(f"Worker {worker_id} waiting for work item...")
-                    work_item = work_queue.get(timeout=5)
-                    if work_item is None:  # Sentinel for shutdown
-                        logger.info(f"Worker {worker_id} received shutdown signal")
-                        break
-
-                    video_path, video_id, segments = work_item
-                    logger.info(f"Worker {worker_id} processing {video_id}")
-
-                    # Check if already processed
-                    output_path = output_dir / f"{video_id}.npy"
-                    if output_path.exists():
-                        logger.info(
-                            f"Worker {worker_id}: {video_id} already exists, skipping"
-                        )
-                        continue
-
-                    if debug_first_video:
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: Starting first video processing"
-                        )
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: video_path={video_path}"
-                        )
-                        logger.info(f"Worker {worker_id} DEBUG: segments={segments}")
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: output_path={output_path}"
-                        )
-
-                    # Extract frames
-                    if debug_first_video:
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: Starting frame extraction..."
-                        )
-                    frames = VisualFeatureExtractorCLIP._extract_frames_static(
-                        video_path, segments, inject_hints, use_black_white, logger
-                    )
-
-                    if not frames:
-                        logger.warning(
-                            f"Worker {worker_id}: No frames extracted for {video_id}"
-                        )
-                        continue
-
-                    if debug_first_video:
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: Extracted {len(frames)} frames"
-                        )
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: Starting CLIP processing..."
-                        )
-
-                    # Process frames with CLIP in batches
-                    all_features = []
-                    with torch.no_grad():
-                        for i in range(0, len(frames), batch_size):
-                            batch_frames = frames[i : i + batch_size]
-
-                            # Prepare batch
-                            images = []
-                            for timestamp, frame in batch_frames:
-                                if isinstance(frame, np.ndarray):
-                                    frame_pil = Image.fromarray(frame)
-                                else:
-                                    frame_pil = frame
-                                images.append(frame_pil)
-
-                            # Batch preprocess and inference
-                            image_inputs = torch.stack(
-                                [preprocess(img) for img in images]
-                            ).to(device)
-                            image_features = model.encode_image(image_inputs)
-
-                            # Normalize features
-                            image_features = image_features / image_features.norm(
-                                dim=-1, keepdim=True
-                            )
-
-                            # Add to results
-                            all_features.extend(image_features.cpu().numpy())
-
-                    # Convert to numpy array and save
-                    features_array = np.array(all_features)
-                    if debug_first_video:
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: Saving features shape: {features_array.shape}"
-                        )
-                    np.save(output_path, features_array)
-
-                    processed_count += 1
-                    logger.info(
-                        f"Worker {worker_id} completed {video_id}, shape: {features_array.shape}, "
-                        f"total processed: {processed_count}"
-                    )
-
-                    if debug_first_video:
-                        logger.info(
-                            f"Worker {worker_id} DEBUG: First video processing complete!"
-                        )
-                        debug_first_video = (
-                            False  # Turn off debug for subsequent videos
-                        )
-
-                except queue.Empty:
-                    logger.info(
-                        f"Worker {worker_id} timeout waiting for work, continuing..."
-                    )
-                    continue
-                except Exception as e:
-                    logger.error(
-                        f"Worker {worker_id} error processing video: {e}", exc_info=True
-                    )
-                    continue
-
-        except KeyboardInterrupt:
-            logger.info(f"Worker {worker_id} interrupted")
-        finally:
-            logger.info(
-                f"Worker {worker_id} finished, processed {processed_count} videos"
-            )
-
-    @staticmethod
     def _extract_frames_static(
         video_path: str,
         segments: Optional[List[List[float]]],
@@ -967,15 +782,16 @@ class VisualFeatureExtractorCLIP:
 
         return stats
 
-    def extract_features_simplified(
+    def extract_features_producer_consumer(
         self,
         video_segments: Dict[str, List[List[float]]],
         video_dir: str,
         max_videos: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Extract features using simplified parallel processing.
-        Each worker handles complete pipeline: decode → CLIP inference → save.
+        Extract features using producer-consumer pattern.
+        CPU threads decode videos and preprocess frames.
+        Single GPU thread handles CLIP inference.
         """
         # Apply max_videos limit if specified
         if max_videos:
@@ -986,14 +802,275 @@ class VisualFeatureExtractorCLIP:
         total_videos = len(video_segments)
 
         self.logger.info(
-            f"Starting simplified parallel extraction for {total_videos} videos..."
+            f"Starting producer-consumer extraction for {total_videos} videos..."
         )
         self.logger.info(
-            f"Using {self.num_workers} workers, batch size: {self.batch_size}"
+            f"Using {self.num_workers} CPU threads for decoding, 1 GPU thread for CLIP"
         )
 
-        # Create simple work queue
-        work_queue = mp.Queue(maxsize=self.queue_size)
+        # Queues for producer-consumer
+        frame_queue = queue.Queue(maxsize=self.queue_size)  # (video_id, frames) tuples
+        result_queue = queue.Queue()  # (video_id, success) tuples
+        video_queue = queue.Queue()  # Videos to process
+
+        # Add videos to queue
+        for youtube_id, segments in video_segments.items():
+            # Try different video extensions
+            video_file = video_dir / f"{youtube_id}.mp4"
+            if not video_file.exists():
+                video_file = video_dir / f"{youtube_id}.mkv"
+            if not video_file.exists():
+                video_file = video_dir / f"{youtube_id}.webm"
+
+            if not video_file.exists():
+                self.logger.warning(f"Video file not found for {youtube_id}")
+                continue
+
+            # Skip if already processed
+            output_path = self.output_dir / f"{youtube_id}.npy"
+            if output_path.exists():
+                self.logger.info(
+                    f"Features for {youtube_id} already exist, skipping..."
+                )
+                continue
+
+            segments_for_hints = segments if self.inject_hints else None
+            video_queue.put((str(video_file), youtube_id, segments_for_hints))
+
+        videos_to_process = video_queue.qsize()
+        self.logger.info(f"Added {videos_to_process} videos to processing queue")
+
+        # Performance monitoring
+        start_time = time.time()
+        successful_extractions = 0
+        failed_extractions = 0
+
+        try:
+            # Start CPU producer threads (decode frames)
+            producer_threads = []
+            for i in range(self.num_workers):
+                thread = threading.Thread(
+                    target=self._frame_producer_worker,
+                    args=(video_queue, frame_queue, i),
+                    daemon=True,
+                )
+                thread.start()
+                producer_threads.append(thread)
+                self.logger.info(f"Started CPU producer thread {i}")
+
+            # Start single GPU consumer thread (CLIP inference)
+            consumer_thread = threading.Thread(
+                target=self._clip_consumer_worker,
+                args=(frame_queue, result_queue),
+                daemon=True,
+            )
+            consumer_thread.start()
+            self.logger.info("Started GPU consumer thread")
+
+            # Wait for all videos to be processed
+            processed_videos = 0
+            while processed_videos < videos_to_process:
+                try:
+                    video_id, success = result_queue.get(timeout=300)  # 5 min timeout
+                    processed_videos += 1
+                    if success:
+                        successful_extractions += 1
+                        self.logger.info(
+                            f"Completed {video_id} ({processed_videos}/{videos_to_process})"
+                        )
+                    else:
+                        failed_extractions += 1
+                        self.logger.warning(
+                            f"Failed {video_id} ({processed_videos}/{videos_to_process})"
+                        )
+                except queue.Empty:
+                    self.logger.error("Timeout waiting for results")
+                    break
+
+            # Signal shutdown
+            for _ in range(self.num_workers):
+                video_queue.put(None)
+            frame_queue.put(None)
+
+            # Wait for threads to finish
+            for i, thread in enumerate(producer_threads):
+                thread.join(timeout=10)
+                self.logger.info(f"CPU thread {i} finished")
+
+            consumer_thread.join(timeout=10)
+            self.logger.info("GPU thread finished")
+
+            # Save progress
+            self.save_progress()
+
+            # Performance metrics
+            end_time = time.time()
+            total_time = end_time - start_time
+            videos_per_sec = (
+                successful_extractions / total_time if total_time > 0 else 0
+            )
+
+            self.logger.info(f"Performance metrics:")
+            self.logger.info(f"  Total time: {total_time:.1f}s")
+            self.logger.info(f"  Videos/sec: {videos_per_sec:.2f}")
+
+            stats = {
+                "total_videos": videos_to_process,
+                "successful_extractions": successful_extractions,
+                "failed_extractions": failed_extractions,
+                "success_rate": (
+                    successful_extractions / videos_to_process * 100
+                    if videos_to_process > 0
+                    else 0
+                ),
+            }
+
+            self.logger.info(
+                f"Producer-consumer extraction complete: {successful_extractions}/{videos_to_process} successful "
+                f"({stats['success_rate']:.1f}%)"
+            )
+
+            return stats
+
+        except Exception as e:
+            self.logger.error(f"Producer-consumer extraction failed: {e}")
+            raise
+
+    def _frame_producer_worker(
+        self, video_queue: queue.Queue, frame_queue: queue.Queue, worker_id: int
+    ):
+        """CPU worker that decodes videos and extracts frames"""
+        self.logger.info(f"Frame producer {worker_id} started")
+        processed = 0
+
+        try:
+            while True:
+                try:
+                    work_item = video_queue.get(timeout=5)
+                    if work_item is None:  # Shutdown signal
+                        break
+
+                    video_path, video_id, segments = work_item
+                    self.logger.info(f"Producer {worker_id} decoding {video_id}")
+
+                    # Extract frames using existing method
+                    frames = self._extract_frames_static(
+                        video_path,
+                        segments,
+                        self.inject_hints,
+                        self.use_black_white,
+                        self.logger,
+                    )
+
+                    if frames:
+                        frame_queue.put((video_id, frames))
+                        processed += 1
+                        self.logger.debug(
+                            f"Producer {worker_id} queued {len(frames)} frames for {video_id}"
+                        )
+                    else:
+                        frame_queue.put((video_id, None))  # Signal failure
+                        self.logger.warning(
+                            f"Producer {worker_id} failed to extract frames for {video_id}"
+                        )
+
+                    video_queue.task_done()
+
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Producer {worker_id} error: {e}")
+                    frame_queue.put(
+                        (video_id if "video_id" in locals() else "unknown", None)
+                    )
+                    continue
+
+        finally:
+            self.logger.info(
+                f"Frame producer {worker_id} finished, processed {processed} videos"
+            )
+
+    def _clip_consumer_worker(
+        self, frame_queue: queue.Queue, result_queue: queue.Queue
+    ):
+        """GPU worker that processes frames through CLIP"""
+        self.logger.info("CLIP consumer started")
+        processed = 0
+
+        # Ensure model is in eval mode and use inference context
+        self.model.eval()
+
+        try:
+            with torch.inference_mode():
+                while True:
+                    try:
+                        frame_item = frame_queue.get(timeout=60)
+                        if frame_item is None:  # Shutdown signal
+                            break
+
+                        video_id, frames = frame_item
+
+                        if frames is None:
+                            # Frame extraction failed
+                            result_queue.put((video_id, False))
+                            continue
+
+                        self.logger.info(
+                            f"GPU processing {len(frames)} frames for {video_id}"
+                        )
+
+                        # Process frames through CLIP in batches
+                        features = self.extract_clip_features(frames)
+
+                        # Save features
+                        output_path = self.output_dir / f"{video_id}.npy"
+                        np.save(output_path, features)
+
+                        # Mark as processed
+                        self.processed_videos[video_id] = True
+
+                        result_queue.put((video_id, True))
+                        processed += 1
+
+                        self.logger.debug(
+                            f"GPU saved features for {video_id}, shape: {features.shape}"
+                        )
+
+                    except queue.Empty:
+                        continue
+                    except Exception as e:
+                        self.logger.error(
+                            f"GPU consumer error processing {video_id}: {e}"
+                        )
+                        result_queue.put((video_id, False))
+                        continue
+
+        finally:
+            self.logger.info(f"CLIP consumer finished, processed {processed} videos")
+
+    def extract_features_batched(
+        self,
+        video_segments: Dict[str, List[List[float]]],
+        video_dir: str,
+        max_videos: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Extract features using safe sequential processing with GPU batching.
+        Avoids threading/multiprocessing issues with CUDA.
+        """
+        # Apply max_videos limit if specified
+        if max_videos:
+            video_ids = list(video_segments.keys())[:max_videos]
+            video_segments = {k: video_segments[k] for k in video_ids}
+
+        video_dir = Path(video_dir)
+        total_videos = len(video_segments)
+
+        self.logger.info(f"Starting batched extraction for {total_videos} videos...")
+        self.logger.info(f"Using batch size: {self.batch_size} for GPU efficiency")
+
+        # Create work queue for threading
+        work_queue = queue.Queue(maxsize=self.queue_size)
         successful_extractions = 0
         failed_extractions = 0
 
@@ -1001,38 +1078,34 @@ class VisualFeatureExtractorCLIP:
         start_time = time.time()
 
         try:
-            # Start complete video workers
+            # Start threaded workers
             video_workers = []
             for i in range(self.num_workers):
-                self.logger.info(f"Starting worker {i}...")
-                worker = mp.Process(
-                    target=VisualFeatureExtractorCLIP.complete_video_worker,
+                self.logger.info(f"Starting thread {i}...")
+                worker = threading.Thread(
+                    target=self._threaded_video_worker,
                     args=(
                         work_queue,
                         i,
-                        str(self.output_dir),
-                        self.inject_hints,
-                        self.use_black_white,
-                        self.batch_size,
                     ),
                 )
                 worker.start()
                 video_workers.append(worker)
-                self.logger.info(f"Worker {i} started with PID {worker.pid}")
+                self.logger.info(f"Thread {i} started")
 
-            self.logger.info(f"All {self.num_workers} workers started")
+            self.logger.info(f"All {self.num_workers} threads started")
 
-            # Give workers a moment to initialize
-            time.sleep(2)
+            # Give threads a moment to initialize
+            time.sleep(1)
 
-            # Check if workers are still alive after startup
+            # Check if threads are still alive after startup
             alive_workers = [i for i, w in enumerate(video_workers) if w.is_alive()]
-            self.logger.info(f"Workers alive after 2s: {alive_workers}")
+            self.logger.info(f"Threads alive after 1s: {alive_workers}")
             if len(alive_workers) != self.num_workers:
                 dead_workers = [
                     i for i, w in enumerate(video_workers) if not w.is_alive()
                 ]
-                self.logger.warning(f"Workers died during startup: {dead_workers}")
+                self.logger.warning(f"Threads died during startup: {dead_workers}")
 
             # Submit work
             submitted_videos = 0
@@ -1070,35 +1143,22 @@ class VisualFeatureExtractorCLIP:
 
             self.logger.info(f"Submitted {submitted_videos} videos for processing")
 
-            # If no videos to process, skip worker operations
-            if submitted_videos == 0:
-                self.logger.info(
-                    "No videos to process, terminating workers immediately"
-                )
-                for worker in video_workers:
-                    worker.terminate()
-                    worker.join(timeout=5)
-            else:
-                # Add sentinel values to stop workers
-                for _ in range(self.num_workers):
-                    work_queue.put(None)
-                self.logger.info(f"Added {self.num_workers} shutdown signals to queue")
+            # Add sentinel values to stop threads
+            for _ in range(self.num_workers):
+                work_queue.put(None)
+            self.logger.info(f"Added {self.num_workers} shutdown signals to queue")
 
-                # Wait for all workers to complete with timeout and progress updates
-                self.logger.info("Waiting for workers to complete...")
-                for i, worker in enumerate(video_workers):
-                    self.logger.info(f"Waiting for worker {i} to finish...")
-                    worker.join(timeout=30)  # 30 second timeout per worker
-                    if worker.is_alive():
-                        self.logger.warning(
-                            f"Worker {i} still running after 30s timeout, terminating..."
-                        )
-                        worker.terminate()
-                        worker.join(timeout=5)
-                    else:
-                        self.logger.info(f"Worker {i} completed successfully")
+            # Wait for all threads to complete
+            self.logger.info("Waiting for threads to complete...")
+            for i, worker in enumerate(video_workers):
+                self.logger.info(f"Waiting for thread {i} to finish...")
+                worker.join(timeout=60)  # 60 second timeout per thread
+                if worker.is_alive():
+                    self.logger.warning(f"Thread {i} still running after 60s timeout")
+                else:
+                    self.logger.info(f"Thread {i} completed successfully")
 
-            self.logger.info("All workers finished")
+            self.logger.info("All threads finished")
 
             # Count successful extractions by checking output files
             successful_extractions = 0
@@ -1141,11 +1201,8 @@ class VisualFeatureExtractorCLIP:
             return stats
 
         except Exception as e:
-            self.logger.error(f"Simplified extraction failed: {e}")
-            # Clean up workers
-            for worker in video_workers:
-                if worker.is_alive():
-                    worker.terminate()
+            self.logger.error(f"Threaded extraction failed: {e}")
+            # No need to terminate threads, they will finish naturally
             raise
 
     def process_from_multiple_datasets(
@@ -1221,91 +1278,10 @@ class VisualFeatureExtractorCLIP:
                         f"merged to {len(unique_segments)} unique segments"
                     )
 
-        # Now process videos with merged segments using simplified parallel processing
-        return self.extract_features_simplified(video_segments, video_dir, max_videos)
-
-    def _process_videos_with_segments(
-        self,
-        video_segments: Dict[str, List[List[float]]],
-        video_dir: str,
-        max_videos: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """
-        Helper method to process videos with their segments.
-
-        Args:
-            video_segments: Dict mapping youtube_id to list of segments
-            video_dir: Directory containing video files
-            max_videos: Maximum number of videos to process
-
-        Returns:
-            Dict containing processing statistics
-        """
-        # Apply max_videos limit if specified
-        if max_videos:
-            video_ids = list(video_segments.keys())[:max_videos]
-            video_segments = {k: video_segments[k] for k in video_ids}
-
-        video_dir = Path(video_dir)
-        total_videos = len(video_segments)
-        successful_extractions = 0
-        failed_extractions = 0
-
-        self.logger.info(f"Extracting features for {total_videos} unique videos...")
-
-        for i, (youtube_id, segments) in enumerate(video_segments.items(), 1):
-            # Try different video extensions
-            video_file = video_dir / f"{youtube_id}.mp4"
-            if not video_file.exists():
-                video_file = video_dir / f"{youtube_id}.mkv"
-            if not video_file.exists():
-                video_file = video_dir / f"{youtube_id}.webm"
-
-            if not video_file.exists():
-                self.logger.warning(f"Video file not found for {youtube_id}")
-                failed_extractions += 1
-                continue
-
-            self.logger.info(f"Processing video {i}/{total_videos}: {youtube_id}")
-
-            # Get segments for hint injection if enabled
-            segments_for_hints = None
-            if self.inject_hints and segments:
-                segments_for_hints = segments
-                # Calculate total highlight duration
-                total_highlight_duration = sum(end - start for start, end in segments)
-                self.logger.info(
-                    f"  Will inject hints for {len(segments_for_hints)} segments, "
-                    f"total highlight duration: {total_highlight_duration:.1f}s"
-                )
-                # Log first few segments for debugging
-                if segments_for_hints:
-                    preview = segments_for_hints[:3]
-                    self.logger.debug(f"  First segments: {preview}")
-
-            # Extract features for the entire video
-            if self.extract_features_from_video(
-                str(video_file), youtube_id, segments=segments_for_hints
-            ):
-                successful_extractions += 1
-            else:
-                failed_extractions += 1
-
-        stats = {
-            "total_videos": total_videos,
-            "successful_extractions": successful_extractions,
-            "failed_extractions": failed_extractions,
-            "success_rate": (
-                successful_extractions / total_videos * 100 if total_videos > 0 else 0
-            ),
-        }
-
-        self.logger.info(
-            f"Feature extraction complete: {successful_extractions}/{total_videos} successful "
-            f"({stats['success_rate']:.1f}%)"
+        # Now process videos with merged segments using producer-consumer pattern
+        return self.extract_features_producer_consumer(
+            video_segments, video_dir, max_videos
         )
-
-        return stats
 
 
 def main():
