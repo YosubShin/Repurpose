@@ -309,8 +309,12 @@ class VisualFeatureExtractorCLIP:
         # Load CLIP model once per worker
         try:
             logger.info(f"Worker {worker_id} checking CUDA availability...")
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Worker {worker_id} using device: {device}")
+
+            # Force CPU for multiprocessing to avoid CUDA deadlocks
+            device = "cpu"
+            logger.info(
+                f"Worker {worker_id} using device: {device} (forced CPU for multiprocessing)"
+            )
             logger.info(f"Worker {worker_id} loading CLIP model...")
             model, preprocess = clip.load("ViT-B/32", device=device)
             model.eval()
