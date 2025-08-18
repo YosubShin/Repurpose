@@ -305,11 +305,14 @@ class VisualFeatureExtractorCLIP:
 
         processed_count = 0
         output_dir = Path(output_dir)
+        debug_first_video = True  # Debug flag for first video per worker
 
         try:
             while True:
                 try:
                     # Get work item with timeout
+                    if debug_first_video:
+                        logger.info(f"Worker {worker_id} waiting for work item...")
                     work_item = work_queue.get(timeout=5)
                     if work_item is None:  # Sentinel for shutdown
                         logger.info(f"Worker {worker_id} received shutdown signal")
@@ -326,7 +329,23 @@ class VisualFeatureExtractorCLIP:
                         )
                         continue
 
+                    if debug_first_video:
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: Starting first video processing"
+                        )
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: video_path={video_path}"
+                        )
+                        logger.info(f"Worker {worker_id} DEBUG: segments={segments}")
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: output_path={output_path}"
+                        )
+
                     # Extract frames
+                    if debug_first_video:
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: Starting frame extraction..."
+                        )
                     frames = VisualFeatureExtractorCLIP._extract_frames_static(
                         video_path, segments, inject_hints, use_black_white, logger
                     )
@@ -336,6 +355,14 @@ class VisualFeatureExtractorCLIP:
                             f"Worker {worker_id}: No frames extracted for {video_id}"
                         )
                         continue
+
+                    if debug_first_video:
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: Extracted {len(frames)} frames"
+                        )
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: Starting CLIP processing..."
+                        )
 
                     # Process frames with CLIP in batches
                     all_features = []
@@ -368,6 +395,10 @@ class VisualFeatureExtractorCLIP:
 
                     # Convert to numpy array and save
                     features_array = np.array(all_features)
+                    if debug_first_video:
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: Saving features shape: {features_array.shape}"
+                        )
                     np.save(output_path, features_array)
 
                     processed_count += 1
@@ -375,6 +406,14 @@ class VisualFeatureExtractorCLIP:
                         f"Worker {worker_id} completed {video_id}, shape: {features_array.shape}, "
                         f"total processed: {processed_count}"
                     )
+
+                    if debug_first_video:
+                        logger.info(
+                            f"Worker {worker_id} DEBUG: First video processing complete!"
+                        )
+                        debug_first_video = (
+                            False  # Turn off debug for subsequent videos
+                        )
 
                 except queue.Empty:
                     continue
@@ -984,13 +1023,35 @@ class VisualFeatureExtractorCLIP:
 
             self.logger.info(f"Submitted {submitted_videos} videos for processing")
 
-            # Add sentinel values to stop workers
-            for _ in range(self.num_workers):
-                work_queue.put(None)
+            # If no videos to process, skip worker operations
+            if submitted_videos == 0:
+                self.logger.info(
+                    "No videos to process, terminating workers immediately"
+                )
+                for worker in video_workers:
+                    worker.terminate()
+                    worker.join(timeout=5)
+            else:
+                # Add sentinel values to stop workers
+                for _ in range(self.num_workers):
+                    work_queue.put(None)
+                self.logger.info(f"Added {self.num_workers} shutdown signals to queue")
 
-            # Wait for all workers to complete
-            for worker in video_workers:
-                worker.join()
+                # Wait for all workers to complete with timeout and progress updates
+                self.logger.info("Waiting for workers to complete...")
+                for i, worker in enumerate(video_workers):
+                    self.logger.info(f"Waiting for worker {i} to finish...")
+                    worker.join(timeout=30)  # 30 second timeout per worker
+                    if worker.is_alive():
+                        self.logger.warning(
+                            f"Worker {i} still running after 30s timeout, terminating..."
+                        )
+                        worker.terminate()
+                        worker.join(timeout=5)
+                    else:
+                        self.logger.info(f"Worker {i} completed successfully")
+
+            self.logger.info("All workers finished")
 
             # Count successful extractions by checking output files
             successful_extractions = 0
