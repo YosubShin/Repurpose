@@ -50,7 +50,7 @@ class VisualFeatureExtractorCLIP:
         use_black_white: bool = False,
         num_workers: int = 8,
         batch_size: int = 64,
-        queue_size: int = 100,
+        queue_size: int = 10000,
     ):
         self.inject_hints = inject_hints
         self.use_black_white = use_black_white
@@ -979,6 +979,7 @@ class VisualFeatureExtractorCLIP:
             # Start complete video workers
             video_workers = []
             for i in range(self.num_workers):
+                self.logger.info(f"Starting worker {i}...")
                 worker = mp.Process(
                     target=VisualFeatureExtractorCLIP.complete_video_worker,
                     args=(
@@ -992,6 +993,21 @@ class VisualFeatureExtractorCLIP:
                 )
                 worker.start()
                 video_workers.append(worker)
+                self.logger.info(f"Worker {i} started with PID {worker.pid}")
+
+            self.logger.info(f"All {self.num_workers} workers started")
+
+            # Give workers a moment to initialize
+            time.sleep(2)
+
+            # Check if workers are still alive after startup
+            alive_workers = [i for i, w in enumerate(video_workers) if w.is_alive()]
+            self.logger.info(f"Workers alive after 2s: {alive_workers}")
+            if len(alive_workers) != self.num_workers:
+                dead_workers = [
+                    i for i, w in enumerate(video_workers) if not w.is_alive()
+                ]
+                self.logger.warning(f"Workers died during startup: {dead_workers}")
 
             # Submit work
             submitted_videos = 0
@@ -1018,8 +1034,14 @@ class VisualFeatureExtractorCLIP:
                     continue
 
                 segments_for_hints = segments if self.inject_hints else None
-                work_queue.put((str(video_file), youtube_id, segments_for_hints))
-                submitted_videos += 1
+                try:
+                    work_queue.put(
+                        (str(video_file), youtube_id, segments_for_hints), timeout=1
+                    )
+                    submitted_videos += 1
+                except queue.Full:
+                    self.logger.warning(f"Work queue full, skipping {youtube_id}")
+                    break
 
             self.logger.info(f"Submitted {submitted_videos} videos for processing")
 
