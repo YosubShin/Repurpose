@@ -876,7 +876,12 @@ class VisualFeatureExtractorCLIP:
             self.logger.info(f"CLIP consumer finished, processed {processed} videos")
 
     def process_from_multiple_datasets(
-        self, dataset_paths: List[str], video_dir: str, max_videos: Optional[int] = None
+        self,
+        dataset_paths: List[str],
+        video_dir: str,
+        max_videos: Optional[int] = None,
+        start_index: Optional[int] = None,
+        end_index: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process videos from multiple dataset JSON files (train/val/test).
@@ -886,6 +891,8 @@ class VisualFeatureExtractorCLIP:
             dataset_paths: List of paths to dataset JSON files
             video_dir: Directory containing video files
             max_videos: Maximum number of videos to process
+            start_index: Start index for video processing (for parallel runs)
+            end_index: End index for video processing (for parallel runs)
 
         Returns:
             Dict containing processing statistics
@@ -948,6 +955,27 @@ class VisualFeatureExtractorCLIP:
                         f"merged to {len(unique_segments)} unique segments"
                     )
 
+        # Apply start/end index slicing if specified
+        if start_index is not None or end_index is not None:
+            video_ids = sorted(video_segments.keys())  # Sort for consistent ordering
+            total_videos = len(video_ids)
+
+            # Set defaults
+            start_idx = start_index if start_index is not None else 0
+            end_idx = end_index if end_index is not None else total_videos
+
+            # Validate indices
+            start_idx = max(0, min(start_idx, total_videos))
+            end_idx = max(start_idx, min(end_idx, total_videos))
+
+            # Slice the video list
+            selected_video_ids = video_ids[start_idx:end_idx]
+            video_segments = {vid: video_segments[vid] for vid in selected_video_ids}
+
+            self.logger.info(
+                f"Processing subset: videos {start_idx} to {end_idx} (total: {len(selected_video_ids)} out of {total_videos})"
+            )
+
         # Now process videos with merged segments using producer-consumer pattern
         return self.extract_features_producer_consumer(
             video_segments, video_dir, max_videos
@@ -997,6 +1025,18 @@ def main():
     parser.add_argument(
         "--queue-size", type=int, default=100, help="Queue size for task coordination"
     )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=None,
+        help="Start index for video processing (for parallel runs)",
+    )
+    parser.add_argument(
+        "--end-index",
+        type=int,
+        default=None,
+        help="End index for video processing (for parallel runs)",
+    )
 
     args = parser.parse_args()
 
@@ -1013,13 +1053,21 @@ def main():
     try:
         # Process datasets with merged segments
         print(f"Processing {len(args.datasets)} dataset files with merged segments...")
+        if args.start_index is not None or args.end_index is not None:
+            print(
+                f"Processing videos from index {args.start_index} to {args.end_index}"
+            )
         if args.inject_hints:
             print(
                 "WARNING: Hint injection enabled - segments will be merged across all splits"
             )
             print("         to prevent data leakage!")
         stats = extractor.process_from_multiple_datasets(
-            args.datasets, args.video_dir, args.max_videos
+            args.datasets,
+            args.video_dir,
+            args.max_videos,
+            start_index=args.start_index,
+            end_index=args.end_index,
         )
 
         print(f"\nFeature Extraction Statistics:")
