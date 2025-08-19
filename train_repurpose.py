@@ -483,7 +483,7 @@ class RepurposeModel(pl.LightningModule):
         combined_mask = seq_mask * cls_mask
 
         # Apply combined mask and sum (following original pattern)
-        reg_loss_f = (reg_loss_f_all * combined_mask).sum() / combined_mask.sum()
+        reg_loss_f = (reg_loss_f_all * combined_mask).sum()
 
         # Debug: Save loss details for first batch of each epoch
         if batch_idx == 0:
@@ -625,7 +625,7 @@ class RepurposeModel(pl.LightningModule):
         val_loss_reg = (val_loss_reg_all * combined_mask).sum()
 
         # Total validation loss
-        val_loss = val_loss_cls + self.lambda4 * val_loss_reg
+        val_loss = self.lambda2 * val_loss_cls + self.lambda4 * val_loss_reg
 
         # Metrics - compute for valid positions only
         valid_positions = seq_mask.bool()
