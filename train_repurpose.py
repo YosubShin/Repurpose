@@ -1849,20 +1849,6 @@ def main(args):
         f"Architecture: Self-Attn={args.n_self_attn_layers}, Cross-Attn={args.n_cross_attn_layers}, Fusion={args.n_fusion_layers}"
     )
 
-    # Enable wandb gradient and weight logging if wandb is being used
-    if wandb_logger is not None:
-        try:
-            wandb.watch(
-                model,
-                log="all",  # Log both gradients and weights
-                log_freq=100,  # Log every 100 steps (adjust as needed)
-                log_graph=True,  # Log model graph
-            )
-            logger.info("✓ Enabled wandb gradient and weight logging")
-        except Exception as e:
-            logger.warning(f"Failed to enable wandb.watch(): {e}")
-            logger.info("Training will continue without gradient/weight logging")
-
     # Setup callbacks
     callbacks = []
 
