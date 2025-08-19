@@ -4,13 +4,13 @@
 # This script splits the video dataset across multiple Python processes
 # to fully utilize all CPU cores and bypass GIL limitations
 
-# Default parameters
-NUM_PROCESSES=4
+# Default parameters - conservative to prevent OOM
+NUM_PROCESSES=2  # Reduced to prevent OOM kills
 VIDEO_DIR=""
 DATASETS=""
 OUTPUT_DIR="data/video_clip_features"
-NUM_WORKERS=8
-BATCH_SIZE=64
+NUM_WORKERS=4  # Reduced to prevent OOM
+BATCH_SIZE=32  # Reduced to prevent OOM
 LOG_LEVEL="INFO"
 EXTRA_ARGS=""
 

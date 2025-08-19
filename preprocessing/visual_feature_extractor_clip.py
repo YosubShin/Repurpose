@@ -29,9 +29,9 @@ class VisualFeatureExtractorCLIP:
         log_level: str = "INFO",
         inject_hints: bool = False,
         use_black_white: bool = False,
-        num_workers: int = 8,
-        batch_size: int = 64,
-        queue_size: int = 10000,
+        num_workers: int = 4,  # Reduced to prevent OOM
+        batch_size: int = 32,  # Reduced to prevent OOM
+        queue_size: int = 1000,  # Reduced to prevent OOM
     ):
         self.inject_hints = inject_hints
         self.use_black_white = use_black_white
@@ -41,7 +41,7 @@ class VisualFeatureExtractorCLIP:
         # Parallel processing parameters
         self.num_workers = num_workers
         self.batch_size = batch_size
-        self.queue_size = queue_size
+        self.queue_size = min(queue_size, 1000)  # Limit queue size to prevent OOM
 
         # Setup logging
         logging.basicConfig(
@@ -638,10 +638,12 @@ class VisualFeatureExtractorCLIP:
             f"Using {self.num_workers} CPU threads for decoding, 1 GPU thread for CLIP"
         )
 
-        # Queues for producer-consumer
-        frame_queue = queue.Queue(maxsize=self.queue_size)  # (video_id, frames) tuples
-        result_queue = queue.Queue()  # (video_id, success) tuples
-        video_queue = queue.Queue()  # Videos to process
+        # Queues for producer-consumer with memory-conscious sizing
+        frame_queue = queue.Queue(
+            maxsize=min(50, self.num_workers * 2)
+        )  # Limit frame queue to prevent OOM
+        result_queue = queue.Queue(maxsize=100)  # (video_id, success) tuples
+        video_queue = queue.Queue(maxsize=self.queue_size)  # Videos to process
 
         # Add videos to queue
         for youtube_id, segments in video_segments.items():
@@ -773,12 +775,18 @@ class VisualFeatureExtractorCLIP:
                             gpu_info = ""
                             if torch.cuda.is_available():
                                 gpu_memory_gb = torch.cuda.memory_allocated() / 1024**3
-                                gpu_utilization = (
-                                    torch.cuda.utilization()
-                                    if hasattr(torch.cuda, "utilization")
-                                    else "N/A"
-                                )
-                                gpu_info = f", GPU: {gpu_memory_gb:.1f}GB, Util: {gpu_utilization}%"
+                                try:
+                                    # Try to get GPU utilization, fallback gracefully if not available
+                                    if hasattr(torch.cuda, "utilization"):
+                                        gpu_utilization = torch.cuda.utilization()
+                                        gpu_info = f", GPU: {gpu_memory_gb:.1f}GB, Util: {gpu_utilization}%"
+                                    else:
+                                        gpu_info = f", GPU: {gpu_memory_gb:.1f}GB"
+                                except Exception:
+                                    # pynvml or other GPU monitoring not available
+                                    gpu_info = (
+                                        f", GPU: {gpu_memory_gb:.1f}GB (util: N/A)"
+                                    )
 
                             # Check thread health
                             alive_producers = sum(
@@ -942,13 +950,24 @@ class VisualFeatureExtractorCLIP:
         try:
             while True:
                 try:
-                    # Log memory usage periodically
-                    if processed % 10 == 0:
+                    # Log memory usage periodically and check for OOM risk
+                    if processed % 5 == 0:
                         mem_info = process.memory_info()
+                        memory_mb = mem_info.rss / 1024 / 1024
                         self.logger.info(
-                            f"Producer {worker_id} memory: RSS={mem_info.rss/1024/1024:.1f}MB, "
+                            f"Producer {worker_id} memory: RSS={memory_mb:.1f}MB, "
                             f"Queue sizes: video={video_queue.qsize()}, frame={frame_queue.qsize()}"
                         )
+
+                        # Check for excessive memory usage (potential OOM risk)
+                        if memory_mb > 8000:  # 8GB threshold
+                            self.logger.warning(
+                                f"Producer {worker_id} high memory usage: {memory_mb:.1f}MB - potential OOM risk"
+                            )
+                            # Force garbage collection
+                            import gc
+
+                            gc.collect()
 
                     work_item = video_queue.get(timeout=5)
                     if work_item is None:  # Shutdown signal
@@ -972,6 +991,14 @@ class VisualFeatureExtractorCLIP:
                     )
 
                     if frames:
+                        # Limit frames per video to prevent memory bloat
+                        max_frames = 300  # Max 5 minutes at 1fps
+                        if len(frames) > max_frames:
+                            self.logger.warning(
+                                f"Video {video_id} has {len(frames)} frames, limiting to {max_frames} to prevent OOM"
+                            )
+                            frames = frames[:max_frames]
+
                         frame_queue.put((video_id, frames))
                         processed += 1
                         self.logger.debug(
@@ -1025,18 +1052,36 @@ class VisualFeatureExtractorCLIP:
             with torch.inference_mode():
                 while True:
                     try:
-                        # Log GPU status periodically
-                        if processed % 5 == 0:
+                        # Log GPU status periodically and check for OOM risk
+                        if processed % 3 == 0:
                             mem_info = process.memory_info()
+                            cpu_memory_mb = mem_info.rss / 1024 / 1024
                             gpu_mem = (
                                 torch.cuda.memory_allocated() / 1024**3
                                 if torch.cuda.is_available()
                                 else 0
                             )
                             self.logger.info(
-                                f"GPU consumer memory: CPU={mem_info.rss/1024/1024:.1f}MB, "
+                                f"GPU consumer memory: CPU={cpu_memory_mb:.1f}MB, "
                                 f"GPU={gpu_mem:.1f}GB, Queue size: {frame_queue.qsize()}"
                             )
+
+                            # Check for excessive memory usage
+                            if cpu_memory_mb > 12000:  # 12GB threshold for GPU process
+                                self.logger.warning(
+                                    f"GPU consumer high CPU memory: {cpu_memory_mb:.1f}MB - potential OOM risk"
+                                )
+                                import gc
+
+                                gc.collect()
+
+                            if (
+                                torch.cuda.is_available() and gpu_mem > 10
+                            ):  # 10GB GPU memory threshold
+                                self.logger.warning(
+                                    f"GPU consumer high GPU memory: {gpu_mem:.1f}GB - clearing cache"
+                                )
+                                torch.cuda.empty_cache()
 
                         self.logger.debug(
                             f"GPU consumer waiting for work... (processed: {processed})"
@@ -1077,6 +1122,11 @@ class VisualFeatureExtractorCLIP:
                         self.logger.debug(
                             f"GPU saved features for {video_id}, shape: {features.shape}"
                         )
+
+                        # Explicit cleanup to prevent memory accumulation
+                        del features, frames
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
 
                     except queue.Empty:
                         continue
