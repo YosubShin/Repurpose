@@ -461,12 +461,13 @@ class RepurposeModel(pl.LightningModule):
         #     reduction="none",
         # )
 
-        # Apply sequence mask and sum (following original paper pattern)
-        loss_mul = (loss_mul_all * seq_mask).sum()
+        # Apply sequence mask and normalize by valid positions
+        num_valid = seq_mask.sum().clamp(min=1)  # Avoid division by zero
+        loss_mul = (loss_mul_all * seq_mask).sum() / num_valid
 
         # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
-        # loss_a = (loss_a_all * seq_mask).sum()
-        # loss_v = (loss_v_all * seq_mask).sum()
+        # loss_a = (loss_a_all * seq_mask).sum() / num_valid
+        # loss_v = (loss_v_all * seq_mask).sum() / num_valid
         # loss_uni = loss_a + loss_v
 
         # Temporary for simple transformer: set unimodal losses to zero
@@ -482,8 +483,9 @@ class RepurposeModel(pl.LightningModule):
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
 
-        # Apply combined mask and sum (following original pattern)
-        reg_loss_f = (reg_loss_f_all * combined_mask).sum()
+        # Apply combined mask and normalize by number of positive positions
+        num_positive = combined_mask.sum().clamp(min=1)  # Avoid division by zero
+        reg_loss_f = (reg_loss_f_all * combined_mask).sum() / num_positive
 
         # Debug: Save loss details for first batch of each epoch
         if batch_idx == 0:
@@ -614,7 +616,9 @@ class RepurposeModel(pl.LightningModule):
             gamma=self.focal_gamma,
             reduction="none",
         )
-        val_loss_cls = (val_loss_cls_all * seq_mask).sum()
+        # Normalize by valid positions
+        num_valid = seq_mask.sum().clamp(min=1)
+        val_loss_cls = (val_loss_cls_all * seq_mask).sum() / num_valid
 
         # Regression loss - following original paper implementation exactly
         val_loss_reg_all = ctr_diou_loss_1d(
@@ -622,7 +626,9 @@ class RepurposeModel(pl.LightningModule):
         )  # [B, T]
         cls_mask = (labels > 0.5).float()
         combined_mask = seq_mask * cls_mask
-        val_loss_reg = (val_loss_reg_all * combined_mask).sum()
+        # Normalize by positive positions
+        num_positive = combined_mask.sum().clamp(min=1)
+        val_loss_reg = (val_loss_reg_all * combined_mask).sum() / num_positive
 
         # Total validation loss
         val_loss = self.lambda2 * val_loss_cls + self.lambda4 * val_loss_reg
