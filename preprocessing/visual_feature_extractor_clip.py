@@ -10,6 +10,9 @@ import clip
 import threading
 import queue
 import time
+import signal
+import sys
+import traceback
 
 try:
     import av
@@ -672,6 +675,47 @@ class VisualFeatureExtractorCLIP:
         successful_extractions = 0
         failed_extractions = 0
 
+        # Process monitoring - import here to avoid issues if not available
+        try:
+            import psutil
+
+            main_process = psutil.Process()
+            initial_cpu_count = psutil.cpu_count()
+            initial_memory = main_process.memory_info().rss / 1024 / 1024  # MB
+            self.logger.info(
+                f"Process monitoring initialized - CPU cores: {initial_cpu_count}, Initial memory: {initial_memory:.1f}MB"
+            )
+        except ImportError:
+            psutil = None
+            self.logger.warning("psutil not available, process monitoring disabled")
+
+        # Signal handler for graceful shutdown and crash detection
+        def signal_handler(signum, frame):
+            signal_name = (
+                signal.Signals(signum).name
+                if hasattr(signal, "Signals")
+                else str(signum)
+            )
+            self.logger.error(
+                f"Received signal {signum} ({signal_name}), shutting down gracefully..."
+            )
+            # Signal all threads to stop
+            for _ in range(self.num_workers):
+                try:
+                    video_queue.put(None, timeout=1)
+                except:
+                    pass
+            try:
+                frame_queue.put(None, timeout=1)
+            except:
+                pass
+            self.logger.error("Emergency shutdown complete")
+            sys.exit(1)
+
+        # Register signal handlers for crash detection
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+
         try:
             # Start CPU producer threads (decode frames)
             producer_threads = []
@@ -696,10 +740,15 @@ class VisualFeatureExtractorCLIP:
 
             # Wait for all videos to be processed
             processed_videos = 0
+            last_progress_time = time.time()
+            last_resource_log = time.time()
+
             while processed_videos < videos_to_process:
                 try:
-                    video_id, success = result_queue.get(timeout=300)  # 5 min timeout
+                    video_id, success = result_queue.get(timeout=60)  # Reduced timeout
                     processed_videos += 1
+                    current_time = time.time()
+
                     if success:
                         successful_extractions += 1
                         self.logger.info(
@@ -710,9 +759,99 @@ class VisualFeatureExtractorCLIP:
                         self.logger.warning(
                             f"Failed {video_id} ({processed_videos}/{videos_to_process})"
                         )
+
+                    last_progress_time = current_time
+
+                    # Log resource usage every 30 seconds
+                    if psutil and (current_time - last_resource_log) > 30:
+                        try:
+                            cpu_percent = main_process.cpu_percent()
+                            memory_info = main_process.memory_info()
+                            memory_mb = memory_info.rss / 1024 / 1024
+
+                            # GPU monitoring if available
+                            gpu_info = ""
+                            if torch.cuda.is_available():
+                                gpu_memory_gb = torch.cuda.memory_allocated() / 1024**3
+                                gpu_utilization = (
+                                    torch.cuda.utilization()
+                                    if hasattr(torch.cuda, "utilization")
+                                    else "N/A"
+                                )
+                                gpu_info = f", GPU: {gpu_memory_gb:.1f}GB, Util: {gpu_utilization}%"
+
+                            # Check thread health
+                            alive_producers = sum(
+                                1 for t in producer_threads if t.is_alive()
+                            )
+                            consumer_alive = consumer_thread.is_alive()
+
+                            self.logger.info(
+                                f"Resources - CPU: {cpu_percent:.1f}%, Memory: {memory_mb:.1f}MB{gpu_info}, "
+                                f"Threads alive: {alive_producers}/{self.num_workers} producers, consumer: {consumer_alive}, "
+                                f"Queues: video={video_queue.qsize()}, frame={frame_queue.qsize()}, result={result_queue.qsize()}"
+                            )
+
+                            # Check for dead threads
+                            if alive_producers == 0:
+                                self.logger.error("All producer threads died!")
+                            if not consumer_alive:
+                                self.logger.error("Consumer thread died!")
+
+                            last_resource_log = current_time
+
+                        except Exception as e:
+                            self.logger.warning(f"Error collecting resource stats: {e}")
+
                 except queue.Empty:
-                    self.logger.error("Timeout waiting for results")
-                    break
+                    current_time = time.time()
+                    time_since_progress = current_time - last_progress_time
+
+                    self.logger.warning(
+                        f"No results for {time_since_progress:.1f}s, checking system health..."
+                    )
+
+                    # Log system health when timing out
+                    if psutil:
+                        try:
+                            cpu_percent = main_process.cpu_percent()
+                            memory_info = main_process.memory_info()
+                            memory_mb = memory_info.rss / 1024 / 1024
+
+                            # Check thread health
+                            alive_producers = sum(
+                                1 for t in producer_threads if t.is_alive()
+                            )
+                            consumer_alive = consumer_thread.is_alive()
+
+                            self.logger.error(
+                                f"TIMEOUT DIAGNOSIS - CPU: {cpu_percent:.1f}%, Memory: {memory_mb:.1f}MB, "
+                                f"Threads alive: {alive_producers}/{self.num_workers} producers, consumer: {consumer_alive}, "
+                                f"Queues: video={video_queue.qsize()}, frame={frame_queue.qsize()}, result={result_queue.qsize()}"
+                            )
+
+                            # Check if we're stuck
+                            if alive_producers == 0 and consumer_alive:
+                                self.logger.error(
+                                    "Producer threads died, consumer waiting for work"
+                                )
+                            elif alive_producers > 0 and not consumer_alive:
+                                self.logger.error(
+                                    "Consumer thread died, producers may be blocked"
+                                )
+                            elif alive_producers == 0 and not consumer_alive:
+                                self.logger.error(
+                                    "All threads died - process may have crashed"
+                                )
+                                break
+
+                        except Exception as e:
+                            self.logger.error(f"Error during timeout diagnosis: {e}")
+
+                    # If no progress for too long, break
+                    if time_since_progress > 300:  # 5 minutes
+                        self.logger.error("No progress for 5 minutes, terminating...")
+                        break
 
             # Signal shutdown
             for _ in range(self.num_workers):
@@ -760,25 +899,68 @@ class VisualFeatureExtractorCLIP:
             return stats
 
         except Exception as e:
-            self.logger.error(f"Producer-consumer extraction failed: {e}")
+            self.logger.error(f"Critical error in producer-consumer extraction: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+
+            # Try to capture final system state for debugging
+            if psutil:
+                try:
+                    final_memory = main_process.memory_info().rss / 1024 / 1024
+                    self.logger.error(f"Final memory usage: {final_memory:.1f}MB")
+                    alive_producers = sum(1 for t in producer_threads if t.is_alive())
+                    consumer_alive = consumer_thread.is_alive()
+                    self.logger.error(
+                        f"Final thread state: {alive_producers}/{self.num_workers} producers alive, consumer: {consumer_alive}"
+                    )
+                except Exception as state_e:
+                    self.logger.error(f"Could not capture final state: {state_e}")
+
+            # Try to shutdown gracefully
+            try:
+                for _ in range(self.num_workers):
+                    video_queue.put(None)
+                frame_queue.put(None)
+            except:
+                pass
+
             raise
 
     def _frame_producer_worker(
         self, video_queue: queue.Queue, frame_queue: queue.Queue, worker_id: int
     ):
         """CPU worker that decodes videos and extracts frames"""
-        self.logger.info(f"Frame producer {worker_id} started")
+        import traceback
+        import psutil
+        import os
+
+        pid = os.getpid()
+        process = psutil.Process(pid)
+
+        self.logger.info(f"Frame producer {worker_id} started (PID: {pid})")
         processed = 0
 
         try:
             while True:
                 try:
+                    # Log memory usage periodically
+                    if processed % 10 == 0:
+                        mem_info = process.memory_info()
+                        self.logger.info(
+                            f"Producer {worker_id} memory: RSS={mem_info.rss/1024/1024:.1f}MB, "
+                            f"Queue sizes: video={video_queue.qsize()}, frame={frame_queue.qsize()}"
+                        )
+
                     work_item = video_queue.get(timeout=5)
                     if work_item is None:  # Shutdown signal
+                        self.logger.info(
+                            f"Producer {worker_id} received shutdown signal"
+                        )
                         break
 
                     video_path, video_id, segments = work_item
-                    self.logger.info(f"Producer {worker_id} decoding {video_id}")
+                    self.logger.info(
+                        f"Producer {worker_id} decoding {video_id} from {video_path}"
+                    )
 
                     # Extract frames using existing method
                     frames = self._extract_frames_static(
@@ -806,7 +988,12 @@ class VisualFeatureExtractorCLIP:
                 except queue.Empty:
                     continue
                 except Exception as e:
-                    self.logger.error(f"Producer {worker_id} error: {e}")
+                    self.logger.error(
+                        f"Producer {worker_id} error processing {video_id}: {e}"
+                    )
+                    self.logger.error(
+                        f"Producer {worker_id} traceback: {traceback.format_exc()}"
+                    )
                     frame_queue.put(
                         (video_id if "video_id" in locals() else "unknown", None)
                     )
@@ -821,7 +1008,14 @@ class VisualFeatureExtractorCLIP:
         self, frame_queue: queue.Queue, result_queue: queue.Queue
     ):
         """GPU worker that processes frames through CLIP"""
-        self.logger.info("CLIP consumer started")
+        import traceback
+        import psutil
+        import os
+
+        pid = os.getpid()
+        process = psutil.Process(pid)
+
+        self.logger.info(f"CLIP consumer started (PID: {pid})")
         processed = 0
 
         # Ensure model is in eval mode and use inference context
@@ -831,14 +1025,35 @@ class VisualFeatureExtractorCLIP:
             with torch.inference_mode():
                 while True:
                     try:
+                        # Log GPU status periodically
+                        if processed % 5 == 0:
+                            mem_info = process.memory_info()
+                            gpu_mem = (
+                                torch.cuda.memory_allocated() / 1024**3
+                                if torch.cuda.is_available()
+                                else 0
+                            )
+                            self.logger.info(
+                                f"GPU consumer memory: CPU={mem_info.rss/1024/1024:.1f}MB, "
+                                f"GPU={gpu_mem:.1f}GB, Queue size: {frame_queue.qsize()}"
+                            )
+
+                        self.logger.debug(
+                            f"GPU consumer waiting for work... (processed: {processed})"
+                        )
                         frame_item = frame_queue.get(timeout=60)
+
                         if frame_item is None:  # Shutdown signal
+                            self.logger.info("GPU consumer received shutdown signal")
                             break
 
                         video_id, frames = frame_item
 
                         if frames is None:
                             # Frame extraction failed
+                            self.logger.warning(
+                                f"GPU consumer received None frames for {video_id}"
+                            )
                             result_queue.put((video_id, False))
                             continue
 
@@ -869,6 +1084,25 @@ class VisualFeatureExtractorCLIP:
                         self.logger.error(
                             f"GPU consumer error processing {video_id}: {e}"
                         )
+                        self.logger.error(
+                            f"GPU consumer traceback: {traceback.format_exc()}"
+                        )
+
+                        # Log GPU/memory state when error occurs
+                        try:
+                            mem_info = process.memory_info()
+                            gpu_mem = (
+                                torch.cuda.memory_allocated() / 1024**3
+                                if torch.cuda.is_available()
+                                else 0
+                            )
+                            self.logger.error(
+                                f"Error state - CPU mem: {mem_info.rss/1024/1024:.1f}MB, "
+                                f"GPU mem: {gpu_mem:.1f}GB"
+                            )
+                        except Exception as mem_e:
+                            self.logger.error(f"Could not capture error state: {mem_e}")
+
                         result_queue.put((video_id, False))
                         continue
 
