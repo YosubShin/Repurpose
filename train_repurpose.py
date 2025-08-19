@@ -298,6 +298,16 @@ class RepurposeModel(pl.LightningModule):
             nn.Softplus(),
         )
 
+        # Add simple classification head
+        self.simple_classifier = nn.Sequential(
+            nn.Linear(simple_d_model, simple_d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(
+                simple_d_model // 2, 1
+            ),  # Single output for binary classification
+        )
+
     def forward(
         self,
         audio: torch.Tensor,
@@ -319,10 +329,12 @@ class RepurposeModel(pl.LightningModule):
         # Get offset predictions
         offset_f = self.simple_output(x)  # [B, T, 2]
 
-        # Create dummy classification outputs for compatibility
+        # Get classification predictions
+        logit_f = self.simple_classifier(x).squeeze(-1)  # [B, T]
+
+        # Create dummy classification outputs for unimodal compatibility
         logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
         logit_v = torch.zeros(batch_size, seq_len, device=visual.device)
-        logit_f = torch.zeros(batch_size, seq_len, device=visual.device)
 
         return logit_a, logit_v, logit_f, offset_f
 
@@ -432,25 +444,34 @@ class RepurposeModel(pl.LightningModule):
             gamma=self.focal_gamma,
             reduction="none",
         )
-        loss_a_all = sigmoid_focal_loss(
-            logit_a,
-            labels,
-            alpha=self.focal_alpha,
-            gamma=self.focal_gamma,
-            reduction="none",
-        )
-        loss_v_all = sigmoid_focal_loss(
-            logit_v,
-            labels,
-            alpha=self.focal_alpha,
-            gamma=self.focal_gamma,
-            reduction="none",
-        )
+
+        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
+        # loss_a_all = sigmoid_focal_loss(
+        #     logit_a,
+        #     labels,
+        #     alpha=self.focal_alpha,
+        #     gamma=self.focal_gamma,
+        #     reduction="none",
+        # )
+        # loss_v_all = sigmoid_focal_loss(
+        #     logit_v,
+        #     labels,
+        #     alpha=self.focal_alpha,
+        #     gamma=self.focal_gamma,
+        #     reduction="none",
+        # )
 
         # Apply sequence mask and sum (following original paper pattern)
         loss_mul = (loss_mul_all * seq_mask).sum()
-        loss_a = (loss_a_all * seq_mask).sum()
-        loss_v = (loss_v_all * seq_mask).sum()
+
+        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
+        # loss_a = (loss_a_all * seq_mask).sum()
+        # loss_v = (loss_v_all * seq_mask).sum()
+        # loss_uni = loss_a + loss_v
+
+        # Temporary for simple transformer: set unimodal losses to zero
+        loss_a = torch.tensor(0.0, device=logit_f.device)
+        loss_v = torch.tensor(0.0, device=logit_f.device)
         loss_uni = loss_a + loss_v
 
         # 2. Regression loss - following original paper implementation exactly
@@ -476,12 +497,16 @@ class RepurposeModel(pl.LightningModule):
                 epoch=self.current_epoch,
             )
 
+        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
         # Alignment losses (KL divergence) - apply to valid positions only
-        valid_positions = seq_mask.bool()
-        prob_a = torch.sigmoid(logit_a[valid_positions]).detach()
-        prob_v = torch.sigmoid(logit_v[valid_positions]).detach()
-        prob_f = torch.sigmoid(logit_f[valid_positions])
-        loss_kl = kl_div_bernoulli(prob_v, prob_f) + kl_div_bernoulli(prob_a, prob_f)
+        # valid_positions = seq_mask.bool()
+        # prob_a = torch.sigmoid(logit_a[valid_positions]).detach()
+        # prob_v = torch.sigmoid(logit_v[valid_positions]).detach()
+        # prob_f = torch.sigmoid(logit_f[valid_positions])
+        # loss_kl = kl_div_bernoulli(prob_v, prob_f) + kl_div_bernoulli(prob_a, prob_f)
+
+        # Temporary for simple transformer: set alignment loss to zero
+        loss_kl = torch.tensor(0.0, device=logit_f.device)
 
         # Total loss - includes classification and regression components
         total_loss = (
@@ -493,7 +518,10 @@ class RepurposeModel(pl.LightningModule):
 
         # Compute metrics
         with torch.no_grad():
+            valid_positions = seq_mask.bool()
             labels_valid = labels[valid_positions]
+            logit_f_valid = logit_f[valid_positions]
+            prob_f = torch.sigmoid(logit_f_valid)
             pred_binary = (prob_f > 0.5).float()
             accuracy = (pred_binary == labels_valid).float().mean()
 
@@ -1820,6 +1848,20 @@ def main(args):
     logger.info(
         f"Architecture: Self-Attn={args.n_self_attn_layers}, Cross-Attn={args.n_cross_attn_layers}, Fusion={args.n_fusion_layers}"
     )
+
+    # Enable wandb gradient and weight logging if wandb is being used
+    if wandb_logger is not None:
+        try:
+            wandb.watch(
+                model,
+                log="all",  # Log both gradients and weights
+                log_freq=100,  # Log every 100 steps (adjust as needed)
+                log_graph=True,  # Log model graph
+            )
+            logger.info("✓ Enabled wandb gradient and weight logging")
+        except Exception as e:
+            logger.warning(f"Failed to enable wandb.watch(): {e}")
+            logger.info("Training will continue without gradient/weight logging")
 
     # Setup callbacks
     callbacks = []
