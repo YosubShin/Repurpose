@@ -1928,7 +1928,7 @@ def main(args):
         accelerator=args.accelerator,
         devices=args.devices,
         precision=args.precision,
-        # gradient_clip_val=args.gradient_clip,
+        gradient_clip_val=args.gradient_clip,
         accumulate_grad_batches=args.accumulate_grad_batches,
         callbacks=callbacks,
         logger=wandb_logger,
@@ -2137,7 +2137,7 @@ if __name__ == "__main__":
         help="Number of warmup epochs for learning rate schedule",
     )
     parser.add_argument(
-        "--gradient_clip", type=float, default=1.0, help="Gradient clipping value"
+        "--gradient_clip", type=float, default=0.1, help="Gradient clipping value"
     )
     parser.add_argument(
         "--accumulate_grad_batches",
