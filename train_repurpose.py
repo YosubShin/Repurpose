@@ -1108,6 +1108,55 @@ class RepurposeModel(pl.LightningModule):
         # This is called automatically by PyTorch Lightning when gradient_clip_val is set
         pass
 
+    def on_before_optimizer_step(self, optimizer):
+        """Log gradient norms before optimization step."""
+        # Compute gradient norm for monitoring
+        total_norm = 0.0
+        param_count = 0
+
+        for param in self.parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+                param_count += 1
+
+        if param_count > 0:
+            total_norm = total_norm ** (1.0 / 2)
+
+            # Log gradient norm
+            self.log(
+                "grad_norm", total_norm, on_step=True, on_epoch=False, prog_bar=True
+            )
+
+            # Log gradient norm for different component groups
+            # Simple transformer components
+            simple_norm = 0.0
+            simple_count = 0
+            for name, param in self.named_parameters():
+                if param.grad is not None and "simple_" in name:
+                    param_norm = param.grad.data.norm(2)
+                    simple_norm += param_norm.item() ** 2
+                    simple_count += 1
+
+            if simple_count > 0:
+                simple_norm = simple_norm ** (1.0 / 2)
+                self.log("grad_norm_simple", simple_norm, on_step=True, on_epoch=False)
+
+            # Cross-attention components
+            cross_norm = 0.0
+            cross_count = 0
+            for name, param in self.named_parameters():
+                if param.grad is not None and "cross_attn" in name:
+                    param_norm = param.grad.data.norm(2)
+                    cross_norm += param_norm.item() ** 2
+                    cross_count += 1
+
+            if cross_count > 0:
+                cross_norm = cross_norm ** (1.0 / 2)
+                self.log(
+                    "grad_norm_cross_attn", cross_norm, on_step=True, on_epoch=False
+                )
+
 
 # ==================== Memory Management Callback ====================
 class MemoryClearCallback(Callback):
