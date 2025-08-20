@@ -268,14 +268,14 @@ class RepurposeModel(pl.LightningModule):
         else:
             input_dim = dim_visual
 
-        self.simple_input_proj = nn.Linear(input_dim, simple_d_model)
+        self.simple_v_proj = nn.Linear(input_dim, simple_d_model)
 
         # Use smaller initialization for higher dimensional inputs to prevent gradient issues
         if feature_dim_override and input_dim > 1:
             with torch.no_grad():
                 # Scale down initialization based on input dimension
                 scale_factor = 1.0 / np.sqrt(input_dim)
-                self.simple_input_proj.weight.data *= scale_factor
+                self.simple_v_proj.weight.data *= scale_factor
                 self.logger_instance.info(
                     f"Scaled input projection weights by {scale_factor:.4f}"
                 )
@@ -283,7 +283,7 @@ class RepurposeModel(pl.LightningModule):
         self.simple_pos_embed = nn.Parameter(
             torch.randn(1, 2000, simple_d_model) * 0.01
         )
-        self.simple_encoder = nn.TransformerEncoder(
+        self.simple_v_encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=simple_d_model,
                 nhead=simple_nhead,
@@ -292,6 +292,29 @@ class RepurposeModel(pl.LightningModule):
             ),
             num_layers=simple_num_layers,
         )
+
+        # Caption processing components (matching visual pattern)
+        self.simple_c_proj = nn.Linear(dim_caption, simple_d_model)
+        self.simple_c_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=simple_d_model,
+                nhead=simple_nhead,
+                dim_feedforward=64,
+                batch_first=True,
+            ),
+            num_layers=simple_num_layers,
+        )
+
+        # Visual-Caption cross-attention layers (using existing CrossSelfEncoderLayer)
+        self.simple_cross_attn_vc = nn.ModuleList(
+            [
+                CrossSelfEncoderLayer(
+                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                )
+                for _ in range(2)  # Use 2 layers for simplicity
+            ]
+        )
+
         self.simple_output = nn.Sequential(
             # Ensure positive offsets
             nn.Linear(simple_d_model, 2),
@@ -315,22 +338,32 @@ class RepurposeModel(pl.LightningModule):
         caption: torch.Tensor,
         mask: torch.Tensor,
     ):
-        """SIMPLE OFFSET TRANSFORMER FOR TESTING - uses only visual features."""
+        """SIMPLE TRANSFORMER - Visual-Caption cross-attention without audio."""
         batch_size, seq_len = visual.shape[:2]
 
-        # Forward pass through simple transformer
-        x = self.simple_input_proj(visual)
-        x = x + self.simple_pos_embed[:, :seq_len, :]
+        # Process visual features
+        v = self.simple_v_proj(visual)
+        v = v + self.simple_pos_embed[:, :seq_len, :]
 
         # Convert mask to attention mask (True = ignore)
         attn_mask = ~mask.bool()
-        x = self.simple_encoder(x, src_key_padding_mask=attn_mask)
+        v = self.simple_v_encoder(v, src_key_padding_mask=attn_mask)
 
-        # Get offset predictions
-        offset_f = self.simple_output(x)  # [B, T, 2]
+        # Process caption features
+        c = self.simple_c_proj(caption)
+        c = c + self.simple_pos_embed[:, :seq_len, :]  # Reuse pos embeddings
+        c = self.simple_c_encoder(c, src_key_padding_mask=attn_mask)
 
-        # Get classification predictions
-        logit_f = self.simple_classifier(x).squeeze(-1)  # [B, T]
+        # Visual-Caption cross-attention
+        v_enhanced = v
+        for layer in self.simple_cross_attn_vc:
+            v_enhanced = layer(v_enhanced, c, mask=mask)
+
+        # Get offset predictions using enhanced features
+        offset_f = self.simple_output(v_enhanced)  # [B, T, 2]
+
+        # Get classification predictions using enhanced features
+        logit_f = self.simple_classifier(v_enhanced).squeeze(-1)  # [B, T]
 
         # Create dummy classification outputs for unimodal compatibility
         logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
@@ -379,14 +412,6 @@ class RepurposeModel(pl.LightningModule):
         for layer in self.cross_attn_ac_layers:
             a_enhanced = layer(a_enhanced, c, mask=mask)
 
-        # Multi-layer Cross-attention: Visual-Caption
-        v_enhanced = v
-        for layer in self.cross_attn_vc_layers:
-            v_enhanced = layer(v_enhanced, c, mask=mask)
-
-        # Multi-layer Audio-Visual fusion cross-attention
-        # Following the original architecture with separate cross-attention layers
-        vis_feats = v_enhanced
         aud_feats = a_enhanced
 
         for idx, layer in enumerate(self.vis_aud_cross_att):
