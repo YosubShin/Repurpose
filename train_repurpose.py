@@ -311,7 +311,7 @@ class RepurposeModel(pl.LightningModule):
                 CrossSelfEncoderLayer(
                     simple_d_model, simple_nhead, d_ff=64, dropout=0.1
                 )
-                for _ in range(2)  # Use 2 layers for simplicity
+                for _ in range(n_cross_attn_layers)
             ]
         )
 
