@@ -254,9 +254,9 @@ class RepurposeModel(pl.LightningModule):
         self.validation_outputs = []
 
         # SIMPLE TRANSFORMER FOR TESTING - minimal architecture
-        simple_d_model = 32
-        simple_nhead = 4
-        simple_num_layers = 2
+        simple_d_model = d_model
+        simple_nhead = n_head
+        simple_num_layers = n_self_attn_layers
 
         # Read feature dimension from environment variable (for dimension testing)
         import os
