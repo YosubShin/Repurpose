@@ -2186,7 +2186,10 @@ if __name__ == "__main__":
         help="Number of warmup epochs for learning rate schedule",
     )
     parser.add_argument(
-        "--gradient_clip", type=float, default=0.1, help="Gradient clipping value"
+        "--gradient_clip",
+        type=float,
+        default=None,
+        help="Gradient clipping value (None to disable)",
     )
     parser.add_argument(
         "--accumulate_grad_batches",
