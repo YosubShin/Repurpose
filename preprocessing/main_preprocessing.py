@@ -157,8 +157,8 @@ class PreprocessingPipeline:
                 self.logger.info("STEP 2: Extracting visual features")
                 self.logger.info("=" * 60)
 
-                visual_stats = self.visual_extractor.process_from_dataset(
-                    dataset_path=dataset_path,
+                visual_stats = self.visual_extractor.process_from_multiple_datasets(
+                    dataset_paths=[dataset_path],  # Pass single dataset as array
                     video_dir=self.config["directories"]["raw_videos"],
                     max_videos=self.config["processing"]["max_videos"],
                 )
