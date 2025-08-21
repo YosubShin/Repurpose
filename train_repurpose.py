@@ -143,6 +143,10 @@ class RepurposeModel(pl.LightningModule):
         self.log_interval = log_interval
         self.step_count = 0
 
+        # Initialize LR scheduler parameters with defaults (will be updated in on_train_start)
+        self.warmup_steps = 1000  # Default fallback
+        self.total_steps = 10000  # Default fallback
+
         # Projections to shared dimension - MLPs as per paper with 2048 hidden dim
         # "We then use three distinct MLP layers to map these features to a unified dimension d"
         def _projection_mlp(input_dim):
