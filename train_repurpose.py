@@ -17,6 +17,7 @@ import os
 import gc
 import sys
 import time
+import math
 import argparse
 import logging
 from datetime import datetime
@@ -875,7 +876,7 @@ class RepurposeModel(pl.LightningModule):
         return results
 
     def configure_optimizers(self):
-        """Configure optimizer with warmup and cosine decay scheduling."""
+        """Configure optimizer with linear warmup and cosine decay scheduling."""
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.lr,
@@ -883,9 +884,26 @@ class RepurposeModel(pl.LightningModule):
             betas=(self.hparams.beta1, self.hparams.beta2),
         )
 
-        # Using AdamW optimizer with weight decay
+        def lr_lambda(current_step):
+            # Linear warmup
+            if current_step < self.warmup_steps:
+                return float(current_step) / float(max(1, self.warmup_steps))
+
+            # Cosine decay after warmup
+            progress = float(current_step - self.warmup_steps) / float(
+                max(1, self.total_steps - self.warmup_steps)
+            )
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+
         return {
             "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",  # Update every training step
+                "frequency": 1,
+            },
         }
 
     def _save_batch_debug_csv(self, batch, labels, offsets, seq_mask):
@@ -1093,15 +1111,36 @@ class RepurposeModel(pl.LightningModule):
     def on_train_start(self):
         """Set warmup and total steps based on actual training configuration."""
         # Get the actual number of training steps
-        # if self.trainer.max_epochs:
-        #     steps_per_epoch = len(self.trainer.train_dataloader)
-        #     self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
-        #     self.total_steps = self.trainer.max_epochs * steps_per_epoch
+        if self.trainer.max_epochs:
+            try:
+                # Try to get the actual dataloader length
+                if (
+                    hasattr(self.trainer, "train_dataloader")
+                    and self.trainer.train_dataloader is not None
+                ):
+                    train_dataloader = self.trainer.train_dataloader()
+                    steps_per_epoch = len(train_dataloader)
+                else:
+                    # Fallback estimation
+                    steps_per_epoch = 1000  # Conservative estimate
+            except:
+                # Fallback estimation if dataloader not available
+                steps_per_epoch = 1000
 
-        #     self.logger_instance.info(
-        #         f"Learning rate schedule configured: warmup_steps={self.warmup_steps}, "
-        #         f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
-        #     )
+            self.warmup_steps = self.hparams.warmup_epochs * steps_per_epoch
+            self.total_steps = self.trainer.max_epochs * steps_per_epoch
+
+            self.logger_instance.info(
+                f"LR Schedule configured: warmup_steps={self.warmup_steps}, "
+                f"total_steps={self.total_steps}, steps_per_epoch={steps_per_epoch}"
+            )
+        else:
+            # Default values for safety
+            self.warmup_steps = 1000
+            self.total_steps = 10000
+            self.logger_instance.info(
+                f"Using default LR schedule: warmup_steps={self.warmup_steps}, total_steps={self.total_steps}"
+            )
 
     def on_before_backward(self, loss):
         """Apply gradient clipping before backward pass."""
