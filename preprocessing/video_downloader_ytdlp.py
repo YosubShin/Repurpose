@@ -105,7 +105,7 @@ class VideoDownloaderYTDLP:
 
         output_template = os.path.join(self.output_dir, f"{youtube_id}.%(ext)s")
         yt_dlp_opts = {
-            "format": "bestvideo[height<=240]+bestaudio/best[height<=240]",
+            "format": self._build_progressive_format_string(),
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
@@ -130,6 +130,81 @@ class VideoDownloaderYTDLP:
             if file_path.exists():
                 return str(file_path)
         return None
+
+    def _build_progressive_format_string(self) -> str:
+        """
+        Build a progressive format string that tries multiple fallbacks.
+
+        This prevents format unavailable errors by providing multiple
+        format options in order of preference.
+        """
+        return (
+            "bestvideo[height<=240]+bestaudio/"  # Preferred: 240p video + separate audio
+            "best[height<=240]/"  # Fallback 1: 240p combined stream
+            "bestvideo[height<=360]+bestaudio/"  # Fallback 2: 360p video + separate audio
+            "best[height<=360]/"  # Fallback 3: 360p combined stream
+            "bestvideo[height<=480]+bestaudio/"  # Fallback 4: 480p video + separate audio
+            "best[height<=480]/"  # Fallback 5: 480p combined stream
+            "worst[height>=240]/"  # Fallback 6: Anything 240p or higher
+            "worst[height>=144]/"  # Fallback 7: Anything 144p or higher
+            "best"  # Last resort: Best available quality
+        )
+
+    def get_available_formats(
+        self, youtube_id: str, max_formats: int = 10
+    ) -> Optional[List[Dict]]:
+        """
+        Get available formats for a video for debugging purposes.
+
+        Args:
+            youtube_id: YouTube video ID
+            max_formats: Maximum number of formats to return
+
+        Returns:
+            List of available format dictionaries or None if failed
+        """
+        url = f"https://www.youtube.com/watch?v={youtube_id}"
+        yt_dlp_opts = {
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        # Add cookies if available
+        if self.cookies_file and os.path.exists(self.cookies_file):
+            yt_dlp_opts["cookiefile"] = self.cookies_file
+
+        try:
+            with yt_dlp.YoutubeDL(yt_dlp_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                formats = info.get("formats", [])
+
+                # Filter and sort formats by quality
+                video_formats = []
+                for fmt in formats:
+                    if (
+                        fmt.get("vcodec") != "none" or fmt.get("acodec") != "none"
+                    ):  # Has video or audio
+                        video_formats.append(
+                            {
+                                "format_id": fmt.get("format_id"),
+                                "ext": fmt.get("ext"),
+                                "quality": fmt.get("quality", 0),
+                                "height": fmt.get("height"),
+                                "width": fmt.get("width"),
+                                "fps": fmt.get("fps"),
+                                "vcodec": fmt.get("vcodec"),
+                                "acodec": fmt.get("acodec"),
+                                "filesize": fmt.get("filesize"),
+                            }
+                        )
+
+                # Sort by height (quality) and return top formats
+                video_formats.sort(key=lambda x: x["height"] or 0, reverse=True)
+                return video_formats[:max_formats]
+
+        except Exception as e:
+            self.logger.debug(f"Failed to get formats for {youtube_id}: {e}")
+            return None
 
     def download_single_video(
         self,
@@ -176,7 +251,7 @@ class VideoDownloaderYTDLP:
         # Create download options for this specific video
         output_template = os.path.join(self.output_dir, f"{youtube_id}.%(ext)s")
         yt_dlp_opts = {
-            "format": "bestvideo[height<=240]+bestaudio/best[height<=240]",
+            "format": self._build_progressive_format_string(),
             "merge_output_format": "mp4",
             "outtmpl": output_template,
         }
@@ -255,10 +330,40 @@ class VideoDownloaderYTDLP:
 
         except yt_dlp.DownloadError as e:
             error_msg = str(e)
-            if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
+            if "Requested format is not available" in error_msg:
+                self.logger.warning(f"Format unavailable for {youtube_id}: {error_msg}")
+                self.logger.info(
+                    f"Progressive format fallback should have handled this - investigating..."
+                )
+
+                # Debug: Log available formats to understand what went wrong
+                try:
+                    formats = self.get_available_formats(youtube_id, max_formats=5)
+                    if formats:
+                        self.logger.info(f"Available formats for {youtube_id}:")
+                        for fmt in formats:
+                            self.logger.info(
+                                f"  - {fmt['format_id']}: {fmt['height']}p "
+                                f"({fmt['ext']}, vcodec={fmt['vcodec']}, acodec={fmt['acodec']})"
+                            )
+                    else:
+                        self.logger.warning(
+                            f"Could not retrieve format list for {youtube_id}"
+                        )
+                except Exception as debug_e:
+                    self.logger.debug(
+                        f"Format debugging failed for {youtube_id}: {debug_e}"
+                    )
+
+                # This should rarely happen with our progressive format string
+            elif "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                 self.logger.warning(f"Bot detection for {youtube_id}: {error_msg}")
                 # For bot detection, we might want to increase delay
                 time.sleep(random.uniform(5, 15))
+            elif "Private video" in error_msg or "Video unavailable" in error_msg:
+                self.logger.info(f"Video unavailable for {youtube_id}: {error_msg}")
+            elif "copyright" in error_msg.lower() or "blocked" in error_msg.lower():
+                self.logger.info(f"Copyright/blocked video {youtube_id}: {error_msg}")
             else:
                 self.logger.error(f"Download error for {youtube_id}: {error_msg}")
 
@@ -324,6 +429,9 @@ class VideoDownloaderYTDLP:
                             "unavailable",
                             "copyright",
                             "terminated",
+                            "blocked",
+                            "video unavailable",
+                            "this video is not available",
                         ]
                     ):
                         self.logger.info(
@@ -552,6 +660,61 @@ class VideoDownloaderYTDLP:
             self.logger.info(f"Cleaned up {cleaned_count} partial files")
         else:
             self.logger.info("No partial files to clean up")
+
+    def test_format_compatibility(self, youtube_id: str) -> Dict[str, Any]:
+        """
+        Test format compatibility for a specific video without downloading.
+
+        Useful for debugging format issues with specific videos.
+
+        Args:
+            youtube_id: YouTube video ID to test
+
+        Returns:
+            Dict with compatibility results
+        """
+        self.logger.info(f"Testing format compatibility for {youtube_id}")
+
+        # Get available formats
+        formats = self.get_available_formats(youtube_id, max_formats=20)
+        if not formats:
+            return {
+                "youtube_id": youtube_id,
+                "success": False,
+                "error": "Could not retrieve format list",
+                "available_formats": [],
+                "progressive_format": self._build_progressive_format_string(),
+            }
+
+        # Log available formats
+        self.logger.info(f"Available formats for {youtube_id}:")
+        for fmt in formats:
+            height_str = f"{fmt['height']}p" if fmt["height"] else "unknown"
+            self.logger.info(
+                f"  - {fmt['format_id']}: {height_str} "
+                f"({fmt['ext']}, video={fmt['vcodec']}, audio={fmt['acodec']})"
+            )
+
+        # Test if progressive format would work
+        progressive_format = self._build_progressive_format_string()
+        self.logger.info(f"Progressive format string: {progressive_format}")
+
+        return {
+            "youtube_id": youtube_id,
+            "success": True,
+            "available_formats": formats,
+            "progressive_format": progressive_format,
+            "format_count": len(formats),
+            "has_240p_or_lower": any(
+                fmt["height"] and fmt["height"] <= 240 for fmt in formats
+            ),
+            "has_360p_or_lower": any(
+                fmt["height"] and fmt["height"] <= 360 for fmt in formats
+            ),
+            "has_480p_or_lower": any(
+                fmt["height"] and fmt["height"] <= 480 for fmt in formats
+            ),
+        }
 
 
 def main():
