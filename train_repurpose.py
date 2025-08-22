@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 import numpy as np
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1870,6 +1871,17 @@ def main(args):
     # Enable Tensor Cores for faster training on compatible GPUs
     torch.set_float32_matmul_precision("medium")
 
+    # Set seeds for reproducibility if deterministic mode is enabled
+    if args.deterministic:
+        seed = 42  # Fixed seed for reproducibility
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        # Additional deterministic settings
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     # Setup logging
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"train_repurpose_{timestamp}.log"
@@ -1877,6 +1889,11 @@ def main(args):
 
     logger.info("Starting RepurposeModel training")
     logger.info(f"Arguments: {vars(args)}")
+
+    if args.deterministic:
+        logger.info("✓ Deterministic mode enabled - training will be reproducible")
+        logger.info(f"  Random seed: 42")
+        logger.info("  Note: This may reduce training speed by 10-30%")
 
     # Initialize wandb if requested
     wandb_logger = None

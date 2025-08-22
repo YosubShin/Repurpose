@@ -8,7 +8,7 @@
 AUDIO_DIR="/home/yosubs/koa_scratch/repurpose/data/audio_pann_features"
 VISUAL_DIR="/home/yosubs/koa_scratch/repurpose/data/video_clip_features"
 CAPTION_DIR="/home/yosubs/koa_scratch/repurpose/data/caption_features"
-TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/test.json"
+TRAIN_ANNOTATION="/home/yosubs/co/Repurpose/data/train.json"
 VAL_ANNOTATION="/home/yosubs/co/Repurpose/data/val.json"
 
 # Create necessary directories
@@ -58,19 +58,19 @@ python train_repurpose.py \
     --caption_dir "$CAPTION_DIR" \
     --train_annotation "$TRAIN_ANNOTATION" \
     --val_annotation "$VAL_ANNOTATION" \
-    --batch_size 6 \
-    --epochs 30 \
-    --learning_rate 1e-4 \
+    --batch_size 16 \
+    --epochs 100 \
+    --learning_rate 3e-3 \
     --weight_decay 1e-4 \
     --warmup_epochs 5 \
-    --d_model 512 \
-    --n_head 8 \
+    --d_model 32 \
+    --n_head 4 \
     --n_self_attn_layers 3 \
-    --n_cross_attn_layers 3 \
-    --n_fusion_layers 3 \
-    --lambda1 0.1 \
+    --n_cross_attn_layers 0 \
+    --n_fusion_layers 0 \
+    --lambda1 0 \
     --lambda2 0.3 \
-    --lambda3 0.1 \
+    --lambda3 0 \
     --lambda4 0.7 \
     --log_interval 5 \
     --checkpoint_dir checkpoints \
@@ -81,9 +81,9 @@ python train_repurpose.py \
     --use_wandb \
     --wandb_project "repurpose-experiments" \
     --early_stopping_patience 0 \
-    --gradient_clip 0.1 \
     --precision "16-mixed" \
     --enable_checkpointing \
+    --deterministic \
     $RESUME_ARG \
     2>&1 | tee logs/training_$(date +%Y%m%d_%H%M%S).log
 
