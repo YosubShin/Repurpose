@@ -311,6 +311,18 @@ class RepurposeModel(pl.LightningModule):
             num_layers=simple_num_layers,
         )
 
+        # Audio processing components
+        self.simple_a_proj = nn.Linear(dim_audio, simple_d_model)
+        self.simple_a_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=simple_d_model,
+                nhead=simple_nhead,
+                dim_feedforward=64,
+                batch_first=True,
+            ),
+            num_layers=simple_num_layers,
+        )
+
         # Visual-Caption cross-attention layers (using existing CrossSelfEncoderLayer)
         self.simple_cross_attn_vc = nn.ModuleList(
             [
@@ -318,6 +330,35 @@ class RepurposeModel(pl.LightningModule):
                     simple_d_model, simple_nhead, d_ff=64, dropout=0.1
                 )
                 for _ in range(n_cross_attn_layers)
+            ]
+        )
+
+        # Audio-Caption cross-attention layers
+        self.simple_cross_attn_ac = nn.ModuleList(
+            [
+                CrossSelfEncoderLayer(
+                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                )
+                for _ in range(n_cross_attn_layers)
+            ]
+        )
+
+        # Visual-Audio fusion layers (cross-attention between enhanced V and enhanced A)
+        self.simple_fusion_va = nn.ModuleList(
+            [
+                CrossAttentionEncoderLayer(
+                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                )
+                for _ in range(n_fusion_layers)
+            ]
+        )
+
+        self.simple_fusion_av = nn.ModuleList(
+            [
+                CrossAttentionEncoderLayer(
+                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                )
+                for _ in range(n_fusion_layers)
             ]
         )
 
@@ -344,7 +385,7 @@ class RepurposeModel(pl.LightningModule):
         caption: torch.Tensor,
         mask: torch.Tensor,
     ):
-        """SIMPLE TRANSFORMER - Visual-Caption cross-attention without audio."""
+        """SIMPLE TRANSFORMER - Full multi-modal fusion with V-C, A-C, and V-A cross-attention."""
         batch_size, seq_len = visual.shape[:2]
 
         # Process visual features
@@ -355,21 +396,47 @@ class RepurposeModel(pl.LightningModule):
         attn_mask = ~mask.bool()
         v = self.simple_v_encoder(v, src_key_padding_mask=attn_mask)
 
-        # # Process caption features
+        # Process caption features
         c = self.simple_c_proj(caption)
         c = c + self.simple_pos_embed[:, :seq_len, :]  # Reuse pos embeddings
         c = self.simple_c_encoder(c, src_key_padding_mask=attn_mask)
 
-        # # Visual-Caption cross-attention
+        # Process audio features
+        a = self.simple_a_proj(audio)
+        a = a + self.simple_pos_embed[:, :seq_len, :]  # Reuse pos embeddings
+        a = self.simple_a_encoder(a, src_key_padding_mask=attn_mask)
+
+        # Visual-Caption cross-attention
         v_enhanced = v
         for layer in self.simple_cross_attn_vc:
             v_enhanced = layer(v_enhanced, c, mask=mask)
 
-        # Get offset predictions using enhanced features
-        offset_f = self.simple_output(v_enhanced)  # [B, T, 2]
+        # Audio-Caption cross-attention
+        a_enhanced = a
+        for layer in self.simple_cross_attn_ac:
+            a_enhanced = layer(a_enhanced, c, mask=mask)
 
-        # Get classification predictions using enhanced features
-        logit_f = self.simple_classifier(v_enhanced).squeeze(-1)  # [B, T]
+        # Visual-Audio fusion (cross-attention between enhanced features)
+        v_fused_features = v_enhanced
+        for layer in self.simple_fusion_va:
+            v_fused_features = layer(v_fused_features, a_enhanced, mask=mask)
+
+        a_fused_features = a_enhanced
+        for layer in self.simple_fusion_av:
+            a_fused_features = layer(a_fused_features, v_enhanced, mask=mask)
+
+        # Concatenate bidirectional cross-attended features as per paper
+        fused_features = torch.cat(
+            [v_fused_features, a_fused_features], dim=-1
+        )  # [B, T, 2*d_model]
+
+        fused_features = self.fusion_projection(fused_features)
+
+        # Get offset predictions using fused features
+        offset_f = self.simple_output(fused_features)  # [B, T, 2]
+
+        # Get classification predictions using fused features
+        logit_f = self.simple_classifier(fused_features).squeeze(-1)  # [B, T]
 
         # Create dummy classification outputs for unimodal compatibility
         logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
