@@ -356,14 +356,14 @@ class RepurposeModel(pl.LightningModule):
         v = self.simple_v_encoder(v, src_key_padding_mask=attn_mask)
 
         # # Process caption features
-        # c = self.simple_c_proj(caption)
-        # c = c + self.simple_pos_embed[:, :seq_len, :]  # Reuse pos embeddings
-        # c = self.simple_c_encoder(c, src_key_padding_mask=attn_mask)
+        c = self.simple_c_proj(caption)
+        c = c + self.simple_pos_embed[:, :seq_len, :]  # Reuse pos embeddings
+        c = self.simple_c_encoder(c, src_key_padding_mask=attn_mask)
 
         # # Visual-Caption cross-attention
         v_enhanced = v
-        # for layer in self.simple_cross_attn_vc:
-        #     v_enhanced = layer(v_enhanced, c, mask=mask)
+        for layer in self.simple_cross_attn_vc:
+            v_enhanced = layer(v_enhanced, c, mask=mask)
 
         # Get offset predictions using enhanced features
         offset_f = self.simple_output(v_enhanced)  # [B, T, 2]
