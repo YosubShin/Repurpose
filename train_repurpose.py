@@ -378,6 +378,16 @@ class RepurposeModel(pl.LightningModule):
             ),  # Single output for binary classification
         )
 
+        # Add visual unimodal classification head
+        self.simple_visual_classifier = nn.Sequential(
+            nn.Linear(simple_d_model, simple_d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(
+                simple_d_model // 2, 1
+            ),  # Single output for binary classification
+        )
+
     def forward(
         self,
         audio: torch.Tensor,
@@ -438,9 +448,11 @@ class RepurposeModel(pl.LightningModule):
         # Get classification predictions using fused features
         logit_f = self.simple_classifier(fused_features).squeeze(-1)  # [B, T]
 
-        # Create dummy classification outputs for unimodal compatibility
+        # Get visual unimodal classification predictions
+        logit_v = self.simple_visual_classifier(v_enhanced).squeeze(-1)  # [B, T]
+
+        # Create dummy classification output for audio (to be added later)
         logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
-        logit_v = torch.zeros(batch_size, seq_len, device=visual.device)
 
         return logit_a, logit_v, logit_f, offset_f
 
@@ -543,34 +555,22 @@ class RepurposeModel(pl.LightningModule):
             reduction="none",
         )
 
-        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
-        # loss_a_all = sigmoid_focal_loss(
-        #     logit_a,
-        #     labels,
-        #     alpha=self.focal_alpha,
-        #     gamma=self.focal_gamma,
-        #     reduction="none",
-        # )
-        # loss_v_all = sigmoid_focal_loss(
-        #     logit_v,
-        #     labels,
-        #     alpha=self.focal_alpha,
-        #     gamma=self.focal_gamma,
-        #     reduction="none",
-        # )
+        # Visual unimodal loss
+        loss_v_all = sigmoid_focal_loss(
+            logit_v,
+            labels,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+            reduction="none",
+        )
 
         # Apply sequence mask and normalize by valid positions
         num_valid = seq_mask.sum().clamp(min=1)  # Avoid division by zero
         loss_mul = (loss_mul_all * seq_mask).sum() / num_valid
+        loss_v = (loss_v_all * seq_mask).sum() / num_valid
 
-        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
-        # loss_a = (loss_a_all * seq_mask).sum() / num_valid
-        # loss_v = (loss_v_all * seq_mask).sum() / num_valid
-        # loss_uni = loss_a + loss_v
-
-        # Temporary for simple transformer: set unimodal losses to zero
+        # Audio unimodal loss still set to zero (to be added later)
         loss_a = torch.tensor(0.0, device=logit_f.device)
-        loss_v = torch.tensor(0.0, device=logit_f.device)
         loss_uni = loss_a + loss_v
 
         # 2. Regression loss - following original paper implementation exactly
@@ -597,16 +597,18 @@ class RepurposeModel(pl.LightningModule):
                 epoch=self.current_epoch,
             )
 
-        # COMMENTED OUT FOR SIMPLE TRANSFORMER - WILL REVIVE FOR MULTI-MODAL
         # Alignment losses (KL divergence) - apply to valid positions only
-        # valid_positions = seq_mask.bool()
-        # prob_a = torch.sigmoid(logit_a[valid_positions]).detach()
-        # prob_v = torch.sigmoid(logit_v[valid_positions]).detach()
-        # prob_f = torch.sigmoid(logit_f[valid_positions])
-        # loss_kl = kl_div_bernoulli(prob_v, prob_f) + kl_div_bernoulli(prob_a, prob_f)
+        valid_positions = seq_mask.bool()
+        prob_v = torch.sigmoid(
+            logit_v[valid_positions]
+        ).detach()  # Detach to prevent gradient flow
+        prob_f = torch.sigmoid(logit_f[valid_positions])
 
-        # Temporary for simple transformer: set alignment loss to zero
-        loss_kl = torch.tensor(0.0, device=logit_f.device)
+        # KL divergence from visual to fusion (teacher-student style)
+        loss_kl_v = kl_div_bernoulli(prob_v, prob_f)
+
+        # Total KL loss (will add audio KL later)
+        loss_kl = loss_kl_v
 
         # Total loss - includes classification and regression components
         total_loss = (
