@@ -731,17 +731,39 @@ class RepurposeModel(pl.LightningModule):
             audio, visual, caption, mask=seq_mask
         )
 
-        # Classification loss - following original paper implementation exactly
-        val_loss_cls_all = sigmoid_focal_loss(
+        # Classification losses - multimodal
+        val_loss_mul_all = sigmoid_focal_loss(
             logit_f,
             labels,
             alpha=self.focal_alpha,
             gamma=self.focal_gamma,
             reduction="none",
         )
-        # Normalize by valid positions
+
+        # Visual unimodal loss
+        val_loss_v_all = sigmoid_focal_loss(
+            logit_v,
+            labels,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+            reduction="none",
+        )
+
+        # Audio unimodal loss
+        val_loss_a_all = sigmoid_focal_loss(
+            logit_a,
+            labels,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+            reduction="none",
+        )
+
+        # Apply sequence mask and normalize by valid positions
         num_valid = seq_mask.sum().clamp(min=1)
-        val_loss_cls = (val_loss_cls_all * seq_mask).sum() / num_valid
+        val_loss_mul = (val_loss_mul_all * seq_mask).sum() / num_valid
+        val_loss_v = (val_loss_v_all * seq_mask).sum() / num_valid
+        val_loss_a = (val_loss_a_all * seq_mask).sum() / num_valid
+        val_loss_uni = val_loss_a + val_loss_v
 
         # Regression loss - following original paper implementation exactly
         val_loss_reg_all = ctr_diou_loss_1d(
@@ -753,11 +775,32 @@ class RepurposeModel(pl.LightningModule):
         num_positive = combined_mask.sum().clamp(min=1)
         val_loss_reg = (val_loss_reg_all * combined_mask).sum() / num_positive
 
-        # Total validation loss
-        val_loss = self.lambda2 * val_loss_cls + self.lambda4 * val_loss_reg
-
-        # Metrics - compute for valid positions only
+        # Alignment losses (KL divergence) - apply to valid positions only
         valid_positions = seq_mask.bool()
+        prob_v = torch.sigmoid(
+            logit_v[valid_positions]
+        ).detach()  # Detach to prevent gradient flow
+        prob_a = torch.sigmoid(
+            logit_a[valid_positions]
+        ).detach()  # Detach to prevent gradient flow
+        prob_f = torch.sigmoid(logit_f[valid_positions])
+
+        # KL divergence from unimodal to fusion (teacher-student style)
+        # Normalize by number of valid positions for consistency with other losses
+        num_valid_kl = valid_positions.sum().clamp(min=1)
+        val_loss_kl_v = kl_div_bernoulli(prob_v, prob_f) / num_valid_kl
+        val_loss_kl_a = kl_div_bernoulli(prob_a, prob_f) / num_valid_kl
+        val_loss_kl = val_loss_kl_v + val_loss_kl_a
+
+        # Total validation loss - matching training loss calculation
+        val_loss = (
+            self.lambda1 * val_loss_uni
+            + self.lambda2 * val_loss_mul
+            + self.lambda3 * val_loss_kl
+            + self.lambda4 * val_loss_reg
+        )
+
+        # Metrics - compute for valid positions only (reuse valid_positions from above)
         logit_f_valid = logit_f[valid_positions]
         labels_valid = labels[valid_positions]
         prob_f = torch.sigmoid(logit_f_valid)
@@ -766,8 +809,12 @@ class RepurposeModel(pl.LightningModule):
 
         val_metrics = {
             "val/loss": val_loss,
-            "val/loss_cls": val_loss_cls,
-            "val/loss_reg": val_loss_reg,
+            "val/loss_uni": val_loss_uni,
+            "val/loss_mul": val_loss_mul,
+            "val/loss_kl": val_loss_kl,
+            "val/loss_audio": val_loss_a,
+            "val/loss_visual": val_loss_v,
+            "val/reg_loss_f": val_loss_reg,
             "val/accuracy": accuracy,
             "epoch": self.current_epoch,
             "global_step": self.global_step,
