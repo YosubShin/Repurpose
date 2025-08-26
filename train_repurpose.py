@@ -388,6 +388,16 @@ class RepurposeModel(pl.LightningModule):
             ),  # Single output for binary classification
         )
 
+        # Add audio unimodal classification head
+        self.simple_audio_classifier = nn.Sequential(
+            nn.Linear(simple_d_model, simple_d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(
+                simple_d_model // 2, 1
+            ),  # Single output for binary classification
+        )
+
     def forward(
         self,
         audio: torch.Tensor,
@@ -451,8 +461,8 @@ class RepurposeModel(pl.LightningModule):
         # Get visual unimodal classification predictions
         logit_v = self.simple_visual_classifier(v_enhanced).squeeze(-1)  # [B, T]
 
-        # Create dummy classification output for audio (to be added later)
-        logit_a = torch.zeros(batch_size, seq_len, device=visual.device)
+        # Get audio unimodal classification predictions
+        logit_a = self.simple_audio_classifier(a_enhanced).squeeze(-1)  # [B, T]
 
         return logit_a, logit_v, logit_f, offset_f
 
@@ -564,13 +574,20 @@ class RepurposeModel(pl.LightningModule):
             reduction="none",
         )
 
+        # Audio unimodal loss
+        loss_a_all = sigmoid_focal_loss(
+            logit_a,
+            labels,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+            reduction="none",
+        )
+
         # Apply sequence mask and normalize by valid positions
         num_valid = seq_mask.sum().clamp(min=1)  # Avoid division by zero
         loss_mul = (loss_mul_all * seq_mask).sum() / num_valid
         loss_v = (loss_v_all * seq_mask).sum() / num_valid
-
-        # Audio unimodal loss still set to zero (to be added later)
-        loss_a = torch.tensor(0.0, device=logit_f.device)
+        loss_a = (loss_a_all * seq_mask).sum() / num_valid
         loss_uni = loss_a + loss_v
 
         # 2. Regression loss - following original paper implementation exactly
@@ -602,15 +619,19 @@ class RepurposeModel(pl.LightningModule):
         prob_v = torch.sigmoid(
             logit_v[valid_positions]
         ).detach()  # Detach to prevent gradient flow
+        prob_a = torch.sigmoid(
+            logit_a[valid_positions]
+        ).detach()  # Detach to prevent gradient flow
         prob_f = torch.sigmoid(logit_f[valid_positions])
 
-        # KL divergence from visual to fusion (teacher-student style)
+        # KL divergence from unimodal to fusion (teacher-student style)
         # Normalize by number of valid positions for consistency with other losses
         num_valid_kl = valid_positions.sum().clamp(min=1)
         loss_kl_v = kl_div_bernoulli(prob_v, prob_f) / num_valid_kl
+        loss_kl_a = kl_div_bernoulli(prob_a, prob_f) / num_valid_kl
 
-        # Total KL loss (will add audio KL later)
-        loss_kl = loss_kl_v
+        # Total KL loss
+        loss_kl = loss_kl_v + loss_kl_a
 
         # Total loss - includes classification and regression components
         total_loss = (
