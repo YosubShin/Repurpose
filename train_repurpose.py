@@ -605,7 +605,9 @@ class RepurposeModel(pl.LightningModule):
         prob_f = torch.sigmoid(logit_f[valid_positions])
 
         # KL divergence from visual to fusion (teacher-student style)
-        loss_kl_v = kl_div_bernoulli(prob_v, prob_f)
+        # Normalize by number of valid positions for consistency with other losses
+        num_valid_kl = valid_positions.sum().clamp(min=1)
+        loss_kl_v = kl_div_bernoulli(prob_v, prob_f) / num_valid_kl
 
         # Total KL loss (will add audio KL later)
         loss_kl = loss_kl_v
