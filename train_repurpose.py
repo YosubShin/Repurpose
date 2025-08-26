@@ -363,9 +363,10 @@ class RepurposeModel(pl.LightningModule):
         )
 
         self.simple_output = nn.Sequential(
-            # Ensure positive offsets
-            nn.Linear(simple_d_model, 2),
-            nn.Softplus(),
+            nn.Linear(simple_d_model, simple_d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(simple_d_model // 2, 2),
         )
 
         # Add simple classification head
@@ -453,7 +454,8 @@ class RepurposeModel(pl.LightningModule):
         fused_features = self.fusion_projection(fused_features)
 
         # Get offset predictions using fused features
-        offset_f = self.simple_output(fused_features)  # [B, T, 2]
+        # Clamp to ensure positive offsets, avoiding gradient stopping issues of ReLU
+        offset_f = self.simple_output(fused_features).clamp(min=1e-4)  # [B, T, 2]
 
         # Get classification predictions using fused features
         logit_f = self.simple_classifier(fused_features).squeeze(-1)  # [B, T]
@@ -655,6 +657,11 @@ class RepurposeModel(pl.LightningModule):
             n_positive_labels = labels_valid.sum().item()
             n_total = len(labels_valid)
 
+            # Debug offset statistics
+            offset_min = offset_f.min().item()
+            offset_max = offset_f.max().item()
+            offset_mean = offset_f.mean().item()
+
         # Log metrics
         metrics = {
             "train/loss_total": total_loss,
@@ -671,6 +678,9 @@ class RepurposeModel(pl.LightningModule):
             "train/positive_label_ratio": (
                 n_positive_labels / n_total if n_total > 0 else 0
             ),
+            "train/offset_min": offset_min,
+            "train/offset_max": offset_max,
+            "train/offset_mean": offset_mean,
             "train/step_time": time.time() - start_time,
             # Log current LR
             "train/learning_rate": self.optimizers().param_groups[0]["lr"],
