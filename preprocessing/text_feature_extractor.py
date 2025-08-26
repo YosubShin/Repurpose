@@ -434,69 +434,80 @@ class TextFeatureExtractor:
                 )
                 self.logger.debug(f"Using duration: {duration_seconds}s")
 
-                # Process segments into 1-second intervals
+                # Pre-compute embeddings for each segment (following paper approach)
+                segment_embeddings = []
+                empty_embedding = model.encode(["[empty]"], show_progress_bar=False)[0]
+
+                # First pass: encode each segment once
+                for i, segment in enumerate(segments):
+                    text = self.clean_text(segment.get("text", ""))
+                    if text:
+                        # Encode the segment text
+                        embedding = model.encode([text], show_progress_bar=False)[0]
+                        segment_embeddings.append(
+                            {
+                                "start": segment.get("start", 0),
+                                "end": segment.get("end", 0),
+                                "text": text,
+                                "embedding": embedding,
+                            }
+                        )
+
+                        if self.debug_first_video and i < 5:  # Log first 5 segments
+                            self.logger.info(
+                                f"[DEBUG] Segment {i}: [{segment.get('start', 0):.1f}s - {segment.get('end', 0):.1f}s] '{text[:50]}...'"
+                            )
+
+                # Second pass: assign embeddings to each second (with duplication)
                 features = []
 
-                # Group segments by second for the entire video duration
                 for second in range(duration_seconds):
                     # Find segments that overlap with this second
                     overlapping_segments = []
-                    for segment in segments:
-                        start = segment.get("start", 0)
-                        end = segment.get("end", 0)
+                    for seg_data in segment_embeddings:
+                        if seg_data["start"] <= second < seg_data["end"]:
+                            overlapping_segments.append(seg_data)
 
-                        if start <= second < end:
-                            overlapping_segments.append(segment)
-
-                    # Combine text from overlapping segments
                     if overlapping_segments:
-                        combined_text = " ".join(
-                            [
-                                self.clean_text(seg.get("text", ""))
-                                for seg in overlapping_segments
-                            ]
-                        )
-                        combined_text = self.clean_text(combined_text)
+                        # If multiple segments overlap, average their embeddings
+                        # (Alternative: could take first, last, or longest segment)
+                        if len(overlapping_segments) == 1:
+                            # Single segment - use its embedding directly (duplication)
+                            features.append(overlapping_segments[0]["embedding"])
 
-                        if combined_text:
-                            # Debug logging for first video only
-                            if self.debug_first_video:
+                            if self.debug_first_video and second < 10:
                                 self.logger.info(
-                                    f"[DEBUG - First Video {youtube_id}] Second {second}:"
+                                    f"[DEBUG] Second {second}: Using segment embedding '{overlapping_segments[0]['text'][:30]}...'"
                                 )
-                                self.logger.info(
-                                    f"  Text length: {len(combined_text)} chars"
-                                )
-                                self.logger.info(
-                                    f"  Text preview: {combined_text[:200]}..."
-                                )
-                                if len(combined_text) > 200:
-                                    self.logger.info(
-                                        f"  Text end: ...{combined_text[-100:]}"
-                                    )
-
-                            # Encode text to get 384-dimensional embedding
-                            # show_progress_bar=False to avoid spamming stderr
-                            embedding = model.encode(
-                                [combined_text], show_progress_bar=False
-                            )[0]
-                            features.append(embedding)
                         else:
-                            # Empty text - use zero vector
-                            if self.debug_first_video:
+                            # Multiple overlapping segments - average their embeddings
+                            embeddings = np.array(
+                                [seg["embedding"] for seg in overlapping_segments]
+                            )
+                            avg_embedding = np.mean(embeddings, axis=0)
+                            features.append(avg_embedding)
+
+                            if self.debug_first_video and second < 10:
+                                texts = [
+                                    seg["text"][:20] for seg in overlapping_segments
+                                ]
                                 self.logger.info(
-                                    f"[DEBUG - First Video {youtube_id}] Second {second}: Empty text, using zero vector"
+                                    f"[DEBUG] Second {second}: Averaging {len(overlapping_segments)} segments: {texts}"
                                 )
-                            features.append(np.zeros(384))
                     else:
-                        # No speech in this second - use zero vector
-                        features.append(np.zeros(384))
+                        # No speech in this second - use [empty] token embedding
+                        features.append(empty_embedding)
+
+                        if self.debug_first_video and second < 10:
+                            self.logger.info(
+                                f"[DEBUG] Second {second}: No speech, using [empty] token embedding"
+                            )
 
                 # Ensure we have at least some features
                 if not features:
                     self.logger.warning(f"No text features extracted for {youtube_id}")
-                    # Create a single zero vector
-                    features = [np.zeros(384)]
+                    # Use [empty] token embedding as fallback
+                    features = [empty_embedding]
 
                 features = np.array(features)
 
