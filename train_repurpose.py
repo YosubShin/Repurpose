@@ -2265,6 +2265,9 @@ if __name__ == "__main__":
     )
 
     # Visualization
+    parser.add_argument(
+        "--num_viz_samples", type=int, default=5, help="Number of samples to visualize"
+    )
 
     # Misc
     parser.add_argument(
