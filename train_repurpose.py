@@ -261,6 +261,7 @@ class RepurposeModel(pl.LightningModule):
 
         # SIMPLE TRANSFORMER FOR TESTING - minimal architecture
         simple_d_model = d_model
+        simple_d_ff = simple_d_model * 4  # Standard 4:1 ratio for feedforward dimension
         simple_nhead = n_head
         simple_num_layers = n_self_attn_layers
 
@@ -293,7 +294,7 @@ class RepurposeModel(pl.LightningModule):
             nn.TransformerEncoderLayer(
                 d_model=simple_d_model,
                 nhead=simple_nhead,
-                dim_feedforward=64,
+                dim_feedforward=simple_d_ff,
                 batch_first=True,
             ),
             num_layers=simple_num_layers,
@@ -305,7 +306,7 @@ class RepurposeModel(pl.LightningModule):
             nn.TransformerEncoderLayer(
                 d_model=simple_d_model,
                 nhead=simple_nhead,
-                dim_feedforward=64,
+                dim_feedforward=simple_d_ff,
                 batch_first=True,
             ),
             num_layers=simple_num_layers,
@@ -317,7 +318,7 @@ class RepurposeModel(pl.LightningModule):
             nn.TransformerEncoderLayer(
                 d_model=simple_d_model,
                 nhead=simple_nhead,
-                dim_feedforward=64,
+                dim_feedforward=simple_d_ff,
                 batch_first=True,
             ),
             num_layers=simple_num_layers,
@@ -327,7 +328,7 @@ class RepurposeModel(pl.LightningModule):
         self.simple_cross_attn_vc = nn.ModuleList(
             [
                 CrossSelfEncoderLayer(
-                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                    simple_d_model, simple_nhead, d_ff=simple_d_ff, dropout=0.1
                 )
                 for _ in range(n_cross_attn_layers)
             ]
@@ -337,7 +338,7 @@ class RepurposeModel(pl.LightningModule):
         self.simple_cross_attn_ac = nn.ModuleList(
             [
                 CrossSelfEncoderLayer(
-                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                    simple_d_model, simple_nhead, d_ff=simple_d_ff, dropout=0.1
                 )
                 for _ in range(n_cross_attn_layers)
             ]
@@ -347,7 +348,7 @@ class RepurposeModel(pl.LightningModule):
         self.simple_fusion_va = nn.ModuleList(
             [
                 CrossAttentionEncoderLayer(
-                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                    simple_d_model, simple_nhead, d_ff=simple_d_ff, dropout=0.1
                 )
                 for _ in range(n_fusion_layers)
             ]
@@ -356,7 +357,7 @@ class RepurposeModel(pl.LightningModule):
         self.simple_fusion_av = nn.ModuleList(
             [
                 CrossAttentionEncoderLayer(
-                    simple_d_model, simple_nhead, d_ff=64, dropout=0.1
+                    simple_d_model, simple_nhead, d_ff=simple_d_ff, dropout=0.1
                 )
                 for _ in range(n_fusion_layers)
             ]
