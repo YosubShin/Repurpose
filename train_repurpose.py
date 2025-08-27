@@ -1607,24 +1607,64 @@ class EndOfEpochVisualizationCallback(Callback):
 
                                         # Plot 3: Segments visualization from offsets
                                         ax3 = axes[2]
-                                        # Draw predicted segments at high confidence points
-                                        high_conf_idx = pred_probs > 0.5
-                                        for t_idx in np.where(high_conf_idx)[0]:
-                                            left_offset = pred_offsets_np[t_idx, 0]
-                                            right_offset = pred_offsets_np[t_idx, 1]
-                                            start = max(0, t_idx - left_offset)
-                                            end = min(
-                                                len(pred_probs), t_idx + right_offset
+
+                                        # Use inference to get actual predicted segments (same as used for tIoU calculation)
+                                        # Create a mini-batch for this single sample
+                                        mini_batch = {
+                                            "features": {
+                                                "visual": batch["features"]["visual"][
+                                                    seq_idx : seq_idx + 1
+                                                ],
+                                                "audio": batch["features"]["audio"][
+                                                    seq_idx : seq_idx + 1
+                                                ],
+                                                "caption": batch["features"]["caption"][
+                                                    seq_idx : seq_idx + 1
+                                                ],
+                                            },
+                                            "sequence_masks": batch["sequence_masks"][
+                                                seq_idx : seq_idx + 1
+                                            ],
+                                            "video_ids": [video_id],
+                                        }
+
+                                        # Define inference settings
+                                        inference_settings = {
+                                            "pre_nms_thresh": 0.001,
+                                            "pre_nms_topk": 2000,
+                                            "duration_thresh": 0.1,
+                                            "duration_thresh_max": 1000,
+                                            "nms_sigma": 0.75,
+                                            "min_score": 0.001,
+                                        }
+
+                                        # Get predictions using inference method
+                                        with torch.no_grad():
+                                            inference_predictions = self.inference_(
+                                                mini_batch, inference_settings
                                             )
-                                            ax3.add_patch(
-                                                patches.Rectangle(
-                                                    (start, 0.6),
-                                                    end - start,
-                                                    0.3,
-                                                    facecolor="blue",
-                                                    alpha=0.5,
+
+                                        # Draw predicted segments from inference
+                                        if (
+                                            inference_predictions
+                                            and "segments" in inference_predictions[0]
+                                        ):
+                                            pred_segments = (
+                                                inference_predictions[0]["segments"]
+                                                .cpu()
+                                                .numpy()
+                                            )
+                                            for seg in pred_segments:
+                                                start, end = seg[0], seg[1]
+                                                ax3.add_patch(
+                                                    patches.Rectangle(
+                                                        (start, 0.6),
+                                                        end - start,
+                                                        0.3,
+                                                        facecolor="blue",
+                                                        alpha=0.5,
+                                                    )
                                                 )
-                                            )
 
                                         # Draw GT segments from offsets
                                         for t_idx in np.where(positive_idx)[0]:
@@ -1648,7 +1688,7 @@ class EndOfEpochVisualizationCallback(Callback):
                                         ax3.set_ylim(0, 1)
                                         ax3.set_xlabel("Time Steps")
                                         ax3.set_title(
-                                            "Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)"
+                                            "Segment Visualization with Soft-NMS Inference (Blue: Predicted, Red: Ground Truth)"
                                         )
                                         ax3.grid(True, alpha=0.3, axis="x")
 
@@ -1799,220 +1839,6 @@ class EndOfEpochVisualizationCallback(Callback):
 
         pl_module.train()
         self.logger.info(f"Visualization callback completed for epoch {epoch}")
-
-
-# ==================== Visualization Functions ====================
-def visualize_predictions(
-    model, dataloader, save_dir: str, num_samples: int = 5, device="cpu"
-):
-    """Visualize model predictions vs ground truth."""
-    logger = logging.getLogger("Visualizer")
-    logger.info(f"Creating visualizations for {num_samples} samples")
-
-    model.eval()
-
-    # Handle device conversion properly
-    if isinstance(device, str):
-        if device == "auto":
-            # Get device from model parameters
-            device = next(model.parameters()).device
-        else:
-            device = torch.device(device)
-
-    logger.info(f"Visualization will use device: {device}")
-
-    # Only move model if it's not already on the target device
-    model_device = next(model.parameters()).device
-    if model_device != device:
-        logger.info(f"Moving model from {model_device} to {device}")
-        model = model.to(device)
-    else:
-        logger.info(f"Model already on target device {device}")
-
-    os.makedirs(save_dir, exist_ok=True)
-    saved_paths = []
-
-    with torch.no_grad():
-        sample_count = 0
-        logger.info(f"Starting iteration over dataloader...")
-
-        for batch_idx, batch in enumerate(dataloader):
-            if sample_count >= num_samples:
-                logger.info(f"Reached target of {num_samples} samples, stopping")
-                break
-
-            try:
-                logger.info(f"Processing visualization batch {batch_idx}")
-
-                # Get predictions from dict batch format
-                audio = batch["features"]["audio"].to(device)
-                visual = batch["features"]["visual"].to(device)
-                caption = batch["features"]["caption"].to(device)
-                labels = batch["labels"].to(device)
-                offsets = batch["offsets"].to(device)  # Get ground truth offsets
-                seq_mask = batch["sequence_masks"]
-
-                logger.info(
-                    f"Batch shapes - audio: {audio.shape}, visual: {visual.shape}, caption: {caption.shape}"
-                )
-
-                _, _, logit_f, offset_f = model(audio, visual, caption, mask=seq_mask)
-                logger.info(
-                    f"Model inference completed, logit_f shape: {logit_f.shape}"
-                )
-
-            except Exception as batch_error:
-                logger.error(
-                    f"Error processing batch {batch_idx} in post-training visualization: {batch_error}"
-                )
-                logger.error(f"Batch error traceback:", exc_info=True)
-                continue
-
-            # Process each sequence in the batch individually
-            batch_size = logit_f.shape[0]
-            for seq_idx in range(batch_size):
-                if sample_count >= num_samples:
-                    break
-
-                # Get valid length for this sequence
-                valid_length = int(seq_mask[seq_idx].sum().item())
-
-                # Extract predictions and labels for this sequence only
-                pred_probs = (
-                    torch.sigmoid(logit_f[seq_idx, :valid_length]).cpu().numpy()
-                )
-                labels_np = labels[seq_idx, :valid_length].cpu().numpy()
-                pred_offsets_np = offset_f[seq_idx, :valid_length].cpu().numpy()
-                gt_offsets_np = offsets[seq_idx, :valid_length].cpu().numpy()
-
-                # Create visualization with offset plots
-                fig, axes = plt.subplots(4, 1, figsize=(15, 12))
-                seq_len = len(pred_probs)
-                time_points = np.arange(seq_len)
-
-                # Plot 1: Classification scores
-                ax1 = axes[0]
-                ax1.plot(
-                    time_points, pred_probs, "b-", label="Predicted Prob", alpha=0.7
-                )
-                positive_idx = labels_np > 0.5
-                if np.any(positive_idx):
-                    ax1.scatter(
-                        time_points[positive_idx],
-                        np.ones(np.sum(positive_idx)),
-                        color="red",
-                        s=50,
-                        label="GT Positive",
-                        zorder=5,
-                    )
-                ax1.set_ylabel("Classification Score")
-                ax1.set_title(f"Sample {sample_count} - Classification Predictions")
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                ax1.set_ylim(-0.1, 1.1)
-
-                # Plot 2: Offset predictions
-                ax2 = axes[1]
-                ax2.plot(
-                    time_points,
-                    pred_offsets_np[:, 0],
-                    "b-",
-                    label="Pred Left Offset",
-                    alpha=0.7,
-                )
-                ax2.plot(
-                    time_points,
-                    pred_offsets_np[:, 1],
-                    "b--",
-                    label="Pred Right Offset",
-                    alpha=0.7,
-                )
-                # Plot GT offsets only at positive positions
-                if np.any(positive_idx):
-                    ax2.scatter(
-                        time_points[positive_idx],
-                        gt_offsets_np[positive_idx, 0],
-                        color="red",
-                        s=30,
-                        label="GT Left Offset",
-                        marker="o",
-                    )
-                    ax2.scatter(
-                        time_points[positive_idx],
-                        gt_offsets_np[positive_idx, 1],
-                        color="darkred",
-                        s=30,
-                        label="GT Right Offset",
-                        marker="s",
-                    )
-                ax2.set_ylabel("Offset Value")
-                ax2.set_xlabel("Time Steps")
-                ax2.set_title("Offset Predictions")
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-
-                # Plot 3: Segments visualization from offsets
-                ax3 = axes[2]
-
-                # Draw predicted segments at high confidence points
-                high_conf_idx = pred_probs > 0.5
-                for t_idx in np.where(high_conf_idx)[0]:
-                    left_offset = pred_offsets_np[t_idx, 0]
-                    right_offset = pred_offsets_np[t_idx, 1]
-                    start = max(0, t_idx - left_offset)
-                    end = min(seq_len, t_idx + right_offset)
-                    ax3.add_patch(
-                        patches.Rectangle(
-                            (start, 0.6), end - start, 0.3, facecolor="blue", alpha=0.5
-                        )
-                    )
-
-                # Draw GT segments from offsets
-                for t_idx in np.where(positive_idx)[0]:
-                    left_offset = gt_offsets_np[t_idx, 0]
-                    right_offset = gt_offsets_np[t_idx, 1]
-                    start = max(0, t_idx - left_offset)
-                    end = min(seq_len, t_idx + right_offset)
-                    ax3.add_patch(
-                        patches.Rectangle(
-                            (start, 0.1), end - start, 0.3, facecolor="red", alpha=0.5
-                        )
-                    )
-
-                ax3.set_xlim(0, seq_len)
-                ax3.set_ylim(0, 1)
-                ax3.set_xlabel("Time Steps")
-                ax3.set_title(
-                    "Segment Visualization from Offsets (Blue: Predicted, Red: Ground Truth)"
-                )
-                ax3.grid(True, alpha=0.3, axis="x")
-
-                # Plot 4: Confidence over time
-                ax4 = axes[3]
-                confidence = np.abs(pred_probs - 0.5) * 2
-                ax4.plot(time_points, confidence, "g-", label="Confidence", alpha=0.7)
-                ax4.set_ylabel("Confidence")
-                ax4.set_xlabel("Time Steps")
-                ax4.set_title("Prediction Confidence")
-                ax4.legend()
-                ax4.grid(True, alpha=0.3)
-                ax4.set_ylim(0, 1)
-
-                plt.tight_layout()
-
-                # Save figure
-                path = os.path.join(
-                    save_dir, f"visualization_sample_{sample_count}.png"
-                )
-                plt.savefig(path, dpi=150, bbox_inches="tight")
-                saved_paths.append(path)
-                logger.info(f"Saved visualization to {path}")
-
-                plt.close()
-
-                sample_count += 1
-
-    return saved_paths
 
 
 # ==================== Main Training Function ====================
@@ -2250,50 +2076,6 @@ def main(args):
         logger.info(f"Training stopped after {training_time/60:.2f} minutes")
 
     # Create visualizations (skip if resumed from checkpoint to avoid dataloader issues)
-    if args.create_visualizations:
-        if args.resume_from_checkpoint and os.path.exists(
-            args.resume_from_checkpoint or ""
-        ):
-            logger.info(
-                "Skipping post-training visualizations when resuming from checkpoint (known dataloader issue)"
-            )
-        else:
-            logger.info("Creating visualizations...")
-            viz_dir = os.path.join(args.checkpoint_dir, "visualizations")
-
-            try:
-                # Determine actual device from model
-                actual_device = next(model.parameters()).device
-                logger.info(f"Using device for visualization: {actual_device}")
-
-                # Add memory logging before visualization
-                log_memory_usage(logger, "Before post-training visualization")
-
-                # Use validation dataloader if available, otherwise training dataloader
-                viz_dataloader = val_dataloader or train_dataloader
-                logger.info(
-                    f"Using {'validation' if val_dataloader else 'training'} dataloader for visualization"
-                )
-
-                visualize_predictions(
-                    model,
-                    viz_dataloader,
-                    viz_dir,
-                    num_samples=args.num_viz_samples,
-                    device=actual_device,
-                )
-
-                log_memory_usage(logger, "After post-training visualization")
-                logger.info("Post-training visualizations completed successfully")
-
-            except Exception as viz_error:
-                logger.error(f"Error during post-training visualization: {viz_error}")
-                logger.error("Full visualization traceback:", exc_info=True)
-                log_memory_usage(logger, "After post-training visualization error")
-                logger.info(
-                    "Training completed successfully despite visualization error"
-                )
-
     # Final cleanup
     import gc
 
@@ -2483,14 +2265,6 @@ if __name__ == "__main__":
     )
 
     # Visualization
-    parser.add_argument(
-        "--create_visualizations",
-        action="store_true",
-        help="Create prediction visualizations",
-    )
-    parser.add_argument(
-        "--num_viz_samples", type=int, default=5, help="Number of samples to visualize"
-    )
 
     # Misc
     parser.add_argument(
@@ -2507,7 +2281,6 @@ if __name__ == "__main__":
     #   --train_annotation /path/to/train.json \
     #   --val_annotation /path/to/val.json \
     #   --use_wandb \
-    #   --create_visualizations \
     #   --epochs 20
 
     main(args)
