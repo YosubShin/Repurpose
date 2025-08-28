@@ -2020,7 +2020,6 @@ def main(args):
     viz_callback = EndOfEpochVisualizationCallback(
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        num_samples=args.num_viz_samples,
         save_dir=os.path.join(args.checkpoint_dir, "epoch_visualizations"),
     )
     callbacks.append(viz_callback)
@@ -2307,11 +2306,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--limit_val_batches", type=float, default=1.0, help="Limit validation batches"
-    )
-
-    # Visualization
-    parser.add_argument(
-        "--num_viz_samples", type=int, default=5, help="Number of samples to visualize"
     )
 
     # Misc
