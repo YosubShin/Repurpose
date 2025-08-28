@@ -1047,8 +1047,11 @@ class RepurposeModel(pl.LightningModule):
         )
         vid_lens = batch.get("duration", [0] * logit_f.shape[0])
 
+        # Handle None case explicitly
+        if vid_lens is None:
+            vid_lens = [0] * logit_f.shape[0]
         # Ensure vid_lens is a list/tensor we can iterate over
-        if isinstance(vid_lens, (int, float)):
+        elif isinstance(vid_lens, (int, float)):
             vid_lens = [vid_lens] * logit_f.shape[0]
         elif torch.is_tensor(vid_lens) and vid_lens.dim() == 0:
             vid_lens = [vid_lens.item()] * logit_f.shape[0]
@@ -1563,6 +1566,13 @@ class EndOfEpochVisualizationCallback(Callback):
                         # Get predictions for all samples in batch at once
                         with torch.no_grad():
                             # Create device-mapped batch for inference
+                            duration_val = batch.get(
+                                "duration", batch.get("durations", None)
+                            )
+                            self.logger.debug(
+                                f"Duration value from batch: {duration_val}, type: {type(duration_val)}"
+                            )
+
                             device_batch = {
                                 "features": {
                                     "audio": audio,
@@ -1570,12 +1580,18 @@ class EndOfEpochVisualizationCallback(Callback):
                                     "caption": caption,
                                 },
                                 "sequence_masks": seq_mask,
-                                "duration": batch.get(
-                                    "duration", batch.get("durations", None)
-                                ),
+                                "duration": duration_val,
                             }
                             inference_predictions = pl_module.inference_(
                                 device_batch, INFERENCE_SETTINGS
+                            )
+
+                            # Debug: Check what inference returned
+                            if inference_predictions is None:
+                                self.logger.error("inference_() returned None")
+                                continue
+                            self.logger.debug(
+                                f"inference_() returned {len(inference_predictions)} predictions"
                             )
 
                         # Process each sequence in the batch for visualization
@@ -1827,8 +1843,11 @@ class EndOfEpochVisualizationCallback(Callback):
                                 del logit_f_seq, labels_seq
 
                             except Exception as e:
+                                import traceback
+
                                 self.logger.error(
-                                    f"Error processing sequence {seq_idx} in {dataset_name}: {e}"
+                                    f"Error processing sequence {seq_idx} in {dataset_name}: {e}\n"
+                                    f"Stack trace:\n{traceback.format_exc()}"
                                 )
                                 continue
 
@@ -1857,7 +1876,12 @@ class EndOfEpochVisualizationCallback(Callback):
                     )
 
                 except Exception as e:
-                    self.logger.error(f"Error processing {dataset_name} dataset: {e}")
+                    import traceback
+
+                    self.logger.error(
+                        f"Error processing {dataset_name} dataset: {e}\n"
+                        f"Stack trace:\n{traceback.format_exc()}"
+                    )
                     log_memory_usage(self.logger, f"After {dataset_name} dataset error")
                     continue
 
