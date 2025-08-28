@@ -261,7 +261,8 @@ class RepurposeModel(pl.LightningModule):
 
         # SIMPLE TRANSFORMER FOR TESTING - minimal architecture
         simple_d_model = d_model
-        simple_d_ff = simple_d_model * 4  # Standard 4:1 ratio for feedforward dimension
+        # simple_d_ff = simple_d_model * 4  # Standard 4:1 ratio for feedforward dimension
+        simple_d_ff = 64
         simple_nhead = n_head
         simple_num_layers = n_self_attn_layers
 
