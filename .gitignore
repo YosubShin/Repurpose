@@ -5,6 +5,10 @@ data/caption_features/
 data/transcripts/
 data/video_clip_features/
 saved_model/
+llm_results/
+llm_debug/
+llm_visualizations/
 
 .DS_Store
 .ipynb_checkpoints
+.env
