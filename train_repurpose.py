@@ -1611,22 +1611,23 @@ class EndOfEpochVisualizationCallback(Callback):
                                         ax3 = axes[2]
 
                                         # Use inference to get actual predicted segments (same as used for tIoU calculation)
-                                        # Create a mini-batch for this single sample
+                                        # Create a mini-batch for this single sample and move to correct device
+                                        device = pl_module.device
                                         mini_batch = {
                                             "features": {
                                                 "visual": batch["features"]["visual"][
                                                     seq_idx : seq_idx + 1
-                                                ],
+                                                ].to(device),
                                                 "audio": batch["features"]["audio"][
                                                     seq_idx : seq_idx + 1
-                                                ],
+                                                ].to(device),
                                                 "caption": batch["features"]["caption"][
                                                     seq_idx : seq_idx + 1
-                                                ],
+                                                ].to(device),
                                             },
                                             "sequence_masks": batch["sequence_masks"][
                                                 seq_idx : seq_idx + 1
-                                            ],
+                                            ].to(device),
                                             "video_ids": [video_id],
                                         }
 
