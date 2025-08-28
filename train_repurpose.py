@@ -18,6 +18,7 @@ import gc
 import sys
 import time
 import math
+import json
 import argparse
 import logging
 from datetime import datetime
@@ -851,7 +852,16 @@ class RepurposeModel(pl.LightningModule):
 
         # Define inference settings similar to main.py
         # Get predictions using inference method
-        predictions = self.inference_(batch, INFERENCE_SETTINGS)
+        # Enable debug logging only for the first batch per epoch to avoid log pollution
+        debug_logging = batch_idx == 0
+        current_epoch = (
+            self.current_epoch
+            if hasattr(self, "current_epoch")
+            else self.trainer.current_epoch if hasattr(self, "trainer") else None
+        )
+        predictions = self.inference_(
+            batch, INFERENCE_SETTINGS, debug_logging, current_epoch
+        )
 
         # Log detailed segment statistics
         batch_pred_count = 0
@@ -977,8 +987,21 @@ class RepurposeModel(pl.LightningModule):
         # Clear outputs after processing
         self.validation_outputs = []
 
+    def truncate_list(self, lst, max_items=5):
+        """Helper function to truncate long lists for cleaner debug output."""
+        if isinstance(lst, torch.Tensor):
+            lst = lst.tolist()
+        elif isinstance(lst, np.ndarray):
+            lst = lst.tolist()
+
+        if len(lst) <= max_items:
+            return str(lst)
+        return f"{lst[:max_items]} ... (total: {len(lst)})"
+
     @torch.no_grad()
-    def inference_single_video(self, logit_f, offset_f, seq_mask, inference_settings):
+    def inference_single_video(
+        self, logit_f, offset_f, seq_mask, inference_settings, debug_logging=False
+    ):
         """Inference on a single video using soft NMS - adapted from MMCTransformer."""
         segs_all = []
         scores_all = []
@@ -986,15 +1009,25 @@ class RepurposeModel(pl.LightningModule):
 
         # Get valid length for this sequence
         valid_length = int(seq_mask.sum().item())
+        if debug_logging:
+            print(f"[INFERENCE DEBUG] Valid length: {valid_length}")
 
         # Apply sigmoid normalization and mask
         pred_prob = torch.sigmoid(logit_f[:valid_length]).flatten()
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] Initial probabilities: min={pred_prob.min().item():.4f}, max={pred_prob.max().item():.4f}, mean={pred_prob.mean().item():.4f}"
+            )
 
         # Apply filtering to make NMS faster
         # 1. Keep seg with confidence score > a threshold
         keep_idxs = pred_prob > inference_settings["pre_nms_thresh"]
         pred_prob = pred_prob[keep_idxs]
         topk_idxs = keep_idxs.nonzero(as_tuple=True)[0]
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] After thresh filter (>{inference_settings['pre_nms_thresh']}): {len(pred_prob)} segments"
+            )
 
         # 2. Keep top k top scoring boxes only
         num_topk = min(inference_settings["pre_nms_topk"], topk_idxs.size(0))
@@ -1002,17 +1035,34 @@ class RepurposeModel(pl.LightningModule):
         pred_prob = pred_prob[:num_topk].clone()
         topk_idxs = topk_idxs[idxs[:num_topk]].clone()
         offsets = offset_f[:valid_length][topk_idxs]
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] After topk filter (k={num_topk}): {len(pred_prob)} segments"
+            )
+        if debug_logging:
+            print(f"[INFERENCE DEBUG] Top scores: {self.truncate_list(pred_prob)}")
 
         # 3. compute predicted segments
         seg_left = topk_idxs - offsets[:, 0]
         seg_right = topk_idxs + offsets[:, 1]
         pred_segs = torch.stack((seg_left, seg_right), -1)
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] Predicted segments (before duration filter): {self.truncate_list(pred_segs)}"
+            )
 
         # 4. Keep seg with duration > a threshold
         seg_durations = seg_right - seg_left
         keep_idxs2 = seg_durations > inference_settings["duration_thresh"]
         keep_idxs3 = seg_durations < inference_settings.get("duration_thresh_max", 1000)
         keep_idxs2 = keep_idxs2 & keep_idxs3
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] Segment durations: {self.truncate_list(seg_durations)}"
+            )
+            print(
+                f"[INFERENCE DEBUG] After duration filter ({inference_settings['duration_thresh']}-{inference_settings.get('duration_thresh_max', 1000)}): {keep_idxs2.sum().item()} segments"
+            )
 
         # *_all : N (filtered # of segments) x 2 / 1
         segs_all.append(pred_segs[keep_idxs2])
@@ -1025,10 +1075,21 @@ class RepurposeModel(pl.LightningModule):
         ]
 
         results = {"segments": segs_all, "scores": scores_all, "labels": cls_idxs_all}
+        if debug_logging:
+            print(
+                f"[INFERENCE DEBUG] Final single video results: {len(segs_all)} segments"
+            )
+            if len(segs_all) > 0:
+                print(
+                    f"[INFERENCE DEBUG] Final segments: {self.truncate_list(segs_all)}"
+                )
+                print(
+                    f"[INFERENCE DEBUG] Final scores: {self.truncate_list(scores_all)}"
+                )
         return results
 
     @torch.no_grad()
-    def inference_(self, batch, inference_settings):
+    def inference_(self, batch, inference_settings, debug_logging=False, epoch=None):
         """Inference with soft NMS - adapted from original paper implementation."""
         # Forward pass
         logit_a, logit_v, logit_f, offset_f = self(
@@ -1071,6 +1132,10 @@ class RepurposeModel(pl.LightningModule):
             max_seg_num = mins * inference_settings["max_seg_per_min"]
             max_seg_num = int(np.ceil(max_seg_num))
             max_seg_num = max(1, max_seg_num)  # Ensure at least 1 segment allowed
+            if debug_logging:
+                print(
+                    f"[NMS DEBUG] Video {vidx}: duration={vlen}s, mins={mins}, max_seg_num={max_seg_num}"
+                )
 
             # Inference on a single video
             results_per_vid = self.inference_single_video(
@@ -1078,10 +1143,67 @@ class RepurposeModel(pl.LightningModule):
                 offsets_per_vid,
                 masks_per_vid,
                 inference_settings,
+                debug_logging,
             )
+
+            if debug_logging:
+                print(
+                    f"[NMS DEBUG] Pre-NMS results: {len(results_per_vid['segments'])} segments"
+                )
+                if len(results_per_vid["segments"]) > 0:
+                    print(
+                        f"[NMS DEBUG] Pre-NMS segments: {self.truncate_list(results_per_vid['segments'])}"
+                    )
+                    print(
+                        f"[NMS DEBUG] Pre-NMS scores: {self.truncate_list(results_per_vid['scores'])}"
+                    )
 
             # Apply soft NMS with proper max_seg_num constraint
             if len(results_per_vid["segments"]) > 0:
+                if debug_logging:
+                    print(
+                        f"[NMS DEBUG] Calling soft_nms with sigma={inference_settings['nms_sigma']}, thresh={inference_settings['min_score']}, max_seg_num={max_seg_num}"
+                    )
+
+                # Save pre-NMS data to file if it's the first batch and every 5 epochs
+                save_to_file = (
+                    debug_logging
+                    and epoch is not None
+                    and idx == 0  # First video in batch
+                    and (epoch == 0 or epoch % 5 == 0)
+                )
+
+                if save_to_file:
+                    # Create debug directory if it doesn't exist
+                    debug_dir = "debug_soft_nms"
+                    os.makedirs(debug_dir, exist_ok=True)
+
+                    # Save pre-NMS data
+                    pre_nms_data = {
+                        "epoch": epoch,
+                        "video_id": vidx,
+                        "video_duration": vlen,
+                        "pre_nms_segments": results_per_vid["segments"].cpu().tolist(),
+                        "pre_nms_scores": results_per_vid["scores"].cpu().tolist(),
+                        "nms_params": {
+                            "sigma": inference_settings["nms_sigma"],
+                            "thresh": inference_settings["min_score"],
+                            "max_seg_num": max_seg_num,
+                        },
+                        "num_input_segments": len(results_per_vid["segments"]),
+                    }
+
+                    pre_nms_file = os.path.join(
+                        debug_dir, f"epoch_{epoch:03d}_video_{idx}_pre_nms.json"
+                    )
+                    try:
+                        with open(pre_nms_file, "w") as f:
+                            json.dump(pre_nms_data, f, indent=2)
+                        if debug_logging:
+                            print(f"[NMS DEBUG] Saved pre-NMS data to {pre_nms_file}")
+                    except Exception as e:
+                        print(f"[NMS DEBUG] Failed to save pre-NMS data: {e}")
+
                 results_per_vid_nms_idx = soft_nms_intervals_cpu(
                     results_per_vid["scores"],
                     results_per_vid["segments"],
@@ -1089,6 +1211,12 @@ class RepurposeModel(pl.LightningModule):
                     thresh=inference_settings["min_score"],
                     max_seg_num=max_seg_num,
                 )
+
+                if debug_logging:
+                    print(
+                        f"[NMS DEBUG] Soft NMS returned indices: {results_per_vid_nms_idx}"
+                    )
+
                 results_per_vid["segments"] = results_per_vid["segments"][
                     results_per_vid_nms_idx
                 ]
@@ -1098,6 +1226,56 @@ class RepurposeModel(pl.LightningModule):
                 results_per_vid["labels"] = results_per_vid["labels"][
                     results_per_vid_nms_idx
                 ]
+
+                # Save post-NMS data to file
+                if save_to_file:
+                    post_nms_data = {
+                        "epoch": epoch,
+                        "video_id": vidx,
+                        "selected_indices": (
+                            results_per_vid_nms_idx.tolist()
+                            if hasattr(results_per_vid_nms_idx, "tolist")
+                            else list(results_per_vid_nms_idx)
+                        ),
+                        "post_nms_segments": results_per_vid["segments"].cpu().tolist(),
+                        "post_nms_scores": results_per_vid["scores"].cpu().tolist(),
+                        "num_output_segments": len(results_per_vid["segments"]),
+                        "suppression_ratio": (
+                            1
+                            - (
+                                len(results_per_vid["segments"])
+                                / pre_nms_data["num_input_segments"]
+                            )
+                            if pre_nms_data["num_input_segments"] > 0
+                            else 0
+                        ),
+                    }
+
+                    post_nms_file = os.path.join(
+                        debug_dir, f"epoch_{epoch:03d}_video_{idx}_post_nms.json"
+                    )
+                    try:
+                        with open(post_nms_file, "w") as f:
+                            json.dump(post_nms_data, f, indent=2)
+                        if debug_logging:
+                            print(f"[NMS DEBUG] Saved post-NMS data to {post_nms_file}")
+                    except Exception as e:
+                        print(f"[NMS DEBUG] Failed to save post-NMS data: {e}")
+
+                if debug_logging:
+                    print(
+                        f"[NMS DEBUG] Post-NMS results: {len(results_per_vid['segments'])} segments"
+                    )
+                    if len(results_per_vid["segments"]) > 0:
+                        print(
+                            f"[NMS DEBUG] Post-NMS segments: {self.truncate_list(results_per_vid['segments'])}"
+                        )
+                        print(
+                            f"[NMS DEBUG] Post-NMS scores: {self.truncate_list(results_per_vid['scores'])}"
+                        )
+            else:
+                if debug_logging:
+                    print("[NMS DEBUG] No segments to apply NMS on")
 
             # Pass through video meta info
             results_per_vid["video_id"] = vidx
