@@ -1562,8 +1562,20 @@ class EndOfEpochVisualizationCallback(Callback):
                         # Run inference on the full batch once
                         # Get predictions for all samples in batch at once
                         with torch.no_grad():
+                            # Create device-mapped batch for inference
+                            device_batch = {
+                                "features": {
+                                    "audio": audio,
+                                    "visual": visual,
+                                    "caption": caption,
+                                },
+                                "sequence_masks": seq_mask,
+                                "duration": batch.get(
+                                    "duration", batch.get("durations", None)
+                                ),
+                            }
                             inference_predictions = pl_module.inference_(
-                                batch, INFERENCE_SETTINGS
+                                device_batch, INFERENCE_SETTINGS
                             )
 
                         # Process each sequence in the batch for visualization
