@@ -413,7 +413,8 @@ class SequenceVideoDataset(Dataset):
             "offsets": torch.from_numpy(offsets),  # Shape: [seq_len, 2]
             # Ground truth segments
             "gt_segments": ann.get("segmentsOffset", []),
-            "duration": ann.get("duration", 0),
+            "duration": ann.get("timeRangeOffset", [0, 0])[1]
+            - ann.get("timeRangeOffset", [0, 0])[0],
         }
 
 

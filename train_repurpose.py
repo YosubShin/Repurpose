@@ -44,6 +44,17 @@ import matplotlib.patches as patches
 # Import the sequence dataset
 from compatible_dataset import create_sequence_dataloader
 
+# Global inference settings - used in validation and visualization
+INFERENCE_SETTINGS = {
+    "pre_nms_topk": 1000,
+    "pre_nms_thresh": 0.5,
+    "duration_thresh": 10,
+    "duration_thresh_max": 90,
+    "max_seg_per_min": 0.3,
+    "nms_sigma": 0.5,
+    "min_score": 0.01,
+}
+
 # Configure logging
 
 
@@ -841,17 +852,64 @@ class RepurposeModel(pl.LightningModule):
         batch_tiou_data = []
 
         # Define inference settings similar to main.py
-        inference_settings = {
-            "pre_nms_thresh": 0.001,
-            "pre_nms_topk": 2000,
-            "duration_thresh": 0.1,
-            "duration_thresh_max": 1000,
-            "nms_sigma": 0.75,
-            "min_score": 0.001,
+        # Get predictions using inference method
+        predictions = self.inference_(batch, INFERENCE_SETTINGS)
+
+        # Log detailed segment statistics
+        batch_pred_count = 0
+        batch_pred_durations = []
+        batch_gt_count = 0
+        batch_gt_durations = []
+
+        for sample_idx in range(len(predictions)):
+            pred_data = predictions[sample_idx]
+            sample_gt_segments = gt_segments[sample_idx]
+
+            # Count ground truth segments and durations
+            if sample_gt_segments:
+                batch_gt_count += len(sample_gt_segments)
+                for gt_seg in sample_gt_segments:
+                    batch_gt_durations.append(float(gt_seg[1] - gt_seg[0]))
+
+            # Count predicted segments and durations
+            if "segments" in pred_data and len(pred_data["segments"]) > 0:
+                predicted_segments = pred_data["segments"].cpu().numpy().tolist()
+                batch_pred_count += len(predicted_segments)
+                for pred_seg in predicted_segments:
+                    batch_pred_durations.append(float(pred_seg[1] - pred_seg[0]))
+
+        # Calculate statistics
+        pred_mean_duration = (
+            sum(batch_pred_durations) / len(batch_pred_durations)
+            if batch_pred_durations
+            else 0.0
+        )
+        gt_mean_duration = (
+            sum(batch_gt_durations) / len(batch_gt_durations)
+            if batch_gt_durations
+            else 0.0
+        )
+
+        pred_total_duration = sum(batch_pred_durations)
+        gt_total_duration = sum(batch_gt_durations)
+
+        duration_ratio = (
+            pred_total_duration / gt_total_duration if gt_total_duration > 0 else 0.0
+        )
+        count_ratio = batch_pred_count / batch_gt_count if batch_gt_count > 0 else 0.0
+
+        # Log segment statistics
+        segment_stats = {
+            "val/pred_segments_count": float(batch_pred_count),
+            "val/gt_segments_count": float(batch_gt_count),
+            "val/pred_mean_duration": pred_mean_duration,
+            "val/gt_mean_duration": gt_mean_duration,
+            "val/duration_ratio_pred_vs_gt": duration_ratio,
+            "val/count_ratio_pred_vs_gt": count_ratio,
         }
 
-        # Get predictions using inference method
-        predictions = self.inference_(batch, inference_settings)
+        # Log to both logger and validation metrics
+        self.log_dict(segment_stats, prog_bar=False, logger=True)
 
         # Calculate tIoU for each sample
         batch_size = len(predictions)
@@ -973,7 +1031,7 @@ class RepurposeModel(pl.LightningModule):
 
     @torch.no_grad()
     def inference_(self, batch, inference_settings):
-        """Inference with soft NMS - adapted from MMCTransformer."""
+        """Inference with soft NMS - adapted from original paper implementation."""
         # Forward pass
         logit_a, logit_v, logit_f, offset_f = self(
             batch["features"]["audio"],
@@ -982,38 +1040,52 @@ class RepurposeModel(pl.LightningModule):
             mask=batch["sequence_masks"],
         )
 
+        # Gather video meta information
+        vid_idxs = batch.get(
+            "video_ids",
+            batch.get("video_id", [f"video_{i}" for i in range(logit_f.shape[0])]),
+        )
+        vid_lens = batch.get("duration", [0] * logit_f.shape[0])
+
+        # Ensure vid_lens is a list/tensor we can iterate over
+        if isinstance(vid_lens, (int, float)):
+            vid_lens = [vid_lens] * logit_f.shape[0]
+        elif torch.is_tensor(vid_lens) and vid_lens.dim() == 0:
+            vid_lens = [vid_lens.item()] * logit_f.shape[0]
+        elif torch.is_tensor(vid_lens):
+            vid_lens = vid_lens.tolist()
+
         results = []
         seq_masks = batch["sequence_masks"]
-        video_ids = batch.get(
-            "video_ids", [f"video_{i}" for i in range(logit_f.shape[0])]
-        )
 
-        # Process each video in the batch
-        for idx in range(logit_f.shape[0]):
-            # Get per-video outputs
+        # Inference on each single video and gather the results
+        for idx, (vidx, vlen) in enumerate(zip(vid_idxs, vid_lens)):
+            # Gather per-video outputs
             cls_logits_per_vid = logit_f[idx]
             offsets_per_vid = offset_f[idx]
-            seq_mask_per_vid = seq_masks[idx]
+            masks_per_vid = seq_masks[idx]
 
-            # Calculate max segments based on video length (simplified)
-            valid_length = int(seq_mask_per_vid.sum().item())
-            max_seg_num = max(1, valid_length // 10)  # Simplified heuristic
+            # Calculate max_seg_num based on video duration and max_seg_per_min
+            mins = max(1, vlen // 60)  # Avoid division by zero, minimum 1 minute
+            max_seg_num = mins * inference_settings["max_seg_per_min"]
+            max_seg_num = int(np.ceil(max_seg_num))
+            max_seg_num = max(1, max_seg_num)  # Ensure at least 1 segment allowed
 
-            # Inference on single video
+            # Inference on a single video
             results_per_vid = self.inference_single_video(
                 cls_logits_per_vid,
                 offsets_per_vid,
-                seq_mask_per_vid,
+                masks_per_vid,
                 inference_settings,
             )
 
-            # Apply soft NMS if we have segments
+            # Apply soft NMS with proper max_seg_num constraint
             if len(results_per_vid["segments"]) > 0:
                 results_per_vid_nms_idx = soft_nms_intervals_cpu(
                     results_per_vid["scores"],
                     results_per_vid["segments"],
-                    sigma=inference_settings.get("nms_sigma", 0.5),
-                    thresh=inference_settings.get("min_score", 0.001),
+                    sigma=inference_settings["nms_sigma"],
+                    thresh=inference_settings["min_score"],
                     max_seg_num=max_seg_num,
                 )
                 results_per_vid["segments"] = results_per_vid["segments"][
@@ -1026,8 +1098,9 @@ class RepurposeModel(pl.LightningModule):
                     results_per_vid_nms_idx
                 ]
 
-            # Add video metadata
-            results_per_vid["video_id"] = video_ids[idx]
+            # Pass through video meta info
+            results_per_vid["video_id"] = vidx
+            results_per_vid["duration"] = vlen
             results.append(results_per_vid)
 
         return results
@@ -1389,12 +1462,10 @@ class EndOfEpochVisualizationCallback(Callback):
         self,
         train_dataloader,
         val_dataloader=None,
-        num_samples: int = 10,
         save_dir: str = "visualizations",
     ):
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.num_samples = num_samples
         self.save_dir = save_dir
         self.logger = logging.getLogger(self.__class__.__name__)
         os.makedirs(save_dir, exist_ok=True)
@@ -1435,17 +1506,13 @@ class EndOfEpochVisualizationCallback(Callback):
                 log_memory_usage(self.logger, f"Before {dataset_name} visualization")
 
                 try:
-                    sample_count = 0
-
                     self.logger.info(
-                        f"Processing samples from {dataset_name} dataloader with immediate visualization..."
+                        f"Processing first batch from {dataset_name} dataloader for visualization..."
                     )
 
+                    # Process only the first batch
                     for batch_idx, batch in enumerate(dataloader):
-                        if sample_count >= self.num_samples:
-                            self.logger.info(
-                                f"Reached target of {self.num_samples} samples, stopping batch processing"
-                            )
+                        if batch_idx > 0:  # Only process first batch
                             break
 
                         self.logger.debug(
@@ -1492,15 +1559,20 @@ class EndOfEpochVisualizationCallback(Callback):
                             )
                             continue
 
-                        # Process each sequence in the batch individually
+                        # Run inference on the full batch once
+                        # Get predictions for all samples in batch at once
+                        with torch.no_grad():
+                            inference_predictions = pl_module.inference_(
+                                batch, INFERENCE_SETTINGS
+                            )
+
+                        # Process each sequence in the batch for visualization
                         batch_size = logit_f.shape[0]
                         self.logger.debug(
-                            f"Processing {batch_size} sequences in batch {batch_idx}"
+                            f"Creating visualizations for {batch_size} sequences from batch {batch_idx}"
                         )
 
                         for seq_idx in range(batch_size):
-                            if sample_count >= self.num_samples:
-                                break
 
                             try:
                                 # Get sequence mask for this specific sequence
@@ -1531,7 +1603,7 @@ class EndOfEpochVisualizationCallback(Callback):
                                 video_id = batch["video_ids"][seq_idx]
 
                                 self.logger.debug(
-                                    f"Processing sample {sample_count}: {video_id} ({valid_length} frames)"
+                                    f"Processing sequence {seq_idx+1}/{batch_size}: {video_id} ({valid_length} frames)"
                                 )
 
                                 # Create visualization immediately instead of accumulating data
@@ -1562,7 +1634,7 @@ class EndOfEpochVisualizationCallback(Callback):
                                         axes[0].set_ylabel("Probability")
                                         dataset_type = dataset_name.upper()
                                         axes[0].set_title(
-                                            f"Epoch {epoch} - {dataset_type} Sample {sample_count} - Predictions vs Ground Truth"
+                                            f"Epoch {epoch} - {dataset_type} Sequence {seq_idx+1} - Predictions vs Ground Truth"
                                         )
                                         axes[0].legend()
                                         axes[0].grid(True, alpha=0.3)
@@ -1610,52 +1682,20 @@ class EndOfEpochVisualizationCallback(Callback):
                                         # Plot 3: Segments visualization from offsets
                                         ax3 = axes[2]
 
-                                        # Use inference to get actual predicted segments (same as used for tIoU calculation)
-                                        # Create a mini-batch for this single sample and move to correct device
-                                        device = pl_module.device
-                                        mini_batch = {
-                                            "features": {
-                                                "visual": batch["features"]["visual"][
-                                                    seq_idx : seq_idx + 1
-                                                ].to(device),
-                                                "audio": batch["features"]["audio"][
-                                                    seq_idx : seq_idx + 1
-                                                ].to(device),
-                                                "caption": batch["features"]["caption"][
-                                                    seq_idx : seq_idx + 1
-                                                ].to(device),
-                                            },
-                                            "sequence_masks": batch["sequence_masks"][
-                                                seq_idx : seq_idx + 1
-                                            ].to(device),
-                                            "video_ids": [video_id],
-                                        }
+                                        # Use the pre-computed inference results for this sequence
+                                        # (inference was already run on the full batch above)
 
-                                        # Define inference settings
-                                        inference_settings = {
-                                            "pre_nms_thresh": 0.001,
-                                            "pre_nms_topk": 2000,
-                                            "duration_thresh": 0.1,
-                                            "duration_thresh_max": 1000,
-                                            "nms_sigma": 0.75,
-                                            "min_score": 0.001,
-                                        }
-
-                                        # Get predictions using inference method
-                                        with torch.no_grad():
-                                            inference_predictions = (
-                                                pl_module.inference_(
-                                                    mini_batch, inference_settings
-                                                )
-                                            )
-
-                                        # Draw predicted segments from inference
+                                        # Draw predicted segments from the batch inference results
                                         if (
                                             inference_predictions
-                                            and "segments" in inference_predictions[0]
+                                            and seq_idx < len(inference_predictions)
+                                            and "segments"
+                                            in inference_predictions[seq_idx]
                                         ):
                                             pred_segments = (
-                                                inference_predictions[0]["segments"]
+                                                inference_predictions[seq_idx][
+                                                    "segments"
+                                                ]
                                                 .cpu()
                                                 .numpy()
                                             )
@@ -1766,10 +1806,10 @@ class EndOfEpochVisualizationCallback(Callback):
                                         )
                                         log_memory_usage(
                                             self.logger,
-                                            f"After viz {sample_count} error",
+                                            f"After viz seq {seq_idx} error",
                                         )
 
-                                sample_count += 1
+                                # Visualization completed for this sequence
 
                                 # Explicit cleanup of large tensors
                                 del logit_f_seq, labels_seq
@@ -1801,7 +1841,7 @@ class EndOfEpochVisualizationCallback(Callback):
                         )
 
                     self.logger.info(
-                        f"Completed immediate processing of {sample_count} samples from {dataset_name} set"
+                        f"Completed visualization of batch from {dataset_name} set"
                     )
 
                 except Exception as e:
