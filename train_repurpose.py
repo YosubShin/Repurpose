@@ -1641,8 +1641,10 @@ class EndOfEpochVisualizationCallback(Callback):
 
                                         # Get predictions using inference method
                                         with torch.no_grad():
-                                            inference_predictions = self.inference_(
-                                                mini_batch, inference_settings
+                                            inference_predictions = (
+                                                pl_module.inference_(
+                                                    mini_batch, inference_settings
+                                                )
                                             )
 
                                         # Draw predicted segments from inference
